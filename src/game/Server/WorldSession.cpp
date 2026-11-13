@@ -37,6 +37,7 @@
 #include "SocialMgr.h"
 #include "PlayerBotMgr.h"
 #include "PlayerBotAI.h"
+#include "SoloFarmAI.h"
 #include "Anticheat.h"
 #include "Language.h"
 #include "Chat.h"
@@ -686,6 +687,8 @@ void WorldSession::LogoutPlayer(bool Save)
         bool inWorld = _player->IsInWorld() && _player->FindMap();
 
         sLog.Player(this, LOG_CHAR, "Logout", LOG_LVL_DETAIL, "");
+
+        SoloFarmAI::StopFor(_player, SOLO_STOP_SILENT);
 
         if (ObjectGuid lootGuid = GetPlayer()->GetLootGuid())
             DoLootRelease(lootGuid);

@@ -1847,6 +1847,8 @@ void CombatBotBaseAI::AddAllSpellReagents()
 bool CombatBotBaseAI::AreOthersOnSameTarget(ObjectGuid guid, bool checkMelee, bool checkSpells) const
 {
     Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return false;
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         if (Player* pMember = itr->getSource())
@@ -2249,6 +2251,8 @@ Player* CombatBotBaseAI::SelectBuffTarget(SpellEntry const* pSpellEntry) const
             }
         }
     }
+    else if (!me->IsGameMaster() && IsValidBuffTarget(me, pSpellEntry))
+        return me;
 
     return nullptr;
 }
@@ -2301,6 +2305,11 @@ Player* CombatBotBaseAI::SelectBuffTarget(SpellEntry const* pSingleSpellEntry, S
             }
         }
     }
+    else if (!me->IsGameMaster() && IsValidBuffTarget(me, pSingleSpellEntry))
+    {
+        pFirstMissingMember = me;
+        missingMemberCount = 1;
+    }
 
     if (missingMemberCount == 1)
         pSelectedSpellEntry = pSingleSpellEntry;
@@ -2326,12 +2335,23 @@ Player* CombatBotBaseAI::SelectDispelTarget(SpellEntry const* pSpellEntry) const
             }
         }
     }
+    else if (IsValidDispelTarget(me, pSpellEntry))
+        return me;
 
     return nullptr;
 }
 
 void CombatBotBaseAI::SummonPetIfNeeded()
 {
+    if (m_ownCharacter)
+    {
+        // Call Pet only: a dead pet, or a hunter with none, is the player's to sort out.
+        if (me->GetClass() == CLASS_HUNTER && !me->GetPetGuid() && !me->GetCharmGuid() &&
+            me->HasSpell(SPELL_CALL_PET) && sCharacterDatabaseCache.GetCharacterPetByOwner(me->GetGUIDLow()))
+            me->CastSpell(me, SPELL_CALL_PET, false);
+        return;
+    }
+
     if (me->GetClass() == CLASS_HUNTER)
     {
         if (me->GetCharmGuid())
@@ -2864,6 +2884,12 @@ SpellCastResult CombatBotBaseAI::DoCastSpell(Unit* pTarget, SpellEntry const* pS
     if (m_preventCasting)
         return SPELL_FAILED_DONT_REPORT;
 
+    // Casting a queued next-swing spell again interrupts the queued one.
+    if (pSpellEntry->IsNextMeleeSwingSpell())
+        if (Spell* pQueued = me->GetCurrentSpell(CURRENT_MELEE_SPELL))
+            if (pQueued->m_spellInfo->Id == pSpellEntry->Id)
+                return SPELL_FAILED_DONT_REPORT;
+
     if (me != pTarget)
         me->SetFacingToObject(pTarget);
 
@@ -2881,7 +2907,8 @@ SpellCastResult CombatBotBaseAI::DoCastSpell(Unit* pTarget, SpellEntry const* pS
         (me->IsMoving() || !me->IsStopped()))
         me->StopMoving();
 
-    if ((result == SPELL_FAILED_NEED_AMMO_POUCH ||
+    if (!m_ownCharacter &&
+        (result == SPELL_FAILED_NEED_AMMO_POUCH ||
         result == SPELL_FAILED_ITEM_NOT_READY) &&
         pSpellEntry->Reagent[0])
     {
@@ -2896,6 +2923,9 @@ SpellCastResult CombatBotBaseAI::DoCastSpell(Unit* pTarget, SpellEntry const* pS
 
 void CombatBotBaseAI::AddItemToInventory(uint32 itemId, uint32 count)
 {
+    if (m_ownCharacter)
+        return;
+
     ItemPosCountVec dest;
     uint8 msg = me->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, itemId, count);
     if (msg == EQUIP_ERR_OK)
@@ -2907,6 +2937,10 @@ void CombatBotBaseAI::AddItemToInventory(uint32 itemId, uint32 count)
 
 void CombatBotBaseAI::AddHunterAmmo()
 {
+    // It frees the first backpack slot by destroying what is there.
+    if (m_ownCharacter)
+        return;
+
     if (Item* pWeapon = me->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED))
     {
         if (ItemPrototype const* pWeaponProto = pWeapon->GetProto())

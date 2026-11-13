@@ -197,6 +197,7 @@ set (game_SRCS
     PlayerBots/BattleBotWaypoints.cpp
     PlayerBots/PlayerBotAI.cpp
     PlayerBots/PlayerBotMgr.cpp
+    PlayerBots/SoloFarmAI.cpp
     Server/Protocol/Opcodes.cpp
     Server/Packets/Battleground.cpp
     Server/Packets/AuctionHouse.cpp
@@ -452,6 +453,7 @@ set (game_SRCS
     PlayerBots/BattleBotWaypoints.h
     PlayerBots/PlayerBotAI.h
     PlayerBots/PlayerBotMgr.h
+    PlayerBots/SoloFarmAI.h
     Server/Protocol/Opcodes.h
     Server/Protocol/Opcodes_active.h
     Server/Packet.h

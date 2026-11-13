@@ -33,6 +33,7 @@
 #include "MapPersistentStateMgr.h"
 #include "World.h"
 #include "Anticheat.h"
+#include "SoloFarmAI.h"
 #include "packet_builder.h"
 #include "MovementPacketSender.h"
 #include "MoveSpline.h"
@@ -314,6 +315,25 @@ void WorldSession::HandleMovementOpcodes(WorldPackets::Movement::MovementPacket 
 
     if (!VerifyMovementInfo(packet.movementInfo))
         return;
+
+    // A key the player pressed while the body was theirs ends `.solo grind` / `.solo fish`.
+    if (pPlayerMover == _player && _player->AI())
+    {
+        switch (opcode)
+        {
+            case MSG_MOVE_START_FORWARD:
+            case MSG_MOVE_START_BACKWARD:
+            case MSG_MOVE_START_STRAFE_LEFT:
+            case MSG_MOVE_START_STRAFE_RIGHT:
+            case MSG_MOVE_START_TURN_LEFT:
+            case MSG_MOVE_START_TURN_RIGHT:
+            case MSG_MOVE_JUMP:
+                SoloFarmAI::OnManualMove(_player);
+                break;
+            default:
+                break;
+        }
+    }
 
     if (pPlayerMover)
     {

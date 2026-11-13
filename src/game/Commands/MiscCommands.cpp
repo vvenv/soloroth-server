@@ -33,6 +33,7 @@
 #include "InstanceData.h"
 #include "MapManager.h"
 #include "BattleGroundMgr.h"
+#include "SoloFarmAI.h"
 
 bool ChatHandler::HandleHelpCommand(char* args)
 {
@@ -2002,5 +2003,58 @@ bool ChatHandler::HandleSoloAutoLootCommand(char* args)
         PSendSysMessage("击杀后自动拾取：%s。", on ? "开" : "关");
     else
         PSendSysMessage("Auto loot on kill: %s.", on ? "on" : "off");
+    return true;
+}
+
+// `.solo grind [yards]`, `.solo fish [yards]`: around where the character stands now.
+static bool SoloFarmStart(WorldSession* session, char const* args, SoloFarmMode mode)
+{
+    Player* pPlayer = session ? session->GetPlayer() : nullptr;
+    if (!pPlayer)
+        return false;
+
+    uint32 const fallback = mode == SOLO_FARM_FISH ? 25 : 40;
+    uint32 const most = mode == SOLO_FARM_FISH ? 60 : 150;
+    int32 const asked = (args && *args) ? atoi(args) : 0;
+    uint32 const radius = asked > 0 ? std::max(5u, std::min(uint32(asked), most)) : fallback;
+
+    SoloFarmAI::Start(pPlayer, mode, float(radius));
+    return true;
+}
+
+bool ChatHandler::HandleSoloGrindCommand(char* args)
+{
+    return SoloFarmStart(m_session, args, SOLO_FARM_GRIND);
+}
+
+bool ChatHandler::HandleSoloFishCommand(char* args)
+{
+    return SoloFarmStart(m_session, args, SOLO_FARM_FISH);
+}
+
+bool ChatHandler::HandleSoloStopCommand(char* /*args*/)
+{
+    Player* pPlayer = m_session ? m_session->GetPlayer() : nullptr;
+    if (!pPlayer)
+        return false;
+
+    if (SoloFarmAI::Of(pPlayer))
+        SoloFarmAI::StopFor(pPlayer, SOLO_STOP_COMMAND);
+    else
+        SendSysMessage("[solo] farm=off");
+    return true;
+}
+
+// Bare `.solo farm` reports the state (for the Solo addon).
+bool ChatHandler::HandleSoloFarmCommand(char* /*args*/)
+{
+    Player* pPlayer = m_session ? m_session->GetPlayer() : nullptr;
+    if (!pPlayer)
+        return false;
+
+    if (SoloFarmAI* pAI = SoloFarmAI::Of(pPlayer))
+        PSendSysMessage("[solo] farm=%s %u", pAI->GetMode() == SOLO_FARM_FISH ? "fish" : "grind", uint32(pAI->GetRadius()));
+    else
+        SendSysMessage("[solo] farm=off");
     return true;
 }

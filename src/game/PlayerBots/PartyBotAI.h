@@ -43,7 +43,7 @@ public:
 
     bool OnSessionLoaded(PlayerBotEntry* entry, WorldSession* sess) final;
     void OnPlayerLogin() final;
-    void UpdateAI(uint32 const diff) final;
+    void UpdateAI(uint32 const diff) override;
     void OnPacketReceived(WorldPacket const* packet) final;
 
     void CloneFromPlayer(Player const* pPlayer);

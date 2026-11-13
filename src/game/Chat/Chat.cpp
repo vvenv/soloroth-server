@@ -129,6 +129,10 @@ ChatCommand * ChatHandler::getCommandTable()
     static ChatCommand soloCommandTable[] =
     {
         { "autoloot",   SEC_PLAYER,             false, &ChatHandler::HandleSoloAutoLootCommand,        "", nullptr },
+        { "grind",      SEC_PLAYER,             false, &ChatHandler::HandleSoloGrindCommand,           "", nullptr },
+        { "fish",       SEC_PLAYER,             false, &ChatHandler::HandleSoloFishCommand,            "", nullptr },
+        { "stop",       SEC_PLAYER,             false, &ChatHandler::HandleSoloStopCommand,            "", nullptr },
+        { "farm",       SEC_PLAYER,             false, &ChatHandler::HandleSoloFarmCommand,            "", nullptr },
         { nullptr,      0,                      false, nullptr,                                        "", nullptr },
     };
 
@@ -1248,7 +1252,7 @@ ChatCommand * ChatHandler::getCommandTable()
         { "ahbot",          SEC_ADMINISTRATOR,  true, nullptr,                            "Manage AH bot", ahbotCommandTable    },
         { "partybot",       SEC_PLAYER,         false, nullptr,                       "Manage party bots", partyBotCommandTable },
         { "bots",           SEC_PLAYER,         false, nullptr,                       "Bot party members: role, auto fill in dungeons", botsCommandTable },
-        { "solo",           SEC_PLAYER,         false, nullptr,                       "Soloroth solo options: autoloot on kill", soloCommandTable },
+        { "solo",           SEC_PLAYER,         false, nullptr,                       "Soloroth solo options: autoloot on kill, auto grind and fish", soloCommandTable },
         { "achievement",    SEC_PLAYER,         false, nullptr,                       "Achievements: summary, sync for the addon", achievementCommandTable },
         { "battlebot",      SEC_ADMINISTRATOR,  true, nullptr,                      "Manage battle bots", battleBotCommandTable},
         { "world",          SEC_ADMINISTRATOR,  false, nullptr,                                        "", worldCommandTable    },

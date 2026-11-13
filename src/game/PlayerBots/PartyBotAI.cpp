@@ -151,6 +151,8 @@ Unit* PartyBotAI::GetDistancingTarget(Unit* pEnemy)
 
     Unit* pNonTank = nullptr;
     Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return nullptr;
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         if (Player* pMember = itr->getSource())
@@ -241,6 +243,8 @@ bool PartyBotAI::ShouldAutoRevive() const
 
     bool alivePlayerNearby = false;
     Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return false;
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         if (Player* pMember = itr->getSource())
@@ -349,6 +353,9 @@ bool PartyBotAI::AttackStart(Unit* pVictim)
 
 Unit* PartyBotAI::GetMarkedTarget(RaidTargetIcon mark) const
 {
+    if (!me->GetGroup())
+        return nullptr;
+
     ObjectGuid targetGuid = me->GetGroup()->GetTargetWithIcon(mark);
     if (targetGuid.IsUnit())
         return me->GetMap()->GetUnit(targetGuid);
@@ -414,6 +421,8 @@ Unit* PartyBotAI::SelectAttackTarget(Player* pLeader) const
 Unit* PartyBotAI::SelectPartyAttackTarget() const
 {
     Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return nullptr;
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         if (Player* pMember = itr->getSource())
@@ -440,6 +449,8 @@ Player* PartyBotAI::SelectResurrectionTarget() const
         return nullptr;
 
     Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return nullptr;
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         if (Player* pMember = itr->getSource())
@@ -468,6 +479,8 @@ Player* PartyBotAI::SelectShieldTarget() const
         return nullptr;
 
     Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return nullptr;
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         if (Player* pMember = itr->getSource())

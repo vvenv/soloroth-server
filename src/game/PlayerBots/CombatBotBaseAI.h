@@ -558,6 +558,8 @@ public:
     bool m_isBuffing = false;
     bool m_preventCasting = false;
     bool m_receivedBgInvite = false;
+    // Drives a person's own character (`.solo grind`, `.solo fish`): no free items, reagents or pets.
+    bool m_ownCharacter = false;
     uint8 m_visualHonorRank = 0;
     CombatBotRoles m_role = ROLE_INVALID;
 };

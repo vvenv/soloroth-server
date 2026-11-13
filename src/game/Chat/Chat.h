@@ -303,6 +303,10 @@ class ChatHandler
         bool HandleBotsFillCommand(char* args);
         bool HandleBotsDismissCommand(char* args);
         bool HandleSoloAutoLootCommand(char* args);
+        bool HandleSoloGrindCommand(char* args);
+        bool HandleSoloFishCommand(char* args);
+        bool HandleSoloStopCommand(char* args);
+        bool HandleSoloFarmCommand(char* args);
         bool HandleAchievementCommand(char* args);
         bool HandleAchievementSyncCommand(char* args);
         bool HandleAchievementAddCommand(char* args);
