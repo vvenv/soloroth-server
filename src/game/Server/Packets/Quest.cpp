@@ -375,7 +375,7 @@ void WorldPackets::Quest::QuestGiverQuestDetails::AppendBodyTo(ByteBuffer& buffe
                 buffer << static_cast<uint32>(0);
         }
 
-        buffer << quest->GetRewOrReqMoney();
+        buffer << money;
     }
 
     buffer << quest->GetRewSpell();
@@ -468,7 +468,7 @@ void WorldPackets::Quest::QuestGiverOfferReward::AppendBodyTo(ByteBuffer& buffer
             buffer << static_cast<uint32>(0);
     }
 
-    buffer << quest->GetRewOrReqMoney();
+    buffer << money;
     buffer << quest->GetQuestFlags();
 #if SUPPORTED_CLIENT_BUILD > CLIENT_BUILD_1_4_2
     buffer << quest->GetRewSpell();

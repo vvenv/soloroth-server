@@ -311,6 +311,7 @@ namespace WorldPackets { namespace Quest
         ObjectGuid npcGuid;
         ::Quest const* quest = nullptr;
         bool autoFinish = false;
+        int32 money = 0;                // reward money as this player gets it
 
         explicit QuestGiverQuestDetails() : ServerPacket(SMSG_QUESTGIVER_QUEST_DETAILS) {}
         size_t EstimateFinalSize() const override;
@@ -324,6 +325,7 @@ namespace WorldPackets { namespace Quest
         ObjectGuid npcGuid;
         ::Quest const* quest = nullptr;
         bool autoFinish = false;
+        int32 money = 0;                // reward money as this player gets it
 
         explicit QuestGiverOfferReward() : ServerPacket(SMSG_QUESTGIVER_OFFER_REWARD) {}
         size_t EstimateFinalSize() const override;

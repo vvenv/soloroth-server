@@ -224,6 +224,27 @@ int32 Quest::GetRewMoneyMaxLevelAtComplete() const
     return int32(GetRewMoneyMaxLevel() * sWorld.getConfig(CONFIG_FLOAT_RATE_DROP_MONEY));
 }
 
+int32 Quest::GetRewMoneyLowLevel(uint32 playerLevel) const
+{
+    if (!RewXP || playerLevel >= sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL))
+        return 0;
+
+    uint32 const xp = XPValue(playerLevel);
+    if (xp >= RewXP)
+        return 0;
+
+    return int32(GetRewMoneyMaxLevelAtComplete() * float(RewXP - xp) / float(RewXP));
+}
+
+int32 Quest::GetRewOrReqMoneyFor(uint32 playerLevel) const
+{
+    int32 const money = GetRewOrReqMoney();
+    if (HasQuestFlag(QUEST_FLAGS_HIDDEN_REWARDS) || money < 0)
+        return money;
+
+    return money + GetRewMoneyLowLevel(playerLevel);
+}
+
 bool Quest::IsAllowedInRaid() const
 {
     if (Type == QUEST_TYPE_RAID)

@@ -13141,7 +13141,12 @@ void Player::RewardQuest(Quest const* pQuest, uint32 reward, WorldObject* questE
     uint32 xp = uint32(pQuest->XPValue(GetLevel()) * sWorld.getConfig(CONFIG_FLOAT_RATE_XP_QUEST));
 
     if (GetLevel() < sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL))
+    {
         GiveXP(xp , nullptr);
+        // A quest the player has outgrown pays the lost experience in gold.
+        if (int32 money = pQuest->GetRewMoneyLowLevel(GetLevel()))
+            LogModifyMoney(money, "QuestLowLevel", questEnder->GetObjectGuid(), questId);
+    }
     else if (int32 money = pQuest->GetRewMoneyMaxLevelAtComplete())
         LogModifyMoney(money, "QuestMaxLevel", questEnder->GetObjectGuid(), questId);
 
@@ -14347,7 +14352,7 @@ void Player::SendQuestReward(Quest const* pQuest, uint32 XP) const
     if (GetLevel() < sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL))
     {
         packet->xp = XP;
-        packet->money = pQuest->GetRewOrReqMoney();
+        packet->money = pQuest->GetRewOrReqMoney() + pQuest->GetRewMoneyLowLevel(GetLevel());
     }
     else
     {
