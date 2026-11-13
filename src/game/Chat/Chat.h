@@ -302,6 +302,7 @@ class ChatHandler
         bool HandleBotsAutoCommand(char* args);
         bool HandleBotsFillCommand(char* args);
         bool HandleBotsDismissCommand(char* args);
+        bool HandleSoloAutoLootCommand(char* args);
         bool HandleAchievementCommand(char* args);
         bool HandleAchievementSyncCommand(char* args);
         bool HandleAchievementAddCommand(char* args);

@@ -126,6 +126,12 @@ ChatCommand * ChatHandler::getCommandTable()
         { nullptr,      0,                      false, nullptr,                                        "", nullptr },
     };
 
+    static ChatCommand soloCommandTable[] =
+    {
+        { "autoloot",   SEC_PLAYER,             false, &ChatHandler::HandleSoloAutoLootCommand,        "", nullptr },
+        { nullptr,      0,                      false, nullptr,                                        "", nullptr },
+    };
+
     static ChatCommand achievementCommandTable[] =
     {
         { "sync",       SEC_PLAYER,             false, &ChatHandler::HandleAchievementSyncCommand,     "", nullptr },
@@ -1242,6 +1248,7 @@ ChatCommand * ChatHandler::getCommandTable()
         { "ahbot",          SEC_ADMINISTRATOR,  true, nullptr,                            "Manage AH bot", ahbotCommandTable    },
         { "partybot",       SEC_PLAYER,         false, nullptr,                       "Manage party bots", partyBotCommandTable },
         { "bots",           SEC_PLAYER,         false, nullptr,                       "Bot party members: role, auto fill in dungeons", botsCommandTable },
+        { "solo",           SEC_PLAYER,         false, nullptr,                       "Soloroth solo options: autoloot on kill", soloCommandTable },
         { "achievement",    SEC_PLAYER,         false, nullptr,                       "Achievements: summary, sync for the addon", achievementCommandTable },
         { "battlebot",      SEC_ADMINISTRATOR,  true, nullptr,                      "Manage battle bots", battleBotCommandTable},
         { "world",          SEC_ADMINISTRATOR,  false, nullptr,                                        "", worldCommandTable    },

@@ -1220,6 +1220,11 @@ void Unit::Kill(Unit* pVictim, SpellEntry const* spellProto, bool durabilityLoss
                 if (cinfo->loot_id || cinfo->gold_max > 0)
                     pCreatureVictim->SetFlag(UNIT_DYNAMIC_FLAGS, UNIT_DYNFLAG_LOOTABLE);
 
+            // Soloroth: optional kill auto-loot — bags get the items without a corpse click.
+            // Leftovers (bags full, master loot) keep the sparkle so the player can still click.
+            if (pPlayerTap && pPlayerTap->IsSoloAutoLootOnKill())
+                pPlayerTap->SoloAutoLootCreature(pCreatureVictim);
+
             if (pPlayerTap && (pCreatureVictim->IsGuard() || pCreatureVictim->HasStaticFlag(CREATURE_STATIC_FLAG_PVP_ENABLING)))
                 pCreatureVictim->SendZoneUnderAttackMessage(pPlayerTap);
         }

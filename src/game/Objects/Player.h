@@ -950,6 +950,14 @@ class Player final: public Unit
         bool StoreNewItemInBestSlots(uint32 itemId, uint32 amount, uint32 enchantId = 0);
         Item* StoreNewItemInInventorySlot(uint32 itemId, uint32 amount);
         void AutoStoreLoot(Loot& loot, bool broadcast = false, uint8 bag = NULL_BAG, uint8 slot = NULL_SLOT);
+        // Soloroth: after a kill, put the corpse's loot into bags without a click.
+        // Option lives in the Solo addon (`.solo autoloot on|off`); default on.
+        bool IsSoloAutoLootOnKill() const { return m_soloAutoLootOnKill; }
+        void SetSoloAutoLootOnKill(bool on) { m_soloAutoLootOnKill = on; }
+        void SoloAutoLootCreature(Creature* creature);
+        // The same take-everything, whatever the option; false when something did not fit.
+        bool SoloLootCreature(Creature* creature);
+        bool SoloTakeLoot(Loot& loot);
         void SetAmmo(uint32 item);
         void RemoveAmmo();
         void SendProficiency(ItemClass itemClass, uint32 itemSubclassMask) const;
@@ -2009,6 +2017,8 @@ class Player final: public Unit
 
     private:
         bool m_isStandUpScheduled;
+        // Soloroth: kill auto-loot (Solo addon / `.solo autoloot`). Default on.
+        bool m_soloAutoLootOnKill;
         uint32 m_detectInvisibilityTimer;
         uint32 m_ExtraFlags;
         ObjectGuid m_curSelectionGuid;

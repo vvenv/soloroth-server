@@ -1962,3 +1962,45 @@ bool ChatHandler::HandleNearGraveCommand(char* args)
 
     return true;
 }
+
+bool ChatHandler::HandleSoloAutoLootCommand(char* args)
+{
+    Player* pPlayer = m_session ? m_session->GetPlayer() : nullptr;
+    if (!pPlayer)
+        return false;
+
+    bool const zh = [&]() {
+        int const index = m_session->GetSessionDbLocaleIndex();
+        return index >= 0 && sObjectMgr.GetLocaleForIndex(index) == LOCALE_zhCN;
+    }();
+
+    // Bare `.solo autoloot` reports the current setting (for the Solo addon).
+    if (!args || !*args)
+    {
+        PSendSysMessage("[solo] autoloot=%u", pPlayer->IsSoloAutoLootOnKill() ? 1u : 0u);
+        if (zh)
+            PSendSysMessage("击杀后自动拾取：%s。", pPlayer->IsSoloAutoLootOnKill() ? "开" : "关");
+        else
+            PSendSysMessage("Auto loot on kill: %s.", pPlayer->IsSoloAutoLootOnKill() ? "on" : "off");
+        return true;
+    }
+
+    bool on;
+    if (!ExtractOnOff(&args, on))
+    {
+        SendSysMessage(zh ? "用法：.solo autoloot on|off" : "Usage: .solo autoloot on|off");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    pPlayer->SetSoloAutoLootOnKill(on);
+    PSendSysMessage("[solo] autoloot=%u", on ? 1u : 0u);
+    // `.solo autoloot on quiet`: the addon's login sync, machine line only.
+    if (args && strstr(args, "quiet"))
+        return true;
+    if (zh)
+        PSendSysMessage("击杀后自动拾取：%s。", on ? "开" : "关");
+    else
+        PSendSysMessage("Auto loot on kill: %s.", on ? "on" : "off");
+    return true;
+}

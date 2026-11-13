@@ -111,7 +111,7 @@ static uint32 copseReclaimDelay[MAX_DEATH_COUNT] = { 30, 60, 120 };
 Player::Player(WorldSession* session) : Unit(),
     m_mover(this), m_camera(this), m_reputationMgr(this), m_saveDisabled(false), m_enableInstanceSwitch(true),
     m_currentTicketCounter(0), m_repopAtGraveyardPending(false), m_knownLanguagesMask(0),
-    m_honorMgr(this), m_personalXpRate(-1.0f), m_isStandUpScheduled(false)
+    m_honorMgr(this), m_personalXpRate(-1.0f), m_isStandUpScheduled(false), m_soloAutoLootOnKill(true)
 {
     m_objectType |= TYPEMASK_PLAYER;
     m_objectTypeId = TYPEID_PLAYER;
@@ -20525,6 +20525,117 @@ void Player::AutoStoreLoot(Loot& loot, bool broadcast, uint8 bag, uint8 slot)
         Item* pItem = StoreNewItem(dest, lootItem->itemid, true, lootItem->randomPropertyId);
         SendNewItem(pItem, lootItem->count, false, false, broadcast);
     }
+}
+
+void Player::SoloAutoLootCreature(Creature* creature)
+{
+    if (m_soloAutoLootOnKill)
+        SoloLootCreature(creature);
+}
+
+bool Player::SoloLootCreature(Creature* creature)
+{
+    if (!creature || creature->IsAlive() || creature->IsPet())
+        return true;
+
+    Loot& loot = creature->loot;
+    if (loot.empty())
+        return true;
+
+    // Same stamp the first CMSG_LOOT sets when the player opens the corpse.
+    creature->lootForBody = true;
+
+    bool const all = SoloTakeLoot(loot);
+
+    if (loot.isLooted())
+    {
+        creature->AllLootRemovedFromCorpse();
+        creature->RemoveFlag(UNIT_DYNAMIC_FLAGS, UNIT_DYNFLAG_LOOTABLE);
+        loot.clear();
+    }
+    return all;
+}
+
+bool Player::SoloTakeLoot(Loot& loot)
+{
+    bool all = true;
+
+    if (loot.gold > 0)
+    {
+        uint32 const gold = loot.gold;
+        LootMoney(int32(gold), &loot);
+        SendLootMoneyNotify(gold);
+        loot.NotifyMoneyRemoved();
+        loot.gold = 0;
+    }
+
+    uint32 const maxSlot = loot.GetMaxSlotInLootFor(GetGUIDLow());
+    for (uint32 i = 0; i < maxSlot; ++i)
+    {
+        QuestItem* qitem = nullptr;
+        QuestItem* ffaitem = nullptr;
+        QuestItem* conditem = nullptr;
+        LootItem* item = loot.LootItemInSlot(i, GetGUIDLow(), &qitem, &ffaitem, &conditem);
+        if (!item)
+            continue;
+        if (!item->AllowedForPlayer(this, loot.GetLootTarget()))
+            continue;
+        if (!qitem && item->is_blocked)
+            continue;
+
+        // Master-loot underthreshold stays on the corpse for the master.
+        if (Group* group = GetGroup())
+        {
+            if (group->GetLootMethod() == MASTER_LOOT && !item->is_underthreshold && !qitem && !ffaitem)
+                continue;
+        }
+
+        ItemPosCountVec dest;
+        InventoryResult msg = CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, item->itemid, item->count);
+        if (msg != EQUIP_ERR_OK)
+        {
+            SendEquipError(msg, nullptr, nullptr, 0, item->itemid);
+            all = false;
+            continue;
+        }
+
+        Item* newitem = StoreNewItem(dest, item->itemid, true, item->randomPropertyId);
+        if (!newitem)
+        {
+            all = false;
+            continue;
+        }
+
+        if (qitem)
+        {
+            qitem->is_looted = true;
+            if (item->freeforall || loot.GetPlayerQuestItems().size() == 1)
+                SendNotifyLootItemRemoved(i);
+            else
+                loot.NotifyQuestItemRemoved(qitem->index);
+        }
+        else if (ffaitem)
+        {
+            ffaitem->is_looted = true;
+            SendNotifyLootItemRemoved(i);
+        }
+        else if (conditem)
+        {
+            conditem->is_looted = true;
+            loot.NotifyItemRemoved(i);
+        }
+        else
+            loot.NotifyItemRemoved(i);
+
+        if (!item->freeforall)
+            item->is_looted = true;
+
+        --loot.unlootedCount;
+
+        SendNewItem(newitem, uint32(item->count), false, false, true);
+        OnReceivedItem(newitem);
+    }
+    return all;
 }
 
 uint32 Player::CalculateTalentsPoints() const
