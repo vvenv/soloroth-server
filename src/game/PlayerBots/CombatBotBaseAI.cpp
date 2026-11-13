@@ -10,6 +10,7 @@
 #include "SpellAuras.h"
 #include "Chat.h"
 #include "CharacterDatabaseCache.h"
+#include "MoveSpline.h"
 #include "Utilities/Random.h"
 
 #include <random>
@@ -2893,8 +2894,18 @@ SpellCastResult CombatBotBaseAI::DoCastSpell(Unit* pTarget, SpellEntry const* pS
     // A person's own character: only turn when the target is well outside the front cone.
     // Forcing a face every cast fights the player's mouse look (right-drag turns the body;
     // the next AI tick then snaps it back onto the mob).
+    //
+    // SetFacingToObject / SetFacingTo launch a facing spline with MOVEFLAG_FORWARD.
+    // Player::SetPosition then treats that as movement and cancels casts that have
+    // SPELL_INTERRUPT_FLAG_MOVEMENT (Aimed Shot's 3 s cast in 1.12) and leaves the
+    // hunter AI's Auto Shot gate (!IsMoving) stuck shut — the bot stands and poses.
+    // SetInFront only changes orientation, same as Spell.cpp does when a cast starts.
     if (me != pTarget && (!m_ownCharacter || !me->HasInArc(pTarget, 2.0f * M_PI_F / 3.0f)))
-        me->SetFacingToObject(pTarget);
+    {
+        if (!me->movespline->Finalized() || me->IsMoving() || !me->IsStopped())
+            me->StopMoving();
+        me->SetInFront(pTarget);
+    }
 
     if (me->IsMounted())
         me->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
@@ -2906,7 +2917,6 @@ SpellCastResult CombatBotBaseAI::DoCastSpell(Unit* pTarget, SpellEntry const* pS
 
     if ((result == SPELL_FAILED_MOVING ||
         result == SPELL_CAST_OK) &&
-        (pSpellEntry->GetCastTime(me) > 0) &&
         (me->IsMoving() || !me->IsStopped()))
         me->StopMoving();
 

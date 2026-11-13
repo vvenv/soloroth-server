@@ -30,6 +30,7 @@
 #include "Spell.h"
 #include "SpellAuras.h"
 #include "Chat.h"
+#include "MoveSpline.h"
 #include "Utilities/Random.h"
 #include "TargetedMovementGenerator.h"
 
@@ -671,6 +672,8 @@ void BattleBotAI::UpdateAI(uint32 const diff)
         ResetSpellData();
         PopulateSpellData();
         AddAllSpellReagents();
+        if (me->GetClass() == CLASS_HUNTER)
+            AddHunterAmmo();
         me->UpdateSkillsToMaxSkillsForLevel();
         me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_SPAWNING);
         SummonPetIfNeeded();
@@ -1622,10 +1625,13 @@ void BattleBotAI::UpdateInCombatAI_Hunter()
         }
 
         if (me->HasSpell(BB_SPELL_AUTO_SHOT) &&
-            !me->IsMoving() &&
             (me->GetCombatDistance(pVictim) > 8.0f) &&
             !me->IsNonMeleeSpellCasted())
         {
+            // Auto Shot needs a still caster; clear leftover chase / facing motion.
+            if (!me->movespline->Finalized() || me->IsMoving() || !me->IsStopped())
+                me->StopMoving();
+            me->SetInFront(pVictim);
             switch (me->CastSpell(pVictim, BB_SPELL_AUTO_SHOT, false))
             {
                 case SPELL_FAILED_NEED_AMMO:
