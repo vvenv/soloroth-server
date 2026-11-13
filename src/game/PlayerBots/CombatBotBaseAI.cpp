@@ -2712,6 +2712,15 @@ void CombatBotBaseAI::EquipRandomGearInEmptySlots()
                         continue;
                 }
 
+                // Hunters shoot with Auto Shot: wand / thrown occupy the slot but never fire it.
+                if (me->GetClass() == CLASS_HUNTER && slot == EQUIPMENT_SLOT_RANGED)
+                {
+                    if (pProto->SubClass != ITEM_SUBCLASS_WEAPON_BOW &&
+                        pProto->SubClass != ITEM_SUBCLASS_WEAPON_GUN &&
+                        pProto->SubClass != ITEM_SUBCLASS_WEAPON_CROSSBOW)
+                        continue;
+                }
+
                 itemsPerSlot[slot].push_back(pProto);
 
                 // Unique item
@@ -2822,7 +2831,72 @@ void CombatBotBaseAI::AutoEquipGear(uint32 option)
             break;
     }
 
+    if (me->GetClass() == CLASS_HUNTER)
+        EnsureHunterRangedWeapon();
+
     UpdateVisualHonorRankBasedOnItems();
+}
+
+void CombatBotBaseAI::EnsureHunterRangedWeapon()
+{
+    if (m_ownCharacter)
+        return;
+
+    Item* pRanged = me->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+    if (pRanged)
+    {
+        switch (pRanged->GetProto()->SubClass)
+        {
+            case ITEM_SUBCLASS_WEAPON_BOW:
+            case ITEM_SUBCLASS_WEAPON_GUN:
+            case ITEM_SUBCLASS_WEAPON_CROSSBOW:
+                AddHunterAmmo();
+                return;
+            default:
+                me->AutoUnequipItemFromSlot(EQUIPMENT_SLOT_RANGED);
+                break;
+        }
+    }
+
+    // Prefer a weapon type the hunter already knows (racial starters differ: bow vs gun).
+    uint32 wantSubclass = ITEM_SUBCLASS_WEAPON_BOW;
+    if (me->GetSkillValue(SKILL_GUNS) && !me->GetSkillValue(SKILL_BOWS))
+        wantSubclass = ITEM_SUBCLASS_WEAPON_GUN;
+    else if (me->GetSkillValue(SKILL_CROSSBOWS) &&
+             !me->GetSkillValue(SKILL_BOWS) && !me->GetSkillValue(SKILL_GUNS))
+        wantSubclass = ITEM_SUBCLASS_WEAPON_CROSSBOW;
+    else if (!me->GetSkillValue(SKILL_BOWS))
+        me->LearnSpell(264, false, false); // Bows
+
+    ItemPrototype const* best = nullptr;
+    for (auto const& itr : sObjectMgr.GetItemPrototypeMap())
+    {
+        ItemPrototype const* pProto = &itr.second;
+        if (pProto->Class != ITEM_CLASS_WEAPON || pProto->SubClass != wantSubclass)
+            continue;
+        if (!pProto->Discovered || pProto->HasExtraFlag(ITEM_EXTRA_NOT_OBTAINABLE))
+            continue;
+        if (pProto->RequiredLevel > me->GetLevel())
+            continue;
+        if (me->CanUseItem(pProto) != EQUIP_ERR_OK)
+            continue;
+        if (!best || best->ItemLevel < pProto->ItemLevel)
+            best = pProto;
+    }
+
+    if (!best)
+    {
+        uint32 const fallback = (wantSubclass == ITEM_SUBCLASS_WEAPON_GUN) ? 2508u : 2504u;
+        best = sObjectMgr.GetItemPrototype(fallback);
+    }
+
+    if (best)
+    {
+        me->SatisfyItemRequirements(best);
+        me->StoreNewItemInBestSlots(best->ItemId, 1);
+    }
+
+    AddHunterAmmo();
 }
 
 bool CombatBotBaseAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const
@@ -3069,6 +3143,9 @@ void CombatBotBaseAI::UpdateVisualHonorRankBasedOnItems()
 
 void CombatBotBaseAI::BeginChasing(Unit* pVictim) const
 {
+    // Hunters / casters hold ~25 yd so they shoot instead of running into melee.
+    // Dungeon kiting into lava is handled by not MoveDistance-backing when already close
+    // (see PartyBotAI::RunAwayFromTarget and the hunter range band).
     if ((m_role == ROLE_RANGE_DPS || m_role == ROLE_HEALER) &&
         IsRangedDamageClass(me->GetClass()) &&
        !IsAttackSpeedOverridenForm(me->GetShapeshiftForm()) &&
