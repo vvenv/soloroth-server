@@ -114,6 +114,21 @@ namespace
                 pGo->GetDistance2d(x, y) <= range;
         }
     };
+
+    // SetFacingToObject launches a facing spline with MOVEFLAG_FORWARD; the next
+    // Player::SetPosition then interrupts casts that have SPELL_INTERRUPT_FLAG_MOVEMENT
+    // (skin / herb / mine). Settle first and face without a spline.
+    bool ReadyToGatherCast(Player* me, WorldObject const* pTarget)
+    {
+        if (!me->movespline->Finalized() || me->IsMoving() || !me->IsStopped())
+        {
+            me->StopMoving();
+            return false;
+        }
+        if (!me->HasInArc(pTarget, 2.0f * M_PI_F / 3.0f))
+            me->SetOrientation(me->GetAngle(pTarget));
+        return true;
+    }
 }
 
 SoloFarmAI::SoloFarmAI(Player* pPlayer, SoloFarmMode mode, float radius)
@@ -988,7 +1003,8 @@ bool SoloFarmAI::UpdateGather()
             }
             else
             {
-                me->SetFacingToObject(pCorpse);
+                if (!ReadyToGatherCast(me, pCorpse))
+                    return true;
                 if (me->CastSpell(pCorpse, m_gatherSpell, false) == SPELL_CAST_OK)
                 {
                     m_gatherFails = 0;
@@ -1022,7 +1038,8 @@ bool SoloFarmAI::UpdateGather()
                             pGo->GetPositionZ(), MOVE_PATHFINDING | MOVE_EXCLUDE_STEEP_SLOPES);
                     return true;
                 }
-                me->SetFacingToObject(pGo);
+                if (!ReadyToGatherCast(me, pGo))
+                    return true;
                 if (me->CastSpell(pGo, m_gatherSpell, false) == SPELL_CAST_OK)
                 {
                     m_gatherFails = 0;
