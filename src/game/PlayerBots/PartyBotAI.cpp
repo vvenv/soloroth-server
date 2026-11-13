@@ -176,6 +176,11 @@ Unit* PartyBotAI::GetDistancingTarget(Unit* pEnemy)
 
 bool PartyBotAI::RunAwayFromTarget(Unit* pEnemy)
 {
+    // Five-player dungeon: the tank holds aggro. MoveDistance / MonsterMove walk
+    // into lava (Ragefire) and pits; stand and fight instead.
+    if (me->GetMap() && me->GetMap()->IsDungeon())
+        return false;
+
     if (Unit* pTarget = GetDistancingTarget(pEnemy))
     {
         me->MonsterMove(pTarget->GetPositionX(), pTarget->GetPositionY(), pTarget->GetPositionZ());
@@ -917,7 +922,17 @@ void PartyBotAI::UpdateAI(uint32 const diff)
             {
                 case IDLE_MOTION_TYPE:
                 case FOLLOW_MOTION_TYPE:
-                    BeginChasing(pVictim);
+                    // Ranged: only close the gap when out of shot range. Inside 8–30 yd they
+                    // should stand and shoot (class AI stops chase); do not charge to melee.
+                    if ((m_role == ROLE_RANGE_DPS || m_role == ROLE_HEALER) &&
+                        IsRangedDamageClass(me->GetClass()) &&
+                        !IsAttackSpeedOverridenForm(me->GetShapeshiftForm()))
+                    {
+                        if (me->GetCombatDistance(pVictim) > 30.0f)
+                            BeginChasing(pVictim);
+                    }
+                    else
+                        BeginChasing(pVictim);
                     break;
             }
         }
@@ -1560,10 +1575,22 @@ void PartyBotAI::UpdateInCombatAI_Hunter()
 {
     if (Unit* pVictim = me->GetVictim())
     {
-        if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE
-            && me->GetDistance(pVictim) > 30.0f)
+        float const shootDist = me->GetCombatDistance(pVictim);
+        // Auto Shot is 8–35 yd. Stay in that band: approach only when too far, stand
+        // still when in range (do not keep chasing into melee).
+        if (shootDist > 30.0f)
         {
-            BeginChasing(pVictim);
+            if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
+                BeginChasing(pVictim);
+        }
+        else if (shootDist >= 8.0f)
+        {
+            if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE ||
+                me->IsMoving() || !me->movespline->Finalized())
+            {
+                me->StopMoving();
+                me->GetMotionMaster()->Clear();
+            }
         }
 
         if (m_spells.hunter.pVolley &&
@@ -1696,7 +1723,8 @@ void PartyBotAI::UpdateInCombatAI_Hunter()
         if (!me->HasUnitState(UNIT_STATE_ROOT) &&
             (me->GetCombatDistance(pVictim) < 8.0f) &&
             (GetRole() != ROLE_MELEE_DPS) &&
-             me->GetMotionMaster()->GetCurrentMovementGeneratorType() != DISTANCING_MOTION_TYPE)
+             me->GetMotionMaster()->GetCurrentMovementGeneratorType() != DISTANCING_MOTION_TYPE &&
+             !(me->GetMap() && me->GetMap()->IsDungeon()))
         {
             if (!me->IsStopped())
                 me->StopMoving();

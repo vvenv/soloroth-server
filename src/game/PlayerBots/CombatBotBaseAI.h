@@ -97,6 +97,8 @@ public:
     void EquipPremadeGearTemplate();
     void EquipRandomGearInEmptySlots();
     void AutoEquipGear(uint32 option);
+    // Bow / gun / crossbow in the ranged slot, with matching ammo. Wands and thrown break Auto Shot.
+    void EnsureHunterRangedWeapon();
     void LearnRandomTalents();
     
     uint8 GetAttackersInRangeCount(float range) const;
