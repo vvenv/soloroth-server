@@ -50,6 +50,7 @@ private:
     void Say(char const* en, char const* zh) const;
     void AssignSoloRole();
 
+    bool RunAwayFromTarget(Unit* pEnemy) override;
     bool UpdateCombat();
     bool Rest();
     bool HealSelf();

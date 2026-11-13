@@ -62,7 +62,7 @@ public:
     bool ShouldAutoRevive() const;
     bool IsValidDistancingTarget(Unit* pTarget, Unit* pEnemy);
     Unit* GetDistancingTarget(Unit* pEnemy);
-    bool RunAwayFromTarget(Unit* pEnemy);
+    virtual bool RunAwayFromTarget(Unit* pEnemy);
     bool CrowdControlMarkedTargets();
     bool EnterCombatDruidForm();
     bool ShouldEnterStealth() const;

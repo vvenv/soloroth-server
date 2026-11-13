@@ -32,6 +32,8 @@ namespace
     uint32 const SEARCH_MS = 1000;
     uint32 const PULL_TIMEOUT_MS = 20000;
     uint32 const BLACKLIST_MS = 60000;
+    // Below this a caster or hunter backs off from a mob in melee range; above it, stands and fights.
+    float const RUN_AWAY_HEALTH_PCT = 40.0f;
 
     float Dist2d(float x1, float y1, float x2, float y2)
     {
@@ -361,6 +363,14 @@ void SoloFarmAI::UpdateAI(uint32 const diff)
 }
 
 // ------------------------------------------------------------------ combat --
+
+// Alone, backing off only leads the mob on until it leashes home and drops the fight.
+bool SoloFarmAI::RunAwayFromTarget(Unit* pEnemy)
+{
+    if (me->GetHealthPercent() >= RUN_AWAY_HEALTH_PCT)
+        return false;
+    return PartyBotAI::RunAwayFromTarget(pEnemy);
+}
 
 bool SoloFarmAI::UpdateCombat()
 {
