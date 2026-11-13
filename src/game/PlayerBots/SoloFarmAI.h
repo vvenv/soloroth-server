@@ -66,6 +66,8 @@ private:
     bool DoesGrind() const { return m_mode == SOLO_FARM_GRIND || m_mode == SOLO_FARM_ALL; }
     bool DoesFish() const { return m_mode == SOLO_FARM_FISH || m_mode == SOLO_FARM_ALL; }
     bool DoesGather() const { return m_mode == SOLO_FARM_GATHER || m_mode == SOLO_FARM_ALL; }
+    // Quest goobers / glowing chests: grind, gather and all (not fishing).
+    bool DoesQuestObjects() const { return m_mode != SOLO_FARM_FISH; }
 
     void UpdateGrind();
     Creature* FindTarget();
@@ -80,9 +82,13 @@ private:
     void Reel(GameObject* pBobber);
 
     bool UpdateGather();
+    bool UpdateQuestObjects();
     bool TakeOpenLoot();
     Creature* FindSkinnable();
     GameObject* FindGatherNode();
+    GameObject* FindQuestObject();
+    bool IsQuestInteractGo(GameObject const* pGo) const;
+    bool CanOpenQuestChest(GameObject const* pGo) const;
     uint32 GatherLockType(GameObject const* pGo) const;
     bool HasTool(uint32 itemId) const;
 
@@ -128,6 +134,10 @@ private:
     ObjectGuid m_gatherGuid;
     uint32 m_gatherSpell = 0;
     uint32 m_gatherFails = 0;
+
+    // Quest goobers / chests (walk up and Use / SoloLootGameObject).
+    ObjectGuid m_questGuid;
+    uint32 m_questFails = 0;
 };
 
 #endif

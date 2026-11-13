@@ -228,18 +228,7 @@ bool SoloFarmAI::Start(Player* pPlayer, SoloFarmMode mode, float radius)
         }
     }
 
-    if (mode == SOLO_FARM_GATHER)
-    {
-        bool const herb = BestKnownSpell(pPlayer, HERB_SPELLS, sizeof(HERB_SPELLS) / sizeof(HERB_SPELLS[0]));
-        bool const mine = BestKnownSpell(pPlayer, MINE_SPELLS, sizeof(MINE_SPELLS) / sizeof(MINE_SPELLS[0]));
-        bool const skin = BestKnownSpell(pPlayer, SKIN_SPELLS, sizeof(SKIN_SPELLS) / sizeof(SKIN_SPELLS[0]));
-        if (!herb && !mine && !skin)
-        {
-            chat.SendSysMessage(zh ? "还没学采药、挖矿或剥皮：先找对应的训练师。"
-                                   : "You have not learned Herbalism, Mining or Skinning yet.");
-            return false;
-        }
-    }
+    // Gather also picks up quest goobers / glowing chests, so a profession is not required.
 
     pPlayer->SetAI(new SoloFarmAI(pPlayer, mode, radius));
 
@@ -253,18 +242,18 @@ bool SoloFarmAI::Start(Player* pPlayer, SoloFarmMode mode, float radius)
                 uint32(radius));
             break;
         case SOLO_FARM_GATHER:
-            chat.PSendSysMessage(zh ? "开始自动采集：在这里 %u 码内采药、挖矿、剥皮（有技能和工具才做）。输入 .solo stop，或在角色站定时按移动键即可停止。"
-                                    : "Auto gathering within %u yards of here: herbs, ore and skinning (only with the skill and tools). Type .solo stop, or press a movement key while standing, to stop.",
+            chat.PSendSysMessage(zh ? "开始自动采集：在这里 %u 码内采药、挖矿、剥皮（有技能和工具才做），并点地上的任务道具和发光箱子。输入 .solo stop，或在角色站定时按移动键即可停止。"
+                                    : "Auto gathering within %u yards of here: herbs, ore and skinning (only with the skill and tools), plus quest objects and glowing chests. Type .solo stop, or press a movement key while standing, to stop.",
                 uint32(radius));
             break;
         case SOLO_FARM_ALL:
-            chat.PSendSysMessage(zh ? "开始自动挂机：在这里 %u 码内能打就打、能采就采、能钓就钓（有技能才做）。输入 .solo stop，或在角色站定时按移动键即可停止。"
-                                    : "Auto farming within %u yards of here: fights, gathers and fishes when you can. Type .solo stop, or press a movement key while standing, to stop.",
+            chat.PSendSysMessage(zh ? "开始自动挂机：在这里 %u 码内能打就打、能采就采、能钓就钓（有技能才做），也会点任务道具和发光箱子。输入 .solo stop，或在角色站定时按移动键即可停止。"
+                                    : "Auto farming within %u yards of here: fights, gathers and fishes when you can, and uses quest objects and glowing chests. Type .solo stop, or press a movement key while standing, to stop.",
                 uint32(radius));
             break;
         default:
-            chat.PSendSysMessage(zh ? "开始自动打怪：以这里为中心 %u 码内游荡、找怪、战斗、拾取，血蓝低了会吃喝休息。输入 .solo stop，或在角色站定时按移动键即可停止。"
-                                    : "Auto grinding within %u yards of here: wanders, picks fights, loots, and eats or drinks when low. Type .solo stop, or press a movement key while standing, to stop.",
+            chat.PSendSysMessage(zh ? "开始自动打怪：以这里为中心 %u 码内游荡、找怪、战斗、拾取，也会点任务道具和发光箱子；血蓝低了会吃喝休息。输入 .solo stop，或在角色站定时按移动键即可停止。"
+                                    : "Auto grinding within %u yards of here: wanders, picks fights, loots, uses quest objects and glowing chests, and eats or drinks when low. Type .solo stop, or press a movement key while standing, to stop.",
                 uint32(radius));
             break;
     }
@@ -441,6 +430,10 @@ void SoloFarmAI::UpdateAI(uint32 const diff)
     }
 
     if (UpdateCombat())
+        return;
+
+    // Quest goobers / chests before profession nodes and pulls.
+    if (DoesQuestObjects() && UpdateQuestObjects())
         return;
 
     if (DoesGather() && UpdateGather())
@@ -925,6 +918,196 @@ Creature* SoloFarmAI::FindSkinnable()
         }
     }
     return pBest;
+}
+
+bool SoloFarmAI::CanOpenQuestChest(GameObject const* pGo) const
+{
+    if (!pGo || pGo->GetGoType() != GAMEOBJECT_TYPE_CHEST)
+        return false;
+    // Herb / mine nodes stay on the profession path.
+    if (GatherLockType(pGo))
+        return false;
+
+    uint32 const lockId = pGo->GetGOInfo()->GetLockId();
+    if (!lockId)
+        return true;
+
+    LockEntry const* pLock = sLockStore.LookupEntry(lockId);
+    if (!pLock)
+        return true;
+
+    bool anyReq = false;
+    for (int i = 0; i < MAX_LOCK_CASE; ++i)
+    {
+        if (pLock->Type[i] == LOCK_KEY_ITEM)
+        {
+            anyReq = true;
+            if (pLock->Index[i] && HasTool(pLock->Index[i]))
+                return true;
+        }
+        else if (pLock->Type[i] == LOCK_KEY_SKILL)
+        {
+            uint32 const lockType = pLock->Index[i];
+            if (lockType == LOCKTYPE_HERBALISM || lockType == LOCKTYPE_MINING)
+                return false;
+            SkillType const skill = SkillByLockType(LockType(lockType));
+            // OPEN / TREASURE / KNEELING and the like: no skill, Opening-spell path.
+            if (skill == SKILL_NONE)
+                return true;
+            anyReq = true;
+            if (me->GetSkillValue(skill) >= int32(pLock->Skill[i]))
+                return true;
+        }
+    }
+    return !anyReq;
+}
+
+bool SoloFarmAI::IsQuestInteractGo(GameObject const* pGo) const
+{
+    if (!pGo || !pGo->isSpawned())
+        return false;
+    if (pGo->HasFlag(GAMEOBJECT_FLAGS, GO_FLAG_NO_INTERACT | GO_FLAG_IN_USE))
+        return false;
+
+    switch (pGo->GetGoType())
+    {
+        case GAMEOBJECT_TYPE_GOOBER:
+        {
+            // Gossip menus need a click we cannot finish; page text is fine (Use still rewards).
+            if (pGo->GetGOInfo()->goober.gossipID)
+                return false;
+            // Only objects this character still needs: ReqGO count, or a bound incomplete quest.
+            if (me->HasQuestForGO(int32(pGo->GetEntry())))
+                return true;
+            int32 const questId = pGo->GetGOInfo()->goober.questId;
+            return questId > 0 && me->GetQuestStatus(uint32(questId)) == QUEST_STATUS_INCOMPLETE;
+        }
+        case GAMEOBJECT_TYPE_CHEST:
+            if (!pGo->ActivateToQuest(me))
+                return false;
+            return CanOpenQuestChest(pGo);
+        default:
+            return false;
+    }
+}
+
+GameObject* SoloFarmAI::FindQuestObject()
+{
+    std::list<GameObject*> objects;
+    struct Check
+    {
+        float x, y, range;
+        bool operator()(GameObject* pGo) const
+        {
+            return pGo->isSpawned() &&
+                (pGo->GetGoType() == GAMEOBJECT_TYPE_GOOBER || pGo->GetGoType() == GAMEOBJECT_TYPE_CHEST) &&
+                pGo->GetDistance2d(x, y) <= range;
+        }
+    };
+    Check check{ m_x, m_y, m_radius };
+    MaNGOS::GameObjectListSearcher<Check> searcher(objects, check);
+    Cell::VisitGridObjects(m_x, m_y, me->GetMap(), searcher, m_radius);
+
+    GameObject* pBest = nullptr;
+    float best = 0.0f;
+    for (GameObject* pGo : objects)
+    {
+        if (IsBlacklisted(pGo->GetObjectGuid()) || !IsQuestInteractGo(pGo))
+            continue;
+        if (!pGo->PlayerCanUse(me))
+            continue;
+        float const d = me->GetDistance(pGo);
+        if (!pBest || d < best)
+        {
+            pBest = pGo;
+            best = d;
+        }
+    }
+    return pBest;
+}
+
+bool SoloFarmAI::UpdateQuestObjects()
+{
+    if (TakeOpenLoot())
+        return true;
+
+    if (me->IsNonMeleeSpellCasted(false))
+        return true;
+
+    if (me->IsInCombat())
+        return false;
+
+    if (FreeBagSlots() == 0)
+    {
+        Stop(SOLO_STOP_BAGS_FULL);
+        return true;
+    }
+
+    if (Rest())
+        return true;
+
+    if (!m_questGuid.IsEmpty())
+    {
+        GameObject* pGo = me->GetMap()->GetGameObject(m_questGuid);
+        if (!pGo || !pGo->isSpawned() || !IsQuestInteractGo(pGo))
+        {
+            m_questGuid.Clear();
+            m_questFails = 0;
+        }
+        else
+        {
+            float const reach = pGo->GetGOInfo()->GetInteractionDistance() + 1.0f;
+            if (!me->IsWithinDistInMap(pGo, reach))
+            {
+                if (!me->IsMoving())
+                    me->GetMotionMaster()->MovePoint(0, pGo->GetPositionX(), pGo->GetPositionY(),
+                        pGo->GetPositionZ(), MOVE_PATHFINDING | MOVE_EXCLUDE_STEEP_SLOPES);
+                return true;
+            }
+            if (!ReadyToGatherCast(me, pGo))
+                return true;
+
+            bool ok = false;
+            if (pGo->GetGoType() == GAMEOBJECT_TYPE_GOOBER)
+            {
+                pGo->Use(me);
+                ok = true;
+            }
+            else if (pGo->GetGoType() == GAMEOBJECT_TYPE_CHEST)
+            {
+                ok = me->SoloLootGameObject(pGo);
+                if (!ok)
+                {
+                    Stop(SOLO_STOP_BAGS_FULL);
+                    m_questGuid.Clear();
+                    m_questFails = 0;
+                    return true;
+                }
+            }
+
+            if (ok)
+            {
+                m_questGuid.Clear();
+                m_questFails = 0;
+                return true;
+            }
+            if (++m_questFails >= 3)
+            {
+                Blacklist(m_questGuid, BLACKLIST_MS);
+                m_questGuid.Clear();
+                m_questFails = 0;
+            }
+            return true;
+        }
+    }
+
+    if (GameObject* pGo = FindQuestObject())
+    {
+        m_questGuid = pGo->GetObjectGuid();
+        m_questFails = 0;
+        return true;
+    }
+    return false;
 }
 
 GameObject* SoloFarmAI::FindGatherNode()

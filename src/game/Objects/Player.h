@@ -957,6 +957,8 @@ class Player final: public Unit
         void SoloAutoLootCreature(Creature* creature);
         // The same take-everything, whatever the option; false when something did not fit.
         bool SoloLootCreature(Creature* creature);
+        // Open a chest without the client Opening spell: fill loot, take it, release.
+        bool SoloLootGameObject(GameObject* go);
         bool SoloTakeLoot(Loot& loot);
         void SetAmmo(uint32 item);
         void RemoveAmmo();

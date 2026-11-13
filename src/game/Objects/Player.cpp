@@ -20556,6 +20556,41 @@ bool Player::SoloLootCreature(Creature* creature)
     return all;
 }
 
+bool Player::SoloLootGameObject(GameObject* go)
+{
+    if (!go || !go->isSpawned() || go->GetGoType() != GAMEOBJECT_TYPE_CHEST)
+        return true;
+
+    // Same path as Spell::SendLoot for a chest: scripts first, then the loot window.
+    go->Use(this);
+
+    Loot& loot = go->loot;
+    if (go->getLootState() == GO_READY)
+    {
+        uint32 const lootId = go->GetGOInfo()->GetLootId();
+        if (lootId)
+        {
+            loot.clear();
+            loot.FillLoot(lootId, LootTemplates_Gameobject, this, true, false);
+            loot.GenerateMoneyLoot(go->GetGOInfo()->MinMoneyLoot, go->GetGOInfo()->MaxMoneyLoot);
+            if (go->GetInstanceId())
+                go->GetMap()->BindToInstanceOrRaid(this, go->GetRespawnTimeEx(), false);
+        }
+        go->SetLootState(GO_ACTIVATED);
+    }
+    else if (go->getLootState() == GO_ACTIVATED)
+        loot.FillNotNormalLootFor(this);
+
+    go->SetGoState(GO_STATE_ACTIVE);
+
+    bool const all = SoloTakeLoot(loot);
+
+    // DoLootRelease despawns a fully emptied chest and keeps a partial one open.
+    SetLootGuid(go->GetObjectGuid());
+    GetSession()->DoLootRelease(go->GetObjectGuid());
+    return all;
+}
+
 bool Player::SoloTakeLoot(Loot& loot)
 {
     bool all = true;
