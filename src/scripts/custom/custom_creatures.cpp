@@ -954,7 +954,7 @@ void CompleteLearnProfession(Player *pPlayer, Creature *pCreature, SkillType ski
 {
     if (pPlayer->GetFreePrimaryProfessionPoints() == 0 && !(skill == SKILL_COOKING || skill == SKILL_FIRST_AID || skill == SKILL_FISHING))
     {
-        pPlayer->GetSession()->SendNotification("You already know two primary professions.");
+        pPlayer->GetSession()->SendNotification("You already know the maximum number of primary professions.");
     }
     else
     {
