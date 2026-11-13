@@ -2890,7 +2890,10 @@ SpellCastResult CombatBotBaseAI::DoCastSpell(Unit* pTarget, SpellEntry const* pS
             if (pQueued->m_spellInfo->Id == pSpellEntry->Id)
                 return SPELL_FAILED_DONT_REPORT;
 
-    if (me != pTarget)
+    // A person's own character: only turn when the target is well outside the front cone.
+    // Forcing a face every cast fights the player's mouse look (right-drag turns the body;
+    // the next AI tick then snaps it back onto the mob).
+    if (me != pTarget && (!m_ownCharacter || !me->HasInArc(pTarget, 2.0f * M_PI_F / 3.0f)))
         me->SetFacingToObject(pTarget);
 
     if (me->IsMounted())

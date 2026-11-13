@@ -3,14 +3,16 @@
 
 #include "PartyBotAI.h"
 
-// Soloroth: the player's own character grinding or fishing around where it was started
-// (`.solo grind`, `.solo fish`). The server drives the body with splines, as it does for
-// Charge or fear; the class rotations are the party bots'.
+// Soloroth: the player's own character farming around where it was started
+// (`.solo grind` / `fish` / `gather` / `all`). The server drives the body with splines, as it
+// does for Charge or fear; the class rotations are the party bots'.
 
 enum SoloFarmMode : uint8
 {
     SOLO_FARM_GRIND,
     SOLO_FARM_FISH,
+    SOLO_FARM_GATHER,
+    SOLO_FARM_ALL,
 };
 
 enum SoloFarmStop : uint8
@@ -44,6 +46,7 @@ public:
 
     SoloFarmMode GetMode() const { return m_mode; }
     float GetRadius() const { return m_radius; }
+    char const* ModeWire() const;
 
 private:
     void Stop(SoloFarmStop reason);
@@ -60,6 +63,10 @@ private:
     void Blacklist(ObjectGuid guid, uint32 ms);
     bool IsBlacklisted(ObjectGuid guid) const;
 
+    bool DoesGrind() const { return m_mode == SOLO_FARM_GRIND || m_mode == SOLO_FARM_ALL; }
+    bool DoesFish() const { return m_mode == SOLO_FARM_FISH || m_mode == SOLO_FARM_ALL; }
+    bool DoesGather() const { return m_mode == SOLO_FARM_GATHER || m_mode == SOLO_FARM_ALL; }
+
     void UpdateGrind();
     Creature* FindTarget();
     void Wander();
@@ -71,6 +78,13 @@ private:
     bool IsFishable(float px, float py, float pz, float fx, float fy) const;
     uint32 ScoreCast(float px, float py, float pz, float o) const;
     void Reel(GameObject* pBobber);
+
+    bool UpdateGather();
+    bool TakeOpenLoot();
+    Creature* FindSkinnable();
+    GameObject* FindGatherNode();
+    uint32 GatherLockType(GameObject const* pGo) const;
+    bool HasTool(uint32 itemId) const;
 
     SoloFarmMode m_mode;
     float m_radius;
@@ -106,6 +120,14 @@ private:
     uint32 m_casts = 0;
     uint32 m_reelAt = 0;
     std::vector<std::pair<float, float>> m_badSpots;
+
+    // Gathering (herb / mine / skin).
+    uint32 m_herbSpell = 0;
+    uint32 m_mineSpell = 0;
+    uint32 m_skinSpell = 0;
+    ObjectGuid m_gatherGuid;
+    uint32 m_gatherSpell = 0;
+    uint32 m_gatherFails = 0;
 };
 
 #endif

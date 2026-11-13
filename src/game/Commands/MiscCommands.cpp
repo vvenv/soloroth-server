@@ -2006,7 +2006,7 @@ bool ChatHandler::HandleSoloAutoLootCommand(char* args)
     return true;
 }
 
-// `.solo grind [yards]`, `.solo fish [yards]`: around where the character stands now.
+// `.solo grind|fish|gather|all [yards]`: around where the character stands now.
 static bool SoloFarmStart(WorldSession* session, char const* args, SoloFarmMode mode)
 {
     Player* pPlayer = session ? session->GetPlayer() : nullptr;
@@ -2032,6 +2032,16 @@ bool ChatHandler::HandleSoloFishCommand(char* args)
     return SoloFarmStart(m_session, args, SOLO_FARM_FISH);
 }
 
+bool ChatHandler::HandleSoloGatherCommand(char* args)
+{
+    return SoloFarmStart(m_session, args, SOLO_FARM_GATHER);
+}
+
+bool ChatHandler::HandleSoloAllCommand(char* args)
+{
+    return SoloFarmStart(m_session, args, SOLO_FARM_ALL);
+}
+
 bool ChatHandler::HandleSoloStopCommand(char* /*args*/)
 {
     Player* pPlayer = m_session ? m_session->GetPlayer() : nullptr;
@@ -2053,7 +2063,7 @@ bool ChatHandler::HandleSoloFarmCommand(char* /*args*/)
         return false;
 
     if (SoloFarmAI* pAI = SoloFarmAI::Of(pPlayer))
-        PSendSysMessage("[solo] farm=%s %u", pAI->GetMode() == SOLO_FARM_FISH ? "fish" : "grind", uint32(pAI->GetRadius()));
+        PSendSysMessage("[solo] farm=%s %u", pAI->ModeWire(), uint32(pAI->GetRadius()));
     else
         SendSysMessage("[solo] farm=off");
     return true;

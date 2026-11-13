@@ -27,6 +27,11 @@ namespace
 {
     // Fishing from Artisan down to Apprentice.
     uint32 const FISHING_SPELLS[] = { 18248, 7732, 7731, 7620 };
+    uint32 const HERB_SPELLS[] = { 11993, 3570, 2368, 2366 };
+    uint32 const MINE_SPELLS[] = { 10248, 3564, 2576, 2575 };
+    uint32 const SKIN_SPELLS[] = { 10768, 8618, 8617, 8613 };
+    uint32 const ITEM_MINING_PICK = 2901;
+    uint32 const ITEM_SKINNING_KNIFE = 7005;
 
     uint32 const TICK_MS = 250;
     uint32 const SEARCH_MS = 1000;
@@ -56,6 +61,14 @@ namespace
     {
         int const index = pPlayer->GetSession()->GetSessionDbLocaleIndex();
         return index >= 0 && sObjectMgr.GetLocaleForIndex(index) == LOCALE_zhCN;
+    }
+
+    uint32 BestKnownSpell(Player const* pPlayer, uint32 const* spells, size_t n)
+    {
+        for (size_t i = 0; i < n; ++i)
+            if (pPlayer->HasSpell(spells[i]))
+                return spells[i];
+        return 0;
     }
 
     template <class F>
@@ -129,6 +142,21 @@ SoloFarmAI::SoloFarmAI(Player* pPlayer, SoloFarmMode mode, float radius)
             break;
         }
     }
+
+    m_herbSpell = BestKnownSpell(pPlayer, HERB_SPELLS, sizeof(HERB_SPELLS) / sizeof(HERB_SPELLS[0]));
+    m_mineSpell = BestKnownSpell(pPlayer, MINE_SPELLS, sizeof(MINE_SPELLS) / sizeof(MINE_SPELLS[0]));
+    m_skinSpell = BestKnownSpell(pPlayer, SKIN_SPELLS, sizeof(SKIN_SPELLS) / sizeof(SKIN_SPELLS[0]));
+}
+
+char const* SoloFarmAI::ModeWire() const
+{
+    switch (m_mode)
+    {
+        case SOLO_FARM_FISH: return "fish";
+        case SOLO_FARM_GATHER: return "gather";
+        case SOLO_FARM_ALL: return "all";
+        default: return "grind";
+    }
 }
 
 SoloFarmAI::~SoloFarmAI()
@@ -185,17 +213,46 @@ bool SoloFarmAI::Start(Player* pPlayer, SoloFarmMode mode, float radius)
         }
     }
 
+    if (mode == SOLO_FARM_GATHER)
+    {
+        bool const herb = BestKnownSpell(pPlayer, HERB_SPELLS, sizeof(HERB_SPELLS) / sizeof(HERB_SPELLS[0]));
+        bool const mine = BestKnownSpell(pPlayer, MINE_SPELLS, sizeof(MINE_SPELLS) / sizeof(MINE_SPELLS[0]));
+        bool const skin = BestKnownSpell(pPlayer, SKIN_SPELLS, sizeof(SKIN_SPELLS) / sizeof(SKIN_SPELLS[0]));
+        if (!herb && !mine && !skin)
+        {
+            chat.SendSysMessage(zh ? "还没学采药、挖矿或剥皮：先找对应的训练师。"
+                                   : "You have not learned Herbalism, Mining or Skinning yet.");
+            return false;
+        }
+    }
+
     pPlayer->SetAI(new SoloFarmAI(pPlayer, mode, radius));
 
-    chat.PSendSysMessage("[solo] farm=%s %u", mode == SOLO_FARM_FISH ? "fish" : "grind", uint32(radius));
-    if (mode == SOLO_FARM_FISH)
-        chat.PSendSysMessage(zh ? "开始自动钓鱼：在这里 %u 码内找鱼群或水面，自动下钩、收竿、拾取。输入 .solo stop，或在角色站定时按移动键即可停止。"
-                                : "Auto fishing within %u yards of here: finds a school or open water, casts, reels in and loots. Type .solo stop, or press a movement key while standing, to stop.",
-            uint32(radius));
-    else
-        chat.PSendSysMessage(zh ? "开始自动打怪：以这里为中心 %u 码内游荡、找怪、战斗、拾取，血蓝低了会吃喝休息。输入 .solo stop，或在角色站定时按移动键即可停止。"
-                                : "Auto grinding within %u yards of here: wanders, picks fights, loots, and eats or drinks when low. Type .solo stop, or press a movement key while standing, to stop.",
-            uint32(radius));
+    SoloFarmAI* pAI = Of(pPlayer);
+    chat.PSendSysMessage("[solo] farm=%s %u", pAI ? pAI->ModeWire() : "grind", uint32(radius));
+    switch (mode)
+    {
+        case SOLO_FARM_FISH:
+            chat.PSendSysMessage(zh ? "开始自动钓鱼：在这里 %u 码内找鱼群或水面，自动下钩、收竿、拾取。输入 .solo stop，或在角色站定时按移动键即可停止。"
+                                    : "Auto fishing within %u yards of here: finds a school or open water, casts, reels in and loots. Type .solo stop, or press a movement key while standing, to stop.",
+                uint32(radius));
+            break;
+        case SOLO_FARM_GATHER:
+            chat.PSendSysMessage(zh ? "开始自动采集：在这里 %u 码内采药、挖矿、剥皮（有技能和工具才做）。输入 .solo stop，或在角色站定时按移动键即可停止。"
+                                    : "Auto gathering within %u yards of here: herbs, ore and skinning (only with the skill and tools). Type .solo stop, or press a movement key while standing, to stop.",
+                uint32(radius));
+            break;
+        case SOLO_FARM_ALL:
+            chat.PSendSysMessage(zh ? "开始自动挂机：在这里 %u 码内能打就打、能采就采、能钓就钓（有技能才做）。输入 .solo stop，或在角色站定时按移动键即可停止。"
+                                    : "Auto farming within %u yards of here: fights, gathers and fishes when you can. Type .solo stop, or press a movement key while standing, to stop.",
+                uint32(radius));
+            break;
+        default:
+            chat.PSendSysMessage(zh ? "开始自动打怪：以这里为中心 %u 码内游荡、找怪、战斗、拾取，血蓝低了会吃喝休息。输入 .solo stop，或在角色站定时按移动键即可停止。"
+                                    : "Auto grinding within %u yards of here: wanders, picks fights, loots, and eats or drinks when low. Type .solo stop, or press a movement key while standing, to stop.",
+                uint32(radius));
+            break;
+    }
     return true;
 }
 
@@ -230,8 +287,10 @@ void SoloFarmAI::Stop(SoloFarmStop reason)
 
     if (me->IsInWorld())
     {
-        if (m_mode == SOLO_FARM_FISH && me->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
+        if (DoesFish() && me->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
             me->InterruptSpell(CURRENT_CHANNELED_SPELL);
+        if (me->IsNonMeleeSpellCasted(false))
+            me->InterruptSpell(CURRENT_GENERIC_SPELL);
         if (me->IsAlive())
             RestoreWeapons();
 
@@ -256,7 +315,14 @@ void SoloFarmAI::Stop(SoloFarmStop reason)
         ChatHandler(me).SendSysMessage("[solo] farm=off");
 
         bool const zh = IsZh(me);
-        char const* what = m_mode == SOLO_FARM_FISH ? (zh ? "钓鱼" : "fishing") : (zh ? "打怪" : "grinding");
+        char const* what = zh ? "挂机" : "farming";
+        switch (m_mode)
+        {
+            case SOLO_FARM_FISH: what = zh ? "钓鱼" : "fishing"; break;
+            case SOLO_FARM_GATHER: what = zh ? "采集" : "gathering"; break;
+            case SOLO_FARM_GRIND: what = zh ? "打怪" : "grinding"; break;
+            default: break;
+        }
         char line[256] = {};
         switch (reason)
         {
@@ -341,25 +407,52 @@ void SoloFarmAI::UpdateAI(uint32 const diff)
     if (me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) && !me->GetVictim())
         me->InterruptSpell(CURRENT_AUTOREPEAT_SPELL, true);
 
+    Pet* pPet = me->GetPet();
+    bool const attacked = !me->GetAttackers().empty() || (pPet && !pPet->GetAttackers().empty());
+    if (attacked || me->GetVictim())
+    {
+        if (DoesFish() && me->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
+            me->InterruptSpell(CURRENT_CHANNELED_SPELL);
+        if (DoesFish())
+            RestoreWeapons();
+        if (UpdateCombat())
+            return;
+    }
+
     if (m_mode == SOLO_FARM_FISH)
     {
-        Pet* pPet = me->GetPet();
-        bool const attacked = !me->GetAttackers().empty() || (pPet && !pPet->GetAttackers().empty());
-        if (attacked || me->GetVictim())
-        {
-            if (me->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
-                me->InterruptSpell(CURRENT_CHANNELED_SPELL);
-            RestoreWeapons();
-            if (UpdateCombat())
-                return;
-        }
         UpdateFishing();
         return;
     }
 
     if (UpdateCombat())
         return;
-    UpdateGrind();
+
+    if (DoesGather() && UpdateGather())
+        return;
+
+    // In ALL mode only stick to a fishing school (not open water), so grinding still happens.
+    if (m_mode == SOLO_FARM_ALL && m_fishingSpell &&
+        (me->GetCurrentSpell(CURRENT_CHANNELED_SPELL) || (m_hasSpot && !m_spotHole.IsEmpty())))
+    {
+        UpdateFishing();
+        return;
+    }
+    if (m_mode == SOLO_FARM_ALL && m_hasSpot && m_spotHole.IsEmpty())
+        m_hasSpot = false;
+
+    if (DoesGrind())
+    {
+        UpdateGrind();
+        // Between pulls, pick up a school if one is in range.
+        if (m_mode == SOLO_FARM_ALL && m_fishingSpell && m_pullGuid.IsEmpty() && !m_resting &&
+            m_now >= m_nextSearch && FindFishingSpot() && m_spotHole.IsEmpty())
+            m_hasSpot = false;
+        return;
+    }
+
+    if (DoesGather())
+        Wander();
 }
 
 // ------------------------------------------------------------------ combat --
@@ -714,6 +807,258 @@ void SoloFarmAI::Wander()
 
 // ------------------------------------------------------------------ fishing --
 
+bool SoloFarmAI::HasTool(uint32 itemId) const
+{
+    return me->HasItemCount(itemId, 1, false);
+}
+
+uint32 SoloFarmAI::GatherLockType(GameObject const* pGo) const
+{
+    if (!pGo || pGo->GetGoType() != GAMEOBJECT_TYPE_CHEST)
+        return 0;
+    LockEntry const* pLock = sLockStore.LookupEntry(pGo->GetGOInfo()->GetLockId());
+    if (!pLock)
+        return 0;
+    for (int i = 0; i < MAX_LOCK_CASE; ++i)
+    {
+        if (pLock->Type[i] != LOCK_KEY_SKILL)
+            continue;
+        uint32 const lockType = pLock->Index[i];
+        if (lockType != LOCKTYPE_HERBALISM && lockType != LOCKTYPE_MINING)
+            continue;
+        SkillType const skill = SkillByLockType(LockType(lockType));
+        if (me->GetSkillValue(skill) < int32(pLock->Skill[i]))
+            continue;
+        if (lockType == LOCKTYPE_MINING && !m_mineSpell)
+            continue;
+        if (lockType == LOCKTYPE_HERBALISM && !m_herbSpell)
+            continue;
+        if (lockType == LOCKTYPE_MINING && !HasTool(ITEM_MINING_PICK))
+            continue;
+        return lockType;
+    }
+    return 0;
+}
+
+bool SoloFarmAI::TakeOpenLoot()
+{
+    ObjectGuid const lootGuid = me->GetLootGuid();
+    if (lootGuid.IsEmpty())
+        return false;
+
+    bool all = true;
+    if (lootGuid.IsGameObject())
+    {
+        if (GameObject* pGo = me->GetMap()->GetGameObject(lootGuid))
+            all = me->SoloTakeLoot(pGo->loot);
+    }
+    else if (lootGuid.IsCreature())
+    {
+        if (Creature* pCreature = me->GetMap()->GetCreature(lootGuid))
+            all = me->SoloTakeLoot(pCreature->loot);
+    }
+    me->GetSession()->DoLootRelease(lootGuid);
+    m_gatherGuid.Clear();
+    m_gatherSpell = 0;
+    m_gatherFails = 0;
+    if (!all)
+        Stop(SOLO_STOP_BAGS_FULL);
+    return true;
+}
+
+Creature* SoloFarmAI::FindSkinnable()
+{
+    if (!m_skinSpell || !HasTool(ITEM_SKINNING_KNIFE))
+        return nullptr;
+
+    std::list<Creature*> corpses;
+    struct Check
+    {
+        Player* me;
+        float x, y, range;
+        bool operator()(Creature* pCreature) const
+        {
+            return !pCreature->IsAlive() &&
+                pCreature->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_SKINNABLE) &&
+                pCreature->IsSkinnableBy(me) &&
+                pCreature->GetCreatureType() != CREATURE_TYPE_CRITTER &&
+                (pCreature->lootForSkin || pCreature->loot.isLooted()) &&
+                pCreature->GetDistance2d(x, y) <= range &&
+                me->IsWithinDistInMap(pCreature, range + 5.0f);
+        }
+    };
+    Check check{ me, m_x, m_y, m_radius };
+    MaNGOS::CreatureListSearcher<Check> searcher(corpses, check);
+    Cell::VisitGridObjects(m_x, m_y, me->GetMap(), searcher, m_radius);
+
+    Creature* pBest = nullptr;
+    float best = 0.0f;
+    for (Creature* pCreature : corpses)
+    {
+        if (IsBlacklisted(pCreature->GetObjectGuid()))
+            continue;
+        int32 const req = me->GetSkillValue(SKILL_SKINNING) < 100
+            ? (int32(pCreature->GetLevel()) - 10) * 10
+            : int32(pCreature->GetLevel()) * 5;
+        if (req > me->GetSkillValue(SKILL_SKINNING))
+            continue;
+        float const d = me->GetDistance(pCreature);
+        if (!pBest || d < best)
+        {
+            pBest = pCreature;
+            best = d;
+        }
+    }
+    return pBest;
+}
+
+GameObject* SoloFarmAI::FindGatherNode()
+{
+    if (!m_herbSpell && !m_mineSpell)
+        return nullptr;
+
+    std::list<GameObject*> objects;
+    struct Check
+    {
+        float x, y, range;
+        bool operator()(GameObject* pGo) const
+        {
+            return pGo->isSpawned() && !pGo->HasFlag(GAMEOBJECT_FLAGS, GO_FLAG_IN_USE) &&
+                pGo->GetGoType() == GAMEOBJECT_TYPE_CHEST &&
+                pGo->GetDistance2d(x, y) <= range;
+        }
+    };
+    Check check{ m_x, m_y, m_radius };
+    MaNGOS::GameObjectListSearcher<Check> searcher(objects, check);
+    Cell::VisitGridObjects(m_x, m_y, me->GetMap(), searcher, m_radius);
+
+    GameObject* pBest = nullptr;
+    float best = 0.0f;
+    for (GameObject* pGo : objects)
+    {
+        if (IsBlacklisted(pGo->GetObjectGuid()) || !GatherLockType(pGo))
+            continue;
+        float const d = me->GetDistance(pGo);
+        if (!pBest || d < best)
+        {
+            pBest = pGo;
+            best = d;
+        }
+    }
+    return pBest;
+}
+
+bool SoloFarmAI::UpdateGather()
+{
+    if (TakeOpenLoot())
+        return true;
+
+    if (me->IsNonMeleeSpellCasted(false))
+        return true;
+
+    if (me->IsInCombat())
+        return false;
+
+    if (!LootCorpses() || FreeBagSlots() == 0)
+    {
+        Stop(SOLO_STOP_BAGS_FULL);
+        return true;
+    }
+
+    if (Rest())
+        return true;
+
+    // Finish a gather we already walked to.
+    if (!m_gatherGuid.IsEmpty() && m_gatherSpell)
+    {
+        if (m_gatherGuid.IsCreature())
+        {
+            Creature* pCorpse = me->GetMap()->GetCreature(m_gatherGuid);
+            if (!pCorpse || !pCorpse->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_SKINNABLE))
+            {
+                m_gatherGuid.Clear();
+                m_gatherSpell = 0;
+            }
+            else if (!me->IsWithinDistInMap(pCorpse, INTERACTION_DISTANCE + 1.0f))
+            {
+                if (!me->IsMoving())
+                    me->GetMotionMaster()->MovePoint(0, pCorpse->GetPositionX(), pCorpse->GetPositionY(),
+                        pCorpse->GetPositionZ(), MOVE_PATHFINDING | MOVE_EXCLUDE_STEEP_SLOPES);
+                return true;
+            }
+            else
+            {
+                me->SetFacingToObject(pCorpse);
+                if (me->CastSpell(pCorpse, m_gatherSpell, false) == SPELL_CAST_OK)
+                {
+                    m_gatherFails = 0;
+                    return true;
+                }
+                if (++m_gatherFails >= 3)
+                {
+                    Blacklist(m_gatherGuid, BLACKLIST_MS);
+                    m_gatherGuid.Clear();
+                    m_gatherSpell = 0;
+                    m_gatherFails = 0;
+                }
+                return true;
+            }
+        }
+        else if (m_gatherGuid.IsGameObject())
+        {
+            GameObject* pGo = me->GetMap()->GetGameObject(m_gatherGuid);
+            if (!pGo || !pGo->isSpawned() || !GatherLockType(pGo))
+            {
+                m_gatherGuid.Clear();
+                m_gatherSpell = 0;
+            }
+            else
+            {
+                float const reach = pGo->GetGOInfo()->GetInteractionDistance() + 1.0f;
+                if (!me->IsWithinDistInMap(pGo, reach))
+                {
+                    if (!me->IsMoving())
+                        me->GetMotionMaster()->MovePoint(0, pGo->GetPositionX(), pGo->GetPositionY(),
+                            pGo->GetPositionZ(), MOVE_PATHFINDING | MOVE_EXCLUDE_STEEP_SLOPES);
+                    return true;
+                }
+                me->SetFacingToObject(pGo);
+                if (me->CastSpell(pGo, m_gatherSpell, false) == SPELL_CAST_OK)
+                {
+                    m_gatherFails = 0;
+                    return true;
+                }
+                if (++m_gatherFails >= 3)
+                {
+                    Blacklist(m_gatherGuid, BLACKLIST_MS);
+                    m_gatherGuid.Clear();
+                    m_gatherSpell = 0;
+                    m_gatherFails = 0;
+                }
+                return true;
+            }
+        }
+    }
+
+    if (Creature* pCorpse = FindSkinnable())
+    {
+        m_gatherGuid = pCorpse->GetObjectGuid();
+        m_gatherSpell = m_skinSpell;
+        m_gatherFails = 0;
+        return true;
+    }
+
+    if (GameObject* pNode = FindGatherNode())
+    {
+        m_gatherGuid = pNode->GetObjectGuid();
+        m_gatherSpell = GatherLockType(pNode) == LOCKTYPE_MINING ? m_mineSpell : m_herbSpell;
+        m_gatherFails = 0;
+        return true;
+    }
+
+    return false;
+}
+
 void SoloFarmAI::UpdateFishing()
 {
     if (!LootCorpses() || FreeBagSlots() == 0)
@@ -748,7 +1093,10 @@ void SoloFarmAI::UpdateFishing()
 
     if (!EnsurePole())
     {
-        Stop(SOLO_STOP_NO_POLE);
+        if (m_mode == SOLO_FARM_FISH)
+            Stop(SOLO_STOP_NO_POLE);
+        else
+            m_hasSpot = false;
         return;
     }
 
@@ -768,7 +1116,8 @@ void SoloFarmAI::UpdateFishing()
 
     if (!m_hasSpot && !FindFishingSpot())
     {
-        Stop(SOLO_STOP_NO_WATER);
+        if (m_mode == SOLO_FARM_FISH)
+            Stop(SOLO_STOP_NO_WATER);
         return;
     }
 

@@ -305,6 +305,8 @@ class ChatHandler
         bool HandleSoloAutoLootCommand(char* args);
         bool HandleSoloGrindCommand(char* args);
         bool HandleSoloFishCommand(char* args);
+        bool HandleSoloGatherCommand(char* args);
+        bool HandleSoloAllCommand(char* args);
         bool HandleSoloStopCommand(char* args);
         bool HandleSoloFarmCommand(char* args);
         bool HandleAchievementCommand(char* args);
