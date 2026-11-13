@@ -17,6 +17,7 @@
 
 set (game_SRCS
     AccountMgr.cpp
+    AchievementMgr.cpp
     AuraRemovalMgr.cpp
     AutoBroadCastMgr.cpp
     Camera.cpp
@@ -251,6 +252,7 @@ set (game_SRCS
     vmap/WorldModel.cpp
     AccountData.h
     AccountMgr.h
+    AchievementMgr.h
     AuraRemovalMgr.h
     AutoBroadCastMgr.h
     Camera.h

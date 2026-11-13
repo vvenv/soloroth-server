@@ -75,6 +75,7 @@
 #include "PlayerBotMgr.h"
 #include "PlayerBotAI.h"
 #include "AccountMgr.h"
+#include "AchievementMgr.h"
 #include "Anticheat.h"
 #include "MovementBroadcaster.h"
 #include "PlayerBroadcaster.h"
@@ -3212,6 +3213,8 @@ void Player::GiveLevel(uint32 level)
     // update level to hunter/summon pet
     if (Pet* pet = GetPet())
         pet->SynchronizeLevelWithOwner();
+
+    sAchievementMgr.OnLevelUp(this);
 }
 
 void Player::UpdateFreeTalentPoints(bool resetIfNeed)
@@ -4481,6 +4484,7 @@ void Player::DeleteFromDB(ObjectGuid playerGuid, uint32 accountId, bool updateRe
             CharacterDatabase.PExecute("DELETE FROM `mail_items` WHERE `receiver_guid` = '%u'", lowGuid);
             CharacterDatabase.PExecute("DELETE FROM `character_pet` WHERE `owner_guid` = '%u'", lowGuid);
             CharacterDatabase.PExecute("DELETE FROM `guild_eventlog` WHERE `player_guid1` = '%u' OR `player_guid2` = '%u'", lowGuid, lowGuid);
+            AchievementMgr::DeleteCharacter(lowGuid);
             sTicketMgr->RemovePlayerReferences(playerGuid);
             CharacterDatabase.CommitTransaction();
             break;
@@ -6175,6 +6179,7 @@ void Player::CheckAreaExploreAndOutdoor()
         else
         {
             GetCheatData()->OnExplore(p);
+            sAchievementMgr.OnAreaExplored(this, p->Id);
             uint32 area = p->Id;
             uint32 xp = 0;
             if (p->AreaLevel > 0 && GetLevel() < sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL))
@@ -13186,6 +13191,8 @@ void Player::RewardQuest(Quest const* pQuest, uint32 reward, WorldObject* questE
 
     if (announce)
         SendQuestReward(pQuest, xp);
+
+    sAchievementMgr.OnQuestRewarded(this, pQuest);
 
     bool handled = false;
 

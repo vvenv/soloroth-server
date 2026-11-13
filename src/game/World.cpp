@@ -66,6 +66,7 @@
 #include "CharacterDatabaseCleaner.h"
 #include "LFGMgr.h"
 #include "AutoBroadCastMgr.h"
+#include "AchievementMgr.h"
 #include "AuctionHouseBotMgr.h"
 #include "Transports/TransportMgr.h"
 #include "PlayerBotMgr.h"
@@ -1840,6 +1841,9 @@ void World::SetInitialWorldSettings()
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Loading auto broadcast");
     sAutoBroadCastMgr.Load();
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Loading achievements");
+    sAchievementMgr.Load();
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Loading AH bot");
     sAuctionHouseBotMgr.Load();

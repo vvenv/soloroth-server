@@ -43,6 +43,7 @@
 #include "PlayerBotMgr.h"
 #include "MapManager.h"
 #include "AccountMgr.h"
+#include "AchievementMgr.h"
 
 class LoginQueryHolder : public SqlQueryHolder
 {
@@ -683,6 +684,8 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder *holder)
 
     if (!alreadyOnline && !pCurrChar->IsStandingUp() && !pCurrChar->HasUnitState(UNIT_STATE_STUNNED))
         pCurrChar->SetStandState(UNIT_STAND_STATE_STAND);
+
+    sAchievementMgr.OnLogin(pCurrChar);
 
     m_playerLoading = false;
     delete holder;

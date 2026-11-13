@@ -42,6 +42,7 @@
 #include "Chat.h"
 #include "MasterPlayer.h"
 #include "PlayerBroadcaster.h"
+#include "AchievementMgr.h"
 #include "Crypto/Hash/MD5.h"
 
 #include <limits>
@@ -757,6 +758,7 @@ void WorldSession::LogoutPlayer(bool Save)
         }
 
         sBattleGroundMgr.PlayerLoggedOut(_player);
+        sAchievementMgr.OnLogout(_player);
 
         // Reset the online field in the account table
         // no point resetting online in character table here as Player::SaveToDB() will set it to 1 since player has not been removed from world at this stage

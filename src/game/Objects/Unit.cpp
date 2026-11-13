@@ -59,6 +59,7 @@
 #include "MovementPacketSender.h"
 #include "Errors.h"
 #include "Utilities/Random.h"
+#include "AchievementMgr.h"
 
 #include <limits>
 
@@ -1095,6 +1096,9 @@ void Unit::Kill(Unit* pVictim, SpellEntry const* spellProto, bool durabilityLoss
             pGroupTap->RewardGroupAtKill(pVictim, pPlayerTap);
         else if (pPlayerTap)
             pPlayerTap->RewardSinglePlayerAtKill(pVictim);
+
+        if (pCreatureVictim)
+            sAchievementMgr.OnCreatureKilled(pCreatureVictim, pPlayerTap, pGroupTap);
     }
     if (pPlayerVictim)
         pPlayerVictim->RewardHonorOnDeath();

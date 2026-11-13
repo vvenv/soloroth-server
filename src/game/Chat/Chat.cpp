@@ -126,6 +126,16 @@ ChatCommand * ChatHandler::getCommandTable()
         { nullptr,      0,                      false, nullptr,                                        "", nullptr },
     };
 
+    static ChatCommand achievementCommandTable[] =
+    {
+        { "sync",       SEC_PLAYER,             false, &ChatHandler::HandleAchievementSyncCommand,     "", nullptr },
+        { "add",        SEC_GAMEMASTER,         false, &ChatHandler::HandleAchievementAddCommand,      "", nullptr },
+        { "remove",     SEC_GAMEMASTER,         false, &ChatHandler::HandleAchievementRemoveCommand,   "", nullptr },
+        { "reset",      SEC_GAMEMASTER,         false, &ChatHandler::HandleAchievementResetCommand,    "", nullptr },
+        { "",           SEC_PLAYER,             false, &ChatHandler::HandleAchievementCommand,         "", nullptr },
+        { nullptr,      0,                      false, nullptr,                                        "", nullptr },
+    };
+
     static ChatCommand battleBotAddCommandTable[] =
     {
         { "alterac",    SEC_ADMINISTRATOR,      true, &ChatHandler::HandleBattleBotAddAlteracCommand, "", nullptr },
@@ -1232,6 +1242,7 @@ ChatCommand * ChatHandler::getCommandTable()
         { "ahbot",          SEC_ADMINISTRATOR,  true, nullptr,                            "Manage AH bot", ahbotCommandTable    },
         { "partybot",       SEC_PLAYER,         false, nullptr,                       "Manage party bots", partyBotCommandTable },
         { "bots",           SEC_PLAYER,         false, nullptr,                       "Bot party members: role, auto fill in dungeons", botsCommandTable },
+        { "achievement",    SEC_PLAYER,         false, nullptr,                       "Achievements: summary, sync for the addon", achievementCommandTable },
         { "battlebot",      SEC_ADMINISTRATOR,  true, nullptr,                      "Manage battle bots", battleBotCommandTable},
         { "world",          SEC_ADMINISTRATOR,  false, nullptr,                                        "", worldCommandTable    },
         { "possess",        SEC_GAMEMASTER,     false, &ChatHandler::HandlePossessCommand,             "", nullptr              },
