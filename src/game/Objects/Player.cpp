@@ -111,10 +111,13 @@ static uint32 copseReclaimDelay[MAX_DEATH_COUNT] = { 30, 60, 120 };
 Player::Player(WorldSession* session) : Unit(),
     m_mover(this), m_camera(this), m_reputationMgr(this), m_saveDisabled(false), m_enableInstanceSwitch(true),
     m_currentTicketCounter(0), m_repopAtGraveyardPending(false), m_knownLanguagesMask(0),
-    m_honorMgr(this), m_personalXpRate(-1.0f), m_isStandUpScheduled(false), m_soloAutoLootOnKill(true)
+    m_honorMgr(this), m_personalXpRate(-1.0f), m_isStandUpScheduled(false),
+    m_soloAutoLootOnKill(true), m_soloMoveSpeed(2.0f)
 {
     m_objectType |= TYPEMASK_PLAYER;
     m_objectTypeId = TYPEID_PLAYER;
+    // Create-object packets read GetSpeed before any UpdateSpeed; match the default.
+    SetSpeedRateReal(MOVE_RUN, m_soloMoveSpeed);
 
     m_valuesCount = PLAYER_END;
 

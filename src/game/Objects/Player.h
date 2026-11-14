@@ -955,6 +955,9 @@ class Player final: public Unit
         bool IsSoloAutoLootOnKill() const { return m_soloAutoLootOnKill; }
         void SetSoloAutoLootOnKill(bool on) { m_soloAutoLootOnKill = on; }
         void SoloAutoLootCreature(Creature* creature);
+        // Soloroth: run-speed multiplier (`.modify speed`); default 2× for solo travel.
+        float GetSoloMoveSpeed() const { return m_soloMoveSpeed; }
+        void SetSoloMoveSpeed(float rate) { m_soloMoveSpeed = rate; }
         // The same take-everything, whatever the option; false when something did not fit.
         bool SoloLootCreature(Creature* creature);
         // Open a chest without the client Opening spell: fill loot, take it, release.
@@ -2021,6 +2024,8 @@ class Player final: public Unit
         bool m_isStandUpScheduled;
         // Soloroth: kill auto-loot (Solo addon / `.solo autoloot`). Default on.
         bool m_soloAutoLootOnKill;
+        // Soloroth: run speed vs stock; baked into UpdateSpeed so aura refreshes keep it.
+        float m_soloMoveSpeed;
         uint32 m_detectInvisibilityTimer;
         uint32 m_ExtraFlags;
         ObjectGuid m_curSelectionGuid;

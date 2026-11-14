@@ -4582,7 +4582,9 @@ bool ChatHandler::HandleModifySpeedCommand(char* args)
     if (needReportToTarget(chr))
         chr->PSendSysMessage(LANG_YOURS_SPEED_CHANGED, GetNameLink().c_str(), modSpeed);
 
-    chr->UpdateSpeed(MOVE_RUN, false, modSpeed);
+    // Soloroth: store on the player so the next aura-driven UpdateSpeed keeps it.
+    chr->SetSoloMoveSpeed(modSpeed);
+    chr->UpdateSpeed(MOVE_RUN, false);
 
     return true;
 }
