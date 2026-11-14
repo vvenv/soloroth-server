@@ -762,7 +762,9 @@ void WorldSession::HandleAreaTriggerOpcode(WorldPackets::Misc::AreaTrigger const
         //   exploitive behavior.The minimum levels are very generous and should
         //   not affect the normal course of gameplay.
         bool const bLevelCheck = pPlayer->GetLevel() < pTeleTrigger->requiredLevel && !sWorld.getConfig(CONFIG_BOOL_INSTANCE_IGNORE_LEVEL) && sWorld.GetWowPatch() >= WOW_PATCH_104;
-        bool const bConditionCheck = pTeleTrigger->requiredCondition && !IsConditionSatisfied(pTeleTrigger->requiredCondition, pPlayer, pPlayer->GetMap(), pPlayer, CONDITION_FROM_AREATRIGGER);
+        // No-quest mode: dungeon keys and attunements (Onyxia, MC, Naxx, …) do not apply.
+        bool const bConditionCheck = !pPlayer->IsNoQuest() && pTeleTrigger->requiredCondition &&
+            !IsConditionSatisfied(pTeleTrigger->requiredCondition, pPlayer, pPlayer->GetMap(), pPlayer, CONDITION_FROM_AREATRIGGER);
 
         if (bLevelCheck || bConditionCheck)
         {

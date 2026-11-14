@@ -44,8 +44,11 @@ void WorldSession::HandleQuestgiverStatusQueryOpcode(WorldPackets::Quest::Questg
         return;
     }
 
-    switch (questgiver->GetTypeId())
+    // No-quest mode: nobody has a quest to give or take back.
+    switch (_player->IsNoQuest() ? TYPEID_OBJECT : questgiver->GetTypeId())
     {
+        case TYPEID_OBJECT:
+            break;
         case TYPEID_UNIT:
         {
             Creature* cr_questgiver = (Creature*)questgiver;

@@ -688,7 +688,10 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder *holder)
 
     sAchievementMgr.OnLogin(pCurrChar);
     if (!alreadyOnline)
+    {
         pCurrChar->LoadPersonalXpRate();
+        pCurrChar->LoadNoQuest();
+    }
 
     m_playerLoading = false;
     delete holder;

@@ -302,6 +302,7 @@ struct Loot
                 m_playerQuestItems.clear();
 
                 m_questItems.clear();
+                m_noQuestCounted.clear();
         }
 
         for (const auto& itr : m_playerFFAItems)
@@ -385,6 +386,9 @@ struct Loot
         WorldObject const* m_lootTarget;
         Team m_groupTeam;
         bool m_hasFFAQuestItems;
+
+        // No-quest characters whose quest items of this loot were counted.
+        std::set<uint32> m_noQuestCounted;
 };
 
 namespace WorldPackets

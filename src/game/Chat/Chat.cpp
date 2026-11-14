@@ -1258,6 +1258,7 @@ ChatCommand * ChatHandler::getCommandTable()
         { "achievement",    SEC_PLAYER,         false, nullptr,                       "Achievements: summary, sync for the addon", achievementCommandTable },
         { "dungeonquests",  SEC_PLAYER,         false, &ChatHandler::HandleDungeonQuestsCommand, "Quests of each five-player dungeon: done, in the log, to pick up", nullptr },
         { "xprate",         SEC_PLAYER,         false, &ChatHandler::HandleModifyXpRateCommand,  "Your own experience rate: on, off or 0..1 of the server's", nullptr },
+        { "noquest",        SEC_PLAYER,         false, &ChatHandler::HandleNoQuestCommand,       "No-quest mode: quests done by killing complete on their own", nullptr },
         { "battlebot",      SEC_ADMINISTRATOR,  true, nullptr,                      "Manage battle bots", battleBotCommandTable},
         { "world",          SEC_ADMINISTRATOR,  false, nullptr,                                        "", worldCommandTable    },
         { "possess",        SEC_GAMEMASTER,     false, &ChatHandler::HandlePossessCommand,             "", nullptr              },

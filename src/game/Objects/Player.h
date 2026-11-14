@@ -40,6 +40,8 @@
 #include "PlayerTaxi.h"
 #include "MirrorTimer.h"
 
+#include <array>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -433,6 +435,8 @@ enum PlayerCheatOptions : uint16
 };
 
 typedef std::map<uint32, QuestStatusData> QuestStatusMap;
+// No-quest mode, per quest: kills for each objective, then quest items counted from loot.
+typedef std::array<uint32, 2 * QUEST_OBJECTIVES_COUNT> NoQuestProgress;
 
 enum QuestSlotOffsets
 {
@@ -1454,6 +1458,8 @@ class Player final: public Unit
         bool m_canDualWield;
         float m_ammoDPS;
         float m_personalXpRate;
+        bool m_noQuest;
+        std::map<uint32, NoQuestProgress> m_noQuestKills;
 
         void RegenerateAll();
         void Regenerate(Powers power);
@@ -1482,6 +1488,21 @@ class Player final: public Unit
         float GetQuestXpShare() const { return m_personalXpRate < 0.0f ? 1.0f : std::min(m_personalXpRate, 1.0f); }
         void LoadPersonalXpRate();
         void SavePersonalXpRate() const;
+
+        // No-quest mode (`.noquest`, NoQuest.cpp): no quest is ever offered or
+        // shown; those whose objectives are all kills or creature drops count
+        // and pay out from killing alone.
+        bool IsNoQuest() const { return m_noQuest; }
+        void SetNoQuest(bool on);
+        void LoadNoQuest();
+        bool NoQuestOpen(Quest const* pQuest) const;
+        void NoQuestKilled(uint32 entry);
+        bool NoQuestNeedsItem(uint32 itemId) const;
+        void NoQuestLootItem(uint32 itemId, uint32 count);
+        void NoQuestItemAdded(uint32 itemId);
+        void GrantShamanTotems();
+        std::map<uint32, NoQuestProgress> const& GetNoQuestKills() const { return m_noQuestKills; }
+
         void GiveXP(uint32 xp, Unit const* victim);
         void GiveLevel(uint32 level);
         void InitStatsForLevel(bool reapplyMods = false);

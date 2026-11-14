@@ -29,6 +29,8 @@
 #include "Group.h"
 #include "BattleGroundMgr.h"
 #include "Utilities/Random.h"
+#include "NoQuest.h"
+#include "Player.h"
 
 static eConfigFloatValues const qualityToRate[MAX_ITEM_QUALITY] =
 {
@@ -388,6 +390,9 @@ bool LootItem::AllowedForPlayer(Player const* player, WorldObject const* lootTar
         // Not quest only drop (check quest starting items for already accepted non-repeatable quests)
         if (pProto->StartQuest)
         {
+            if (player->IsNoQuest())
+                return false;
+
             Quest const* pQuest = sObjectMgr.GetQuestTemplate(pProto->StartQuest);
             if (pQuest && !pQuest->IsRepeatable() && player->GetQuestStatus(pProto->StartQuest) != QUEST_STATUS_NONE && !player->HasQuestForItem(itemid) && !pProto->HasExtraFlag(ITEM_EXTRA_IGNORE_QUEST_STATUS))
                 return false;
@@ -553,6 +558,21 @@ void Loot::FillNotNormalLootFor(Player* pl)
         m_allowedLooters.push_back(pl->GetObjectGuid());
 
     uint32 plguid = pl->GetGUIDLow();
+
+    // No-quest mode: the quest items a kill would let the character pick up
+    // count at once, and none of them shows in the loot. Class epics that
+    // Classic only gave through quest chains go on the boss's corpse here.
+    if (pl->IsNoQuest() && m_noQuestCounted.insert(plguid).second)
+    {
+        for (LootItem const& item : m_questItems)
+        {
+            if (item.is_looted || (item.conditionId && !IsConditionSatisfied(item.conditionId, pl, pl->GetMap(), GetLootTarget(), CONDITION_FROM_LOOT)))
+                continue;
+            if (pl->NoQuestNeedsItem(item.itemid))
+                pl->NoQuestLootItem(item.itemid, item.count);
+        }
+        NoQuest::FillBossEpics(pl, *this);
+    }
 
     QuestItemMap::const_iterator qmapitr = m_playerQuestItems.find(plguid);
     if (qmapitr == m_playerQuestItems.end())

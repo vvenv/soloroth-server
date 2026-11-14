@@ -112,7 +112,7 @@ static uint32 copseReclaimDelay[MAX_DEATH_COUNT] = { 30, 60, 120 };
 Player::Player(WorldSession* session) : Unit(),
     m_mover(this), m_camera(this), m_reputationMgr(this), m_saveDisabled(false), m_enableInstanceSwitch(true),
     m_currentTicketCounter(0), m_repopAtGraveyardPending(false), m_knownLanguagesMask(0),
-    m_honorMgr(this), m_personalXpRate(-1.0f), m_isStandUpScheduled(false),
+    m_honorMgr(this), m_personalXpRate(-1.0f), m_noQuest(false), m_isStandUpScheduled(false),
     m_soloAutoLootOnKill(true), m_soloMoveSpeed(2.0f)
 {
     m_objectType |= TYPEMASK_PLAYER;
@@ -3045,6 +3045,9 @@ void Player::GiveXP(uint32 xp, Unit const* victim)
         xp /= 2;
 #endif
 
+    if (victim && IsNoQuest())
+        xp *= sWorld.getConfig(CONFIG_FLOAT_RATE_XP_NOQUEST_KILL);
+
     if (GetPersonalXpRate() >= 0.0f)
         xp *= GetPersonalXpRate();
 
@@ -3244,6 +3247,7 @@ void Player::GiveLevel(uint32 level)
         pet->SynchronizeLevelWithOwner();
 
     sAchievementMgr.OnLevelUp(this);
+    GrantShamanTotems();
 }
 
 void Player::UpdateFreeTalentPoints(bool resetIfNeed)
@@ -4518,6 +4522,8 @@ void Player::DeleteFromDB(ObjectGuid playerGuid, uint32 accountId, bool updateRe
             CharacterDatabase.PExecute("DELETE FROM `guild_eventlog` WHERE `player_guid1` = '%u' OR `player_guid2` = '%u'", lowGuid, lowGuid);
             AchievementMgr::DeleteCharacter(lowGuid);
             CharacterDatabase.PExecute("DELETE FROM `character_xp_rate` WHERE `guid` = '%u'", lowGuid);
+            CharacterDatabase.PExecute("DELETE FROM `character_noquest` WHERE `guid` = '%u'", lowGuid);
+            CharacterDatabase.PExecute("DELETE FROM `character_noquest_kills` WHERE `guid` = '%u'", lowGuid);
             CharacterDatabase.PExecute("DELETE FROM `character_companions` WHERE `bot_guid` = '%u'", lowGuid);
             sTicketMgr->RemovePlayerReferences(playerGuid);
             CharacterDatabase.CommitTransaction();
@@ -12419,6 +12425,8 @@ void Player::PrepareQuestMenu(ObjectGuid guid, uint32 exceptQuestId)
 
     QuestMenu &qm = PlayerTalkClass->GetQuestMenu();
     qm.ClearMenu();
+    if (IsNoQuest())
+        return;
 
     for (QuestRelationsMap::const_iterator itr = irbounds.first; itr != irbounds.second; ++itr)
     {
@@ -12608,6 +12616,10 @@ bool Player::CanSeeStartQuest(Quest const* pQuest) const
 
 bool Player::CanTakeQuest(Quest const* pQuest, bool msg, bool skipStatusCheck /*false*/) const
 {
+    // No-quest mode: no quest is taken, from a giver, an item or a party member.
+    if (IsNoQuest())
+        return false;
+
     if (pQuest->GetMaxLevel() && pQuest->GetMaxLevel() < GetLevel())
         return false;
 
@@ -13138,17 +13150,35 @@ void Player::RewardQuest(Quest const* pQuest, uint32 reward, WorldObject* questE
         if ((bg->GetTypeID() == BATTLEGROUND_AV) && (questEnder->GetTypeId() == TYPEID_UNIT))
             ((BattleGroundAV*)bg)->HandleQuestComplete(questEnder->ToUnit(), pQuest->GetQuestId(), this);
 
+    // A quest giver refuses a turn-in the bags cannot hold; one completed
+    // without a giver (no-quest mode) mails what does not fit instead.
+    int const localeIndex = GetSession()->GetSessionDbLocaleIndex();
+    MailDraft overflow(localeIndex >= 0 && sObjectMgr.GetLocaleForIndex(localeIndex) == LOCALE_zhCN
+        ? "背包放不下的战利品" : "Spoils your bags could not hold");
+    bool overflowed = false;
+    auto giveItem = [&](uint32 itemId, uint32 count)
+    {
+        ItemPosCountVec dest;
+        if (CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, itemId, count) == EQUIP_ERR_OK)
+        {
+            Item* item = StoreNewItem(dest, itemId, true, Item::GenerateItemRandomPropertyId(itemId));
+            SendNewItem(item, count, true, false, false, false);
+        }
+        else if (questEnder == this)
+        {
+            if (Item* item = Item::CreateItem(itemId, count, GetObjectGuid()))
+            {
+                item->SaveToDB();
+                overflow.AddItem(item);
+                overflowed = true;
+            }
+        }
+    };
+
     if (pQuest->GetRewChoiceItemsCount() > 0)
     {
         if (uint32 itemId = pQuest->RewChoiceItemId[reward])
-        {
-            ItemPosCountVec dest;
-            if (CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, itemId, pQuest->RewChoiceItemCount[reward]) == EQUIP_ERR_OK)
-            {
-                Item* item = StoreNewItem(dest, itemId, true, Item::GenerateItemRandomPropertyId(itemId));
-                SendNewItem(item, pQuest->RewChoiceItemCount[reward], true, false, false, false);
-            }
-        }
+            giveItem(itemId, pQuest->RewChoiceItemCount[reward]);
     }
 
     if (pQuest->GetRewItemsCount() > 0)
@@ -13156,16 +13186,12 @@ void Player::RewardQuest(Quest const* pQuest, uint32 reward, WorldObject* questE
         for (uint32 i = 0; i < pQuest->GetRewItemsCount(); ++i)
         {
             if (uint32 itemId = pQuest->RewItemId[i])
-            {
-                ItemPosCountVec dest;
-                if (CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, itemId, pQuest->RewItemCount[i]) == EQUIP_ERR_OK)
-                {
-                    Item* item = StoreNewItem(dest, itemId, true, Item::GenerateItemRandomPropertyId(itemId));
-                    SendNewItem(item, pQuest->RewItemCount[i], true, false, false, false);
-                }
-            }
+                giveItem(itemId, pQuest->RewItemCount[i]);
         }
     }
+
+    if (overflowed)
+        overflow.SendMailTo(this, MailSender(this, MAIL_STATIONERY_GM), MAIL_CHECK_MASK_COPIED);
 
     RewardReputation(pQuest);
 
@@ -13997,6 +14023,9 @@ void Player::ItemAddedQuestCheck(uint32 entry, uint32 count, bool sendQuestUpdat
         }
     }
     UpdateForQuestWorldObjects();
+
+    if (IsNoQuest())
+        NoQuestItemAdded(entry);
 }
 
 void Player::ItemRemovedQuestCheck(uint32 entry, uint32 count)
@@ -14104,6 +14133,9 @@ void Player::KilledMonsterCredit(uint32 entry, ObjectGuid guid)
             }
         }
     }
+
+    if (IsNoQuest())
+        NoQuestKilled(entry);
 }
 
 void Player::CastedCreatureOrGO(uint32 entry, ObjectGuid guid, uint32 spellId, bool originalCaster)

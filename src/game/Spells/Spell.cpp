@@ -7881,6 +7881,9 @@ SpellCastResult Spell::CanOpenLock(SpellEffectIndex effIndex, uint32 lockId, Ski
             case LOCK_KEY_ITEM:
                 if (lockInfo->Index[j] && m_CastItem && m_CastItem->GetEntry() == lockInfo->Index[j])
                     return SPELL_CAST_OK;
+                // No-quest mode: instance doors that need a key open without one.
+                if (lockInfo->Index[j] && m_caster->IsPlayer() && static_cast<Player*>(m_caster)->IsNoQuest())
+                    return SPELL_CAST_OK;
                 break;
             // check key skill (only single first fit case can be)
             case LOCK_KEY_SKILL:

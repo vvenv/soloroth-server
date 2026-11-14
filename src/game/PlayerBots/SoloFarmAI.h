@@ -74,7 +74,7 @@ private:
     bool DoesFish() const { return m_mode == SOLO_FARM_FISH || m_mode == SOLO_FARM_ALL; }
     bool DoesGather() const { return m_mode == SOLO_FARM_GATHER || m_mode == SOLO_FARM_ALL; }
     // Quest goobers / glowing chests: grind, gather and all (not fishing).
-    bool DoesQuestObjects() const { return m_mode != SOLO_FARM_FISH; }
+    bool DoesQuestObjects() const { return m_mode != SOLO_FARM_FISH && !me->IsNoQuest(); }
     // Multi-pull, or a 1v1 window to kite / bandage / potion / self-heal.
     bool CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget) const override;
     bool NeedsCrowdControlWindow() const;

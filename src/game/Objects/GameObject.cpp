@@ -2216,11 +2216,8 @@ bool GameObject::PlayerCanUse(Player* pPlayer)
                         // check key item (many fit cases can be)
                         case LOCK_KEY_ITEM:
                         {
-                            if (lockInfo->Index[j])
-                            {
-                                if (!pPlayer->HasItemCount(lockInfo->Index[j], 1))
-                                    return false;
-                            }
+                            if (lockInfo->Index[j] && !pPlayer->IsNoQuest() && !pPlayer->HasItemCount(lockInfo->Index[j], 1))
+                                return false;
                             break;
                         }
                     }

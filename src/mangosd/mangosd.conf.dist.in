@@ -2652,6 +2652,11 @@ Visibility.ForceActiveObjects = 1
 #        XP rates
 #        Default: 1
 #
+#    Rate.XP.NoQuest.Kill
+#        Extra kill XP for a character in no-quest mode (`.noquest on`), which takes
+#        no quests: only those done by killing complete, on their own.
+#        Default: 2
+#
 #    Rate.Rest.InGame
 #    Rate.Rest.Offline.InTavernOrCity
 #    Rate.Rest.Offline.InWilderness
@@ -2825,6 +2830,7 @@ Rate.XP.Quest = 1
 Rate.XP.Explore = 1
 Rate.XP.Personal.Min = 1
 Rate.XP.Personal.Max = 1
+Rate.XP.NoQuest.Kill = 2
 Rate.Rest.InGame = 1
 Rate.Rest.Offline.InTavernOrCity = 1
 Rate.Rest.Offline.InWilderness = 1
