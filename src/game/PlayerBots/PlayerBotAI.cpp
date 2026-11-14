@@ -19,6 +19,8 @@
 #include "Player.h"
 #include "Log.h"
 #include "SocialMgr.h"
+#include "GuildMgr.h"
+#include "DungeonBotMgr.h"
 #include "MotionMaster.h"
 #include "ObjectMgr.h"
 #include "MapManager.h"
@@ -80,12 +82,14 @@ bool PlayerBotAI::SpawnNewPlayer(WorldSession* sess, uint8 class_, uint32 race_,
     {
         // Temporary bots are never saved and stay in the name cache after they
         // leave, so an offline cache entry of a bot account is a stale copy of
-        // this bot. A real character or an online player keeps the name.
+        // this bot. A real character, a saved companion or an online player
+        // keeps the name.
         ObjectGuid const old = sObjectMgr.GetPlayerGuidByName(m_fixedName);
         if (old.IsEmpty())
             name = m_fixedName;
         else if (!ObjectAccessor::FindPlayerNotInWorld(old) &&
-                 sPlayerBotMgr.IsBotAccount(sObjectMgr.GetPlayerAccountIdByGUID(old)))
+                 sPlayerBotMgr.IsBotAccount(sObjectMgr.GetPlayerAccountIdByGUID(old)) &&
+                 !sDungeonBotMgr.IsCompanion(old.GetCounter()))
         {
             sObjectMgr.DeletePlayerFromCache(old.GetCounter());
             name = m_fixedName;
@@ -166,6 +170,7 @@ bool PlayerBotAI::SpawnNewPlayer(WorldSession* sess, uint8 class_, uint32 race_,
     sess->SetPlayer(newChar);
     sess->SetMasterPlayer(mPlayer);
     sObjectAccessor.AddObject(newChar);
+    sGuildMgr.JoinSoloGuild(newChar);
     newChar->SetCanModifyStats(true);
     newChar->UpdateAllStats();
     return true;

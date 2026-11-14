@@ -96,6 +96,9 @@ public:
     void LearnPremadeSpecForClass();
     void EquipPremadeGearTemplate();
     void EquipRandomGearInEmptySlots();
+    // Swaps worn pieces for random ones of a higher item level, then fills empty slots.
+    void UpgradeGear();
+    void EquipRandomGear(bool upgrade);
     void AutoEquipGear(uint32 option);
     // Bow / gun / crossbow in the ranged slot, with matching ammo. Wands and thrown break Auto Shot.
     void EnsureHunterRangedWeapon();

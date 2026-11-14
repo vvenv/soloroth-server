@@ -1289,6 +1289,7 @@ class Player final: public Unit
         uint32 GetSaveTimer() const { return m_nextSave; }
         void   SetSaveTimer(uint32 timer) { m_nextSave = timer; }
         bool   IsSavingDisabled() const { return m_saveDisabled; }
+        void   EnableSaving() { m_saveDisabled = false; }
 
         /*********************************************************/
         /***                    PET SYSTEM                     ***/

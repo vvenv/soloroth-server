@@ -254,6 +254,73 @@ void DungeonBotMgr::SetAutoFill(Player* pPlayer, bool on)
     SaveSettings(pPlayer);
 }
 
+// --------------------------------------------------------------- companions --
+
+void DungeonBotMgr::LoadCompanions()
+{
+    if (m_companionsLoaded)
+        return;
+    m_companionsLoaded = true;
+    if (std::unique_ptr<QueryResult> result = CharacterDatabase.Query(
+            "SELECT `owner_guid`, `slot`, `bot_guid` FROM `character_companions`"))
+    {
+        do
+        {
+            Field* fields = result->Fetch();
+            m_companions[fields[0].GetUInt32()][fields[1].GetUInt32()] = fields[2].GetUInt32();
+            m_companionOwner[fields[2].GetUInt32()] = fields[0].GetUInt32();
+        }
+        while (result->NextRow());
+    }
+}
+
+bool DungeonBotMgr::IsCompanion(uint32 botLow)
+{
+    LoadCompanions();
+    return m_companionOwner.find(botLow) != m_companionOwner.end();
+}
+
+uint32 DungeonBotMgr::GetCompanion(uint32 ownerLow, uint32 slot)
+{
+    LoadCompanions();
+    auto owner = m_companions.find(ownerLow);
+    if (owner == m_companions.end())
+        return 0;
+    auto itr = owner->second.find(slot);
+    return itr != owner->second.end() ? itr->second : 0;
+}
+
+void DungeonBotMgr::SetCompanion(uint32 ownerLow, uint32 slot, uint32 botLow)
+{
+    m_companions[ownerLow][slot] = botLow;
+    m_companionOwner[botLow] = ownerLow;
+    CharacterDatabase.PExecute("REPLACE INTO `character_companions` (`owner_guid`, `slot`, `bot_guid`) VALUES (%u, %u, %u)",
+        ownerLow, slot, botLow);
+}
+
+void DungeonBotMgr::ForgetCompanion(uint32 ownerLow, uint32 slot)
+{
+    if (uint32 const botLow = GetCompanion(ownerLow, slot))
+        m_companionOwner.erase(botLow);
+    m_companions[ownerLow].erase(slot);
+    CharacterDatabase.PExecute("DELETE FROM `character_companions` WHERE `owner_guid` = %u AND `slot` = %u", ownerLow, slot);
+}
+
+void DungeonBotMgr::DeleteCompanions(uint32 ownerLow)
+{
+    LoadCompanions();
+    auto owner = m_companions.find(ownerLow);
+    if (owner == m_companions.end())
+        return;
+    for (auto const& itr : owner->second)
+    {
+        m_companionOwner.erase(itr.second);
+        Player::DeleteFromDB(ObjectGuid(HIGHGUID_PLAYER, itr.second), sObjectMgr.GetPlayerAccountIdByGUID(itr.second), false, true);
+    }
+    m_companions.erase(owner);
+    CharacterDatabase.PExecute("DELETE FROM `character_companions` WHERE `owner_guid` = %u", ownerLow);
+}
+
 // -------------------------------------------------------------- fill/dismiss --
 
 void DungeonBotMgr::ForgetGoneBots(uint32 leaderLow)
@@ -295,10 +362,23 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why)
 
     ForgetGoneBots(pPlayer->GetGUIDLow());
 
+    // A saved group can hold companions that went offline with the server.
+    if (Group* pOld = pPlayer->GetGroup())
+    {
+        std::vector<ObjectGuid> gone;
+        for (auto const& slot : pOld->GetMemberSlots())
+            if (!ObjectAccessor::FindPlayerNotInWorld(slot.guid) && IsCompanion(slot.guid.GetCounter()))
+                gone.push_back(slot.guid);
+        for (ObjectGuid const& guid : gone)
+            if (Group* pNow = pPlayer->GetGroup())
+                pNow->RemoveMember(guid, 0);
+    }
+
     // Who is in the party already, and as what.
     std::vector<CombatBotRoles> roles;
     std::vector<uint8> classes;
     std::vector<std::string> names;
+    std::vector<uint32> guids;
     Group* pGroup = pPlayer->GetGroup();
     if (pGroup)
     {
@@ -314,6 +394,7 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why)
         }
         for (auto const& slot : pGroup->GetMemberSlots())
         {
+            guids.push_back(slot.guid.GetCounter());
             Player* pMember = sObjectAccessor.FindPlayer(slot.guid);
             if (!pMember)
             {
@@ -342,6 +423,7 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why)
         ObjectGuid const guid(HIGHGUID_PLAYER, bot.first);
         if (pGroup && pGroup->IsMember(guid))
             continue;
+        guids.push_back(bot.first);
         roles.push_back(bot.second.role);
         classes.push_back(bot.second.botClass);
         names.push_back(bot.second.name);
@@ -358,22 +440,35 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why)
     uint32 melee = uint32(std::count(roles.begin(), roles.end(), ROLE_MELEE_DPS));
 
     Team const team = pPlayer->GetTeam();
+    uint32 const ownerLow = pPlayer->GetGUIDLow();
+    auto slotOf = [](RosterBot const& r) { return uint32(&r - ROSTER); };
+    // Only this character's own companion can be out already.
     auto present = [&](RosterBot const& r)
     {
-        if (std::find(names.begin(), names.end(), r.name) != names.end())
-            return true;
-        // Out with another player already.
-        return ObjectAccessor::FindPlayerByNameNotInWorld(r.name) != nullptr;
+        uint32 const botLow = GetCompanion(ownerLow, slotOf(r));
+        if (!botLow)
+            return false;
+        return std::find(guids.begin(), guids.end(), botLow) != guids.end() ||
+               ObjectAccessor::FindPlayerNotInWorld(ObjectGuid(HIGHGUID_PLAYER, botLow)) != nullptr;
     };
-    // A roster member for one of `wanted` roles: one of `preferClass` if any
-    // is free, else one whose class the party lacks, else any. Each class
-    // gets the same chance however many of its trees fit.
+    // A roster member for one of `wanted` roles, this character's companions
+    // first: one of `preferClass` if any is free, else one whose class the
+    // party lacks, else any. Each class gets the same chance however many of
+    // its trees fit.
     auto pick = [&](std::vector<CombatBotRoles> const& wanted, uint8 preferClass) -> RosterBot const*
     {
+        bool known = false;
+        for (RosterBot const& r : ROSTER)
+            if (r.team == team && std::find(wanted.begin(), wanted.end(), r.role) != wanted.end() && !present(r) &&
+                GetCompanion(ownerLow, slotOf(r)))
+                known = true;
+
         std::vector<RosterBot const*> fit, fresh, preferred;
         for (RosterBot const& r : ROSTER)
         {
             if (r.team != team || std::find(wanted.begin(), wanted.end(), r.role) == wanted.end() || present(r))
+                continue;
+            if (known && !GetCompanion(ownerLow, slotOf(r)))
                 continue;
             fit.push_back(&r);
             if (std::find(classes.begin(), classes.end(), r.botClass) == classes.end())
@@ -426,25 +521,60 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why)
 
         float x, y, z;
         pPlayer->GetNearPoint(pPlayer, x, y, z, 0, 3.0f, frand(0.0f, 2 * M_PI_F));
-        PartyBotAI* ai = new PartyBotAI(pPlayer, nullptr, r->role, r->race, r->botClass, pPlayer->GetLevel(),
-            pPlayer->GetMapId(), pMap->GetInstanceId(), x, y, z, pPlayer->GetOrientation());
-        ai->SetIdentity(r->name, r->gender, LookSeed(r->name));
-        ai->m_specHint = r->specHint;
-        if (!sPlayerBotMgr.AddBot(ai))
+        uint32 const slot = slotOf(*r);
+        uint32 botLow = GetCompanion(ownerLow, slot);
+        std::string name;
+        if (botLow && !sObjectMgr.GetPlayerNameByGUID(botLow, name))
         {
-            delete ai;
-            continue;
+            ForgetCompanion(ownerLow, slot);    // its character is gone
+            botLow = 0;
         }
-        AutoBot& bot = mine[uint32(ai->botEntry->playerGUID)];
+
+        PartyBotAI* ai;
+        if (botLow)
+        {
+            // Race and class 0: PartyBotAI logs the saved character in.
+            ai = new PartyBotAI(pPlayer, nullptr, r->role, 0, 0, pPlayer->GetLevel(),
+                pPlayer->GetMapId(), pMap->GetInstanceId(), x, y, z, pPlayer->GetOrientation());
+            ai->m_specHint = r->specHint;
+            ai->m_companion = true;
+            if (!sPlayerBotMgr.AddBot(botLow, false, ai))
+            {
+                delete ai;
+                continue;
+            }
+        }
+        else
+        {
+            name = sObjectMgr.GetPlayerGuidByName(r->name).IsEmpty() ? std::string(r->name) : sObjectMgr.GenerateFreePlayerName();
+            normalizePlayerName(name);
+            ai = new PartyBotAI(pPlayer, nullptr, r->role, r->race, r->botClass, pPlayer->GetLevel(),
+                pPlayer->GetMapId(), pMap->GetInstanceId(), x, y, z, pPlayer->GetOrientation());
+            ai->SetIdentity(name, r->gender, LookSeed(name.c_str()));
+            ai->m_specHint = r->specHint;
+            ai->m_companion = true;
+            if (!sPlayerBotMgr.AddBot(ai, true))
+            {
+                delete ai;
+                continue;
+            }
+            botLow = uint32(ai->botEntry->playerGUID);
+            SetCompanion(ownerLow, slot, botLow);
+        }
+        ai->botEntry->persistent = true;
+
+        AutoBot& bot = mine[botLow];
         bot.role = r->role;
         bot.botClass = r->botClass;
-        bot.name = r->name;
+        bot.name = name;
         bot.lastSeen = m_now;
+        bot.dungeon = pMap->IsNonRaidDungeon();
         classes.push_back(r->botClass);
-        names.push_back(r->name);
+        names.push_back(name);
+        guids.push_back(botLow);
         if (!who.empty())
             who += zh ? "、" : ", ";
-        who += r->name;
+        who += name;
         who += zh ? "（" : " (";
         who += zh ? r->specZh : r->specEn;
         who += zh ? "）" : ")";
@@ -467,6 +597,11 @@ uint32 DungeonBotMgr::Dismiss(Player* pPlayer, bool autoOnly)
     {
         for (auto bot = mine->second.begin(); bot != mine->second.end();)
         {
+            if (autoOnly && !bot->second.dungeon)
+            {
+                ++bot;
+                continue;
+            }
             PartyBotAI* pAI = GetPartyBotAI(sObjectAccessor.FindPlayer(ObjectGuid(HIGHGUID_PLAYER, bot->first)));
             if (pAI && pAI->botEntry)
             {

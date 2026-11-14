@@ -26,6 +26,9 @@
 #include "World.h"
 #include "ObjectMgr.h"
 #include "Player.h"
+#include "Config/Config.h"
+#include "PlayerBotMgr.h"
+#include "PartyBotAI.h"
 
 INSTANTIATE_SINGLETON_1(GuildMgr);
 
@@ -101,9 +104,64 @@ std::string GuildMgr::GetGuildNameById(uint32 guildId) const
     return "";
 }
 
+void GuildMgr::JoinSoloGuild(Player* player)
+{
+    if (m_soloGuildName.empty() || player->GetGuildId())
+        return;
+
+    // At login the player is not in ObjectAccessor yet, so Create/AddMember
+    // cannot set the guild fields themselves.
+    if (PlayerBotEntry* bot = player->GetSession()->GetBot())
+    {
+        PartyBotAI* ai = dynamic_cast<PartyBotAI*>(bot->ai.get());
+        Player* leader = ai ? ObjectAccessor::FindPlayerNotInWorld(ai->m_leaderGuid) : nullptr;
+        Guild* guild = leader ? GetGuildById(leader->GetGuildId()) : nullptr;
+        if (!guild)
+            return;
+        if (!ai->m_companion)
+            guild->AddTempMember(player, GR_MEMBER);
+        else if (guild->AddMember(player->GetObjectGuid(), GR_MEMBER) == GuildAddStatus::OK)
+        {
+            player->SetInGuild(guild->GetId());
+            player->SetRank(GR_MEMBER);
+        }
+        return;
+    }
+
+    std::string name = m_soloGuildName;
+    std::string::size_type const at = name.find("%s");
+    if (at != std::string::npos)
+        name.replace(at, 2, player->GetName());
+
+    uint32 rank = GR_GUILDMASTER;
+    if (Guild* guild = GetGuildByName(name))
+    {
+        // Its own guild, left behind when the character joined another.
+        if (guild->GetLeaderGuid() != player->GetObjectGuid() ||
+            guild->AddMember(player->GetObjectGuid(), rank) != GuildAddStatus::OK)
+            return;
+        player->SetInGuild(guild->GetId());
+        player->SetRank(rank);
+        return;
+    }
+
+    Guild* guild = new Guild;
+    if (!guild->Create(player, name))
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "SoloGuild: cannot create guild '%s'", name.c_str());
+        delete guild;
+        return;
+    }
+    AddGuild(guild);
+    guild->SetMOTD("");
+    player->SetInGuild(guild->GetId());
+    player->SetRank(rank);
+}
+
 void GuildMgr::LoadGuilds()
 {
     uint32 count = 0;
+    m_soloGuildName = sConfig.GetStringDefault("SoloGuild.Name", "");
 
     //                                                                     0           1       2              3               4               5               6
     std::unique_ptr<QueryResult> result = CharacterDatabase.Query("SELECT `guild_id`, `name`, `leader_guid`, `emblem_style`, `emblem_color`, `border_style`, `border_color`,"

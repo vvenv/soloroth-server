@@ -277,6 +277,35 @@ GuildAddStatus Guild::AddMember(ObjectGuid plGuid, uint32 plRank, uint32 petitio
     return GuildAddStatus::OK;
 }
 
+void Guild::AddTempMember(Player* player, uint32 plRank)
+{
+    uint32 lowguid = player->GetGUIDLow();
+    MemberSlot& member = members[lowguid];
+    member.guid = player->GetObjectGuid();
+    member.accountId = player->GetSession()->GetAccountId();
+    member.SetMemberStats(player);
+    member.RankId = plRank;
+    member.LogoutTime = time(nullptr);
+    member.Temporary = true;
+    sGuildMgr.GuildMemberAdded(GetId(), lowguid);
+
+    player->SetInGuild(m_Id);
+    player->SetRank(plRank);
+    UpdateAccountsNumber();
+}
+
+void Guild::DelTempMember(ObjectGuid guid)
+{
+    members.erase(guid.GetCounter());
+    sGuildMgr.GuildMemberRemoved(guid.GetCounter());
+    if (Player* player = sObjectMgr.GetPlayer(guid))
+    {
+        player->SetInGuild(0);
+        player->SetRank(0);
+    }
+    UpdateAccountsNumber();
+}
+
 void Guild::SetMOTD(std::string motd)
 {
     MOTD = motd;

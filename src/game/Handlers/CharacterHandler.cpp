@@ -476,7 +476,7 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder *holder)
         pCurrChar = new Player(this);
         pCurrChar->GetMotionMaster()->Initialize();
 
-        if (GetBot() && !sPlayerBotMgr.IsSavingAllowed())
+        if (GetBot() && !sPlayerBotMgr.IsSavingAllowed() && !GetBot()->persistent)
             pCurrChar->m_saveDisabled = true;
     }
 
@@ -553,6 +553,7 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder *holder)
         }
     }
 
+    sGuildMgr.JoinSoloGuild(pCurrChar);
     if (Guild* guild = sGuildMgr.GetGuildById(pCurrChar->GetGuildId()))
     {
         auto guildEvent = std::make_unique<WorldPackets::Guild::GuildEvent>();

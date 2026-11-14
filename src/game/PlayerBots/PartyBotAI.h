@@ -48,6 +48,7 @@ public:
 
     void CloneFromPlayer(Player const* pPlayer);
     void AddToPlayerGroup();
+    void LevelUpTo(uint32 level);
 
     bool CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const final;
     Player* GetPartyLeader() const;
@@ -105,6 +106,7 @@ public:
     float m_z = 0.0f;
     float m_o = 0.0f;
     bool m_resetSpellData = false;
+    bool m_companion = false;   // a saved character that levels with its leader (DungeonBotMgr)
 };
 
 #endif

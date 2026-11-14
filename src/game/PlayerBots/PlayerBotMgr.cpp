@@ -250,7 +250,7 @@ void PlayerBotMgr::Update(uint32 diff)
                 DeleteBot(iter);
 
                 if (WorldSession* sess = sWorld.FindSession(iter->second->accountId))
-                    sess->LogoutPlayer(m_confAllowSaving);
+                    sess->LogoutPlayer(m_confAllowSaving || iter->second->persistent);
 
                 iter->second->requestRemoval = false;
 
@@ -393,13 +393,13 @@ bool PlayerBotMgr::AddOrRemoveBot()
 
 }
 
-bool PlayerBotMgr::AddBot(PlayerBotAI* ai)
+bool PlayerBotMgr::AddBot(PlayerBotAI* ai, bool companion)
 {
     // Find a correct accountid ?
     std::shared_ptr<PlayerBotEntry> e = std::make_shared<PlayerBotEntry>();
     e->ai.reset(ai);
-    e->accountId = GenBotAccountId();
     e->playerGUID = sObjectMgr.GeneratePlayerLowGuid();
+    e->accountId = companion ? COMPANION_ACCOUNT_BASE + uint32(e->playerGUID) : GenBotAccountId();
     e->customBot = true;
     ai->botEntry = e.get();
     m_bots.insert({ e->playerGUID, e });

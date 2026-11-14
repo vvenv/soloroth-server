@@ -774,13 +774,19 @@ void WorldSession::LogoutPlayer(bool Save)
         // If the player is in a guild, update the guild roster and broadcast a logout message to other guild members
         if (Guild* guild = sGuildMgr.GetGuildById(_player->GetGuildId()))
         {
-            if (MemberSlot* slot = guild->GetMemberSlot(_player->GetObjectGuid()))
+            MemberSlot* slot = guild->GetMemberSlot(_player->GetObjectGuid());
+            if (slot && slot->Temporary)
+                guild->DelTempMember(_player->GetObjectGuid());
+            else
             {
-                slot->SetMemberStats(_player);
-                slot->UpdateLogoutTime();
-            }
+                if (slot)
+                {
+                    slot->SetMemberStats(_player);
+                    slot->UpdateLogoutTime();
+                }
 
-            guild->BroadcastEvent(GE_SIGNED_OFF, _player->GetObjectGuid(), _player->GetName());
+                guild->BroadcastEvent(GE_SIGNED_OFF, _player->GetObjectGuid(), _player->GetName());
+            }
         }
 
         // Remove pet

@@ -74,6 +74,7 @@
 #include "ZoneScriptMgr.h"
 #include "PlayerBotMgr.h"
 #include "PlayerBotAI.h"
+#include "DungeonBotMgr.h"
 #include "AccountMgr.h"
 #include "AchievementMgr.h"
 #include "Anticheat.h"
@@ -4363,6 +4364,9 @@ void Player::DeleteFromDB(ObjectGuid playerGuid, uint32 accountId, bool updateRe
 
     uint32 lowGuid = playerGuid.GetCounter();
 
+    // First, so the character's guild is empty when it leaves it.
+    sDungeonBotMgr.DeleteCompanions(lowGuid);
+
     // convert corpse to bones if exist (to prevent exiting Corpse in World without DB entry)
     // bones will be deleted by corpse/bones deleting thread shortly
     sObjectAccessor.ConvertCorpseForPlayer(playerGuid);
@@ -4514,6 +4518,7 @@ void Player::DeleteFromDB(ObjectGuid playerGuid, uint32 accountId, bool updateRe
             CharacterDatabase.PExecute("DELETE FROM `guild_eventlog` WHERE `player_guid1` = '%u' OR `player_guid2` = '%u'", lowGuid, lowGuid);
             AchievementMgr::DeleteCharacter(lowGuid);
             CharacterDatabase.PExecute("DELETE FROM `character_xp_rate` WHERE `guid` = '%u'", lowGuid);
+            CharacterDatabase.PExecute("DELETE FROM `character_companions` WHERE `bot_guid` = '%u'", lowGuid);
             sTicketMgr->RemovePlayerReferences(playerGuid);
             CharacterDatabase.CommitTransaction();
             break;

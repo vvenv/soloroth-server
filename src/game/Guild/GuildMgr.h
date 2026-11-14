@@ -26,6 +26,7 @@
 
 class Guild;
 class ObjectGuid;
+class Player;
 class Petition;
 class PetitionSignature;
 
@@ -74,8 +75,13 @@ class GuildMgr
 
         void LoadGuilds();
         void LoadPetitions();
+
+        // SoloGuild.Name ("%s" = the character's name): a character with no guild
+        // founds and leads its own; its party bots join that guild (companions for good).
+        void JoinSoloGuild(Player* player);
     private:
         void CleanUpPetitions();
+        std::string m_soloGuildName;
         mutable std::shared_timed_mutex m_guildMutex;
         GuildMap m_GuildMap;
         std::shared_timed_mutex m_guid2GuildMutex;

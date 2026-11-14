@@ -221,6 +221,7 @@ struct MemberSlot
     uint64 LogoutTime;
     std::string Pnote;
     std::string OFFnote;
+    bool Temporary = false;                                 // unsaved bot, never in `guild_member`
 };
 
 struct RankInfo
@@ -268,6 +269,9 @@ class Guild
         void SetLeader(ObjectGuid guid);
         GuildAddStatus AddMember(ObjectGuid plGuid, uint32 plRank, uint32 petitionId = 0);
         bool DelMember(ObjectGuid guid, bool isDisbanding = false);
+        // Bots that are never saved join and leave in memory only.
+        void AddTempMember(Player* player, uint32 plRank);
+        void DelTempMember(ObjectGuid guid);
         //lowest rank is the count of ranks - 1 (the highest rank_id in table)
         uint32 GetLowestRank() const { return m_Ranks.size() - 1; }
 

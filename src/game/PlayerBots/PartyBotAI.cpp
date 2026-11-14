@@ -105,6 +105,23 @@ void PartyBotAI::CloneFromPlayer(Player const* pPlayer)
     }
 }
 
+void PartyBotAI::LevelUpTo(uint32 level)
+{
+    me->GiveLevel(level);
+    me->InitTalentForLevel();
+    me->SetUInt32Value(PLAYER_XP, 0);
+    LearnPremadeSpecForClass();
+    me->UpdateSkillsToMaxSkillsForLevel();
+    UpgradeGear();
+    if (me->GetClass() == CLASS_HUNTER)
+        EnsureHunterRangedWeapon();
+    AddAllSpellReagents();
+    m_resetSpellData = true;
+    me->SetHealthPercent(100.0f);
+    me->SetPowerPercent(me->GetPowerType(), 100.0f);
+    me->SaveToDB();
+}
+
 Player* PartyBotAI::GetPartyLeader() const
 {
     Group* pGroup = me->GetGroup();
@@ -618,6 +635,14 @@ void PartyBotAI::OnPlayerLogin()
 {
     if (!m_initialized)
         me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_SPAWNING);
+
+    // A new companion is in the database from the start, so one sent away
+    // before it is dressed comes back and levels up from there.
+    if (m_companion && m_race && m_class)
+    {
+        me->EnableSaving();
+        me->SaveToDB();
+    }
 }
 
 void PartyBotAI::UpdateAI(uint32 const diff)
@@ -667,6 +692,9 @@ void PartyBotAI::UpdateAI(uint32 const diff)
                 }
             }
             me->UpdateSkillsToMaxSkillsForLevel();
+
+            if (m_companion)
+                me->SaveToDB();
         }
         else // loaded from db
         {
@@ -678,6 +706,9 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
             me->TeleportTo(m_mapId, m_x, m_y, m_z, m_o);
         }
+        // Companions only level with their leader.
+        if (m_companion)
+            me->SetPersonalXpRate(0.0f);
 
         ResetSpellData();
         PopulateSpellData();
@@ -713,6 +744,9 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
     if (!pLeader->IsInWorld())
         return;
+
+    if (m_companion && pLeader->GetLevel() > me->GetLevel() && !me->IsInCombat())
+        LevelUpTo(pLeader->GetLevel());
 
     if (pLeader->InBattleGround() &&
         !me->InBattleGround())

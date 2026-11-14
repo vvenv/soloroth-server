@@ -39,6 +39,7 @@ struct PlayerBotEntry
     bool isChatBot; // bot des joueurs en discussion via le site.
     bool customBot; // Enabled even if PlayerBot system disabled (AutoTesting system for example)
     bool requestRemoval;
+    bool persistent = false; // a companion: saved like a real character
     std::unique_ptr<PlayerBotAI> ai;
 
     PlayerBotEntry(uint64 guid, uint32 account, uint32 chance_): playerGUID(guid), accountId(account), chance(chance_), state(PB_STATE_OFFLINE), isChatBot(false), customBot(false), requestRemoval(false), ai(nullptr)
@@ -79,7 +80,10 @@ class PlayerBotMgr
         void Update(uint32 diff);
         bool AddOrRemoveBot();
 
-        bool AddBot(PlayerBotAI* ai);
+        // A companion gets the account COMPANION_ACCOUNT_BASE + its guid, kept
+        // with the saved character, so no two companions ever share a session.
+        bool AddBot(PlayerBotAI* ai, bool companion = false);
+        static uint32 const COMPANION_ACCOUNT_BASE = 0x40000000;
         bool AddBot(uint32 playerGuid, bool chatBot = false, PlayerBotAI* pAI = nullptr);
         bool DeleteBot(std::map<uint64, std::shared_ptr<PlayerBotEntry>>::iterator iter);
         bool DeleteBot(uint32 playerGuid);

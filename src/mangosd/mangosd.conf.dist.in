@@ -3233,6 +3233,12 @@ AHBot.itemcount = 50
 #        Default: 0 - off
 #                 1 - on
 #
+#    SoloGuild.Name
+#        A character that logs in without a guild founds and leads its own guild of this name, "%s"
+#        standing for the character's name. Its party bots join it: saved companions for good,
+#        other party bots while they are in the world.
+#        Default: "" (off)
+#
 ###################################################################################################################
 
 RandomBot.Enable = 0
@@ -3252,6 +3258,7 @@ PartyBot.RandomGearLevelDifference = 10
 
 BattleBot.AutoEquip = 1
 BattleBot.AutoJoin = 0
+SoloGuild.Name = ""
 
 ###################################################################################################################
 # MAIL FLOODING MITIGATION

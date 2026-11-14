@@ -2620,6 +2620,17 @@ inline uint32 GetPrimaryItemStatForClassAndRole(uint8 playerClass, uint8 role)
 
 void CombatBotBaseAI::EquipRandomGearInEmptySlots()
 {
+    EquipRandomGear(false);
+}
+
+void CombatBotBaseAI::UpgradeGear()
+{
+    EquipRandomGear(true);
+    EquipRandomGear(false);
+}
+
+void CombatBotBaseAI::EquipRandomGear(bool upgrade)
+{
     LearnArmorProficiencies();
 
     bool const onlyPvE = urand(0, 1) != 0;
@@ -2700,8 +2711,10 @@ void CombatBotBaseAI::EquipRandomGearInEmptySlots()
 
         for (uint8 slot : slots)
         {
-            if (slot >= EQUIPMENT_SLOT_START && slot < EQUIPMENT_SLOT_END &&
-                !me->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            if (slot < EQUIPMENT_SLOT_START || slot >= EQUIPMENT_SLOT_END)
+                continue;
+            Item* pWorn = me->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+            if (upgrade ? (pWorn && pProto->ItemLevel > pWorn->GetProto()->ItemLevel) : !pWorn)
             {
                 // Offhand checks
                 if (slot == EQUIPMENT_SLOT_OFFHAND)
@@ -2815,6 +2828,18 @@ void CombatBotBaseAI::EquipRandomGearInEmptySlots()
         ItemPrototype const* pProto = SelectRandomContainerElement(itr.second);
         if (!pProto)
             continue;
+
+        if (upgrade)
+        {
+            Item* pWorn = me->GetItemByPos(INVENTORY_SLOT_BAG_0, itr.first);
+            if (!pWorn)
+                continue;
+            // Keep a two-hander a two-hander, so the off-hand slot stays as it is.
+            if (itr.first == EQUIPMENT_SLOT_MAINHAND &&
+                (pProto->InventoryType == INVTYPE_2HWEAPON) != (pWorn->GetProto()->InventoryType == INVTYPE_2HWEAPON))
+                continue;
+            me->DestroyItem(INVENTORY_SLOT_BAG_0, itr.first, true);
+        }
 
         me->SatisfyItemRequirements(pProto);
         me->StoreNewItemInBestSlots(pProto->ItemId, 1);
