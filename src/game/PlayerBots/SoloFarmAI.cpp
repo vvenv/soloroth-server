@@ -230,15 +230,6 @@ bool SoloFarmAI::Start(Player* pPlayer, SoloFarmMode mode, float radius)
 
     // Gather also picks up quest goobers / glowing chests, so a profession is not required.
 
-    // Create-info Opening ranks (3365 / 6477 / 6478 / 22810). Old characters sometimes miss
-    // them; without 6478 locked quest chests like Tirisfal Pumpkin never get a kneeling open.
-    if (mode != SOLO_FARM_FISH)
-    {
-        for (uint32 spellId : { 3365u, 6477u, 6478u, 22810u })
-            if (!pPlayer->HasSpell(spellId))
-                pPlayer->LearnSpell(spellId, false);
-    }
-
     pPlayer->SetAI(new SoloFarmAI(pPlayer, mode, radius));
 
     SoloFarmAI* pAI = Of(pPlayer);
@@ -385,11 +376,7 @@ bool SoloFarmAI::NeedsCrowdControlWindow() const
     if (me->GetAttackers().size() >= 2)
         return true;
     // Same band as kite / combat potion / self-heal: buy a second to bandage or run.
-    if (me->GetHealthPercent() < RUN_AWAY_HEALTH_PCT)
-        return true;
-    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == DISTANCING_MOTION_TYPE)
-        return true;
-    return false;
+    return me->GetHealthPercent() < RUN_AWAY_HEALTH_PCT;
 }
 
 bool SoloFarmAI::CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget) const
@@ -475,6 +462,9 @@ void SoloFarmAI::UpdateAI(uint32 const diff)
     if (UpdateCombat())
         return;
 
+    if (Conjure())
+        return;
+
     // Quest goobers / chests before profession nodes and pulls.
     if (DoesQuestObjects() && UpdateQuestObjects())
         return;
@@ -508,12 +498,33 @@ void SoloFarmAI::UpdateAI(uint32 const diff)
 
 // ------------------------------------------------------------------ combat --
 
-// Alone, backing off only leads the mob on until it leashes home and drops the fight.
+// Alone, backing off from a mob that keeps up only leads it on until it leashes home and
+// drops the fight. Kite only when the ones next to us cannot follow (Frost Nova, Entangling
+// Roots, stuns, Wing Clip / Concussive Shot slows, or busy with the pet), or when low.
 bool SoloFarmAI::RunAwayFromTarget(Unit* pEnemy)
 {
-    if (me->GetHealthPercent() >= RUN_AWAY_HEALTH_PCT)
+    if (me->GetHealthPercent() >= RUN_AWAY_HEALTH_PCT && !CanOutpaceAttackers())
         return false;
     return PartyBotAI::RunAwayFromTarget(pEnemy);
+}
+
+bool SoloFarmAI::CanOutpaceAttackers() const
+{
+    bool near = false;
+    for (auto const pAttacker : me->GetAttackers())
+    {
+        if (!pAttacker->IsAlive() || me->GetDistance(pAttacker) > 10.0f)
+            continue;
+        near = true;
+        if (pAttacker->GetVictim() != me)
+            continue;
+        if (pAttacker->HasUnitState(UNIT_STATE_CAN_NOT_MOVE | UNIT_STATE_CONFUSED))
+            continue;
+        if (pAttacker->HasAuraType(SPELL_AURA_MOD_DECREASE_SPEED))
+            continue;
+        return false;
+    }
+    return near;
 }
 
 bool SoloFarmAI::UpdateCombat()
@@ -609,6 +620,12 @@ bool SoloFarmAI::UpdateCombat()
     if (TryEmergencyCrowdControl(pVictim))
         return true;
 
+    if (GetRole() == ROLE_RANGE_DPS && !me->HasUnitState(UNIT_STATE_CAN_NOT_MOVE) &&
+        me->GetMotionMaster()->GetCurrentMovementGeneratorType() != DISTANCING_MOTION_TYPE &&
+        me->GetCombatDistance(pVictim) < 8.0f && CanOutpaceAttackers() &&
+        RunAwayFromTarget(pVictim))
+        return true;
+
     // Also before the fight starts: a caster opens from range, which is what starts it.
     UpdateInCombatAI();
     return true;
@@ -699,6 +716,64 @@ bool SoloFarmAI::UseConsumable(uint32 auraType, uint32 effect)
     });
 
     return pBest && UseItemEffect(pBest);
+}
+
+// Mage water / food / mana gem and warlock healthstone, best known rank, topped up between
+// pulls. Not while eating or drinking: a cast stands up and cancels the regen aura.
+bool SoloFarmAI::Conjure()
+{
+    if (me->IsInCombat() || me->IsNonMeleeSpellCasted(false) ||
+        me->HasAuraType(SPELL_AURA_MOD_REGEN) || me->HasAuraType(SPELL_AURA_MOD_POWER_REGEN))
+        return false;
+
+    struct ConjureLine { std::initializer_list<uint32> ranks; uint32 keep; };
+    static ConjureLine const lines[] =
+    {
+        { { 5504, 5505, 5506, 6127, 10138, 10139, 10140 }, 20 },  // Conjure Water
+        { { 587, 597, 990, 6129, 10144, 10145, 28612 }, 10 },     // Conjure Food
+        { { 759, 3552, 10053, 10054 }, 1 },                       // Conjure Mana Agate .. Ruby
+        { { 6201, 6202, 5699, 11729, 11730 }, 1 },                // Create Healthstone
+    };
+
+    for (auto const& line : lines)
+    {
+        SpellEntry const* pSpell = nullptr;
+        for (uint32 spellId : line.ranks)
+            if (me->HasSpell(spellId))
+                pSpell = sSpellMgr.GetSpellEntry(spellId);
+        if (!pSpell)
+            continue;
+
+        uint32 const itemId = pSpell->EffectItemType[EFFECT_INDEX_0];
+        if (!itemId || me->GetItemCount(itemId) >= line.keep)
+            continue;
+
+        bool reagents = true;
+        for (uint32 i = 0; i < MAX_SPELL_REAGENTS; ++i)
+            if (pSpell->Reagent[i] > 0 && !me->HasItemCount(pSpell->Reagent[i], pSpell->ReagentCount[i]))
+                reagents = false;
+        if (!reagents)
+            continue;
+
+        ItemPosCountVec dest;
+        if (me->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, itemId, 1) != EQUIP_ERR_OK)
+            continue;
+        if (!CanTryToCastSpell(me, pSpell))
+            continue;
+
+        if (!me->movespline->Finalized() || me->IsMoving())
+        {
+            me->GetMotionMaster()->Clear(false, true);
+            me->GetMotionMaster()->MoveIdle();
+            me->StopMoving();
+            m_wandering = false;
+        }
+        if (me->GetStandState() != UNIT_STAND_STATE_STAND)
+            me->SetStandState(UNIT_STAND_STATE_STAND);
+        if (DoCastSpell(me, pSpell) == SPELL_CAST_OK)
+            return true;
+    }
+    return false;
 }
 
 bool SoloFarmAI::LootCorpses()

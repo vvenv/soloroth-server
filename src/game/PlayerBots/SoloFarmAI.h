@@ -54,10 +54,12 @@ private:
     void AssignSoloRole();
 
     bool RunAwayFromTarget(Unit* pEnemy) override;
+    bool CanOutpaceAttackers() const;
     bool UpdateCombat();
     bool Rest();
     bool HealSelf();
     bool UseConsumable(uint32 auraType, uint32 effect = 0);
+    bool Conjure();
     bool LootCorpses();
     uint32 FreeBagSlots() const;
     void Blacklist(ObjectGuid guid, uint32 ms);
