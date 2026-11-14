@@ -2450,10 +2450,15 @@ void CombatBotBaseAI::LearnPremadeSpecForClass()
         // Try to find a role appropriate gear template.
         if (m_role != ROLE_INVALID)
         {
+            auto hinted = [this](PlayerPremadeSpecTemplate const* p)
+            {
+                return !m_specHint.empty() && p->name.find(m_specHint) != std::string::npos;
+            };
             for (const auto itr : vSpecs)
             {
                 if (itr->role == m_role &&
-                   (!pSpec || pSpec->level < itr->level))
+                   (!pSpec || pSpec->level < itr->level ||
+                    (pSpec->level == itr->level && hinted(itr) && !hinted(pSpec))))
                 {
                     pSpec = itr;
                 }

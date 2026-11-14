@@ -85,6 +85,7 @@ void PlayerBotMgr::Load()
     }
     Field* fields = result->Fetch();
     m_maxAccountId = fields[0].GetUInt32() + 10000;
+    m_botAccountBase = m_maxAccountId;
 
     // 4- LoadFromDB
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, ">> [PlayerBotMgr] Loading Bots ...");

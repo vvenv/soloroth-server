@@ -44,7 +44,19 @@ class PlayerBotAI: public PlayerAI
         virtual void BeforeAddToMap(Player* player) {} // me=nullptr at call
         // Helpers
         bool SpawnNewPlayer(WorldSession* sess, uint8 classId, uint32 raceId, uint32 mapId, uint32 instanceId, float dx, float dy, float dz, float o, Player* pClone = nullptr);
+        // A bot with a fixed identity: same name, gender and look every time
+        // it is spawned. Empty name = a generated one.
+        void SetIdentity(std::string const& name, uint8 gender, uint32 lookSeed)
+        {
+            m_fixedName = name;
+            m_fixedGender = gender;
+            m_lookSeed = lookSeed;
+        }
         PlayerBotEntry* botEntry;
+    protected:
+        std::string m_fixedName;
+        uint8 m_fixedGender = 0;
+        uint32 m_lookSeed = 0;
 };
 
 class PlayerCreatorAI: public PlayerBotAI

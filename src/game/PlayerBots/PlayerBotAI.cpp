@@ -75,7 +75,24 @@ enum
 bool PlayerBotAI::SpawnNewPlayer(WorldSession* sess, uint8 class_, uint32 race_, uint32 mapId, uint32 instanceId, float x, float y, float z, float o, Player* pClone)
 {
     ASSERT(botEntry);
-    std::string name = sObjectMgr.GenerateFreePlayerName();
+    std::string name;
+    if (!m_fixedName.empty())
+    {
+        // Temporary bots are never saved and stay in the name cache after they
+        // leave, so an offline cache entry of a bot account is a stale copy of
+        // this bot. A real character or an online player keeps the name.
+        ObjectGuid const old = sObjectMgr.GetPlayerGuidByName(m_fixedName);
+        if (old.IsEmpty())
+            name = m_fixedName;
+        else if (!ObjectAccessor::FindPlayerNotInWorld(old) &&
+                 sPlayerBotMgr.IsBotAccount(sObjectMgr.GetPlayerAccountIdByGUID(old)))
+        {
+            sObjectMgr.DeletePlayerFromCache(old.GetCounter());
+            name = m_fixedName;
+        }
+    }
+    if (name.empty())
+        name = sObjectMgr.GenerateFreePlayerName();
     normalizePlayerName(name);
 
     uint8 gender;
@@ -93,6 +110,11 @@ bool PlayerBotAI::SpawnNewPlayer(WorldSession* sess, uint8 class_, uint32 race_,
         hairStyle = pClone->GetByteValue(PLAYER_BYTES, PLAYER_BYTES_OFFSET_HAIR_STYLE_ID);
         hairColor = pClone->GetByteValue(PLAYER_BYTES, PLAYER_BYTES_OFFSET_HAIR_COLOR_ID);
         facialHair = pClone->GetByteValue(PLAYER_BYTES_2, PLAYER_BYTES_2_OFFSET_FACIAL_STYLE);
+    }
+    else if (!m_fixedName.empty())
+    {
+        gender = m_fixedGender;
+        Player::SelectRandomAppearance(race_, gender, hairStyle, hairColor, face, facialHair, skin, m_lookSeed);
     }
     else
     {

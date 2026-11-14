@@ -18,6 +18,7 @@
 #include "Common.h"
 #include "SharedDefines.h"
 #include <map>
+#include <string>
 #include <unordered_map>
 
 class Player;
@@ -36,9 +37,10 @@ public:
     bool IsAutoFill(Player* pPlayer);
     void SetAutoFill(Player* pPlayer, bool on);
 
-    // Adds bots for the missing roles up to a party of five. Returns how many
-    // were added; `why` says why none were when it returns 0.
-    uint32 Fill(Player* pPlayer, std::string& why);
+    // Adds bots for the missing roles up to a party of five, picked from a
+    // fixed roster of companions. Returns how many were added; `who` lists
+    // them, `why` says why none were when it returns 0.
+    uint32 Fill(Player* pPlayer, std::string& who, std::string& why);
     // Sends away the bots this player leads: only the automatic ones, or all.
     uint32 Dismiss(Player* pPlayer, bool autoOnly);
 
@@ -60,6 +62,7 @@ private:
     {
         CombatBotRoles role = ROLE_INVALID;
         uint8 botClass = 0;
+        std::string name;           // roster name, or empty
         uint32 lastSeen = 0;        // world ms: spawned, or last found in the world
     };
 

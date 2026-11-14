@@ -564,6 +564,9 @@ public:
     bool m_ownCharacter = false;
     uint8 m_visualHonorRank = 0;
     CombatBotRoles m_role = ROLE_INVALID;
+    // Part of a premade spec name (e.g. "frost") preferred among the role's
+    // templates of the same level.
+    std::string m_specHint;
 };
 
 #endif

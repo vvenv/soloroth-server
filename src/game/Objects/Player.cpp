@@ -361,7 +361,7 @@ bool Player::ValidateAppearance(uint8 race, uint8 gender, uint8 hairID, uint8 ha
     return true;
 }
 
-void Player::SelectRandomAppearance(uint8 race, uint8 gender, uint8& hairID, uint8& hairColor, uint8& faceID, uint8& facialHair, uint8& skinColor)
+void Player::SelectRandomAppearance(uint8 race, uint8 gender, uint8& hairID, uint8& hairColor, uint8& faceID, uint8& facialHair, uint8& skinColor, uint32 seed)
 {
     // make sure values are always initialized
     hairID = 0;
@@ -370,12 +370,20 @@ void Player::SelectRandomAppearance(uint8 race, uint8 gender, uint8& hairID, uin
     facialHair = 0;
     skinColor = 0;
 
+    auto pick = [&seed](std::vector<std::pair<uint8, uint8>> const& v) -> std::pair<uint8, uint8> const&
+    {
+        if (!seed)
+            return SelectRandomContainerElement(v);
+        seed = seed * 1103515245u + 12345u;
+        return v[(seed >> 16) % v.size()];
+    };
+
     {
         std::vector<std::pair<uint8, uint8>> validFace;
         GetAllValidCharSectionVariationAndColorPairs(race, SECTION_TYPE_FACE, gender, validFace);
         if (!validFace.empty())
         {
-            auto face = SelectRandomContainerElement(validFace);
+            auto face = pick(validFace);
             faceID = face.first;
             skinColor = face.second;
         }
@@ -386,7 +394,7 @@ void Player::SelectRandomAppearance(uint8 race, uint8 gender, uint8& hairID, uin
         GetAllValidCharSectionVariationAndColorPairs(race, SECTION_TYPE_HAIR, gender, validHair);
         if (!validHair.empty())
         {
-            auto hair = SelectRandomContainerElement(validHair);
+            auto hair = pick(validHair);
             hairID = hair.first;
             hairColor = hair.second;
         }
@@ -397,7 +405,7 @@ void Player::SelectRandomAppearance(uint8 race, uint8 gender, uint8& hairID, uin
         GetAllValidCharSectionVariationAndColorPairs(race, SECTION_TYPE_FACIAL_HAIR, gender, validFacialHair);
         if (!validFacialHair.empty())
         {
-            auto beard = SelectRandomContainerElement(validFacialHair);
+            auto beard = pick(validFacialHair);
             facialHair = beard.first;
         }
     }

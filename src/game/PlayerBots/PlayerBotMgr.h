@@ -105,6 +105,7 @@ class PlayerBotMgr
         bool IsSavingAllowed() { return m_confAllowSaving; }
 
         uint32 GenBotAccountId() { return ++m_maxAccountId; }
+        bool IsBotAccount(uint32 accountId) const { return accountId > m_botAccountBase; }
         PlayerBotStats& GetStats(){ return m_stats; }
         void Start() { m_confEnableRandomBots = true; }
     protected:
@@ -114,6 +115,7 @@ class PlayerBotMgr
         uint32 m_lastUpdate;
         uint32 m_totalChance;
         uint32 m_maxAccountId;
+        uint32 m_botAccountBase = UINT32_MAX;   // accounts above it are made up for bots
         time_t m_lastBattleBotQueueUpdate;
 
         std::map<uint64 /*pl guid*/, std::shared_ptr<PlayerBotEntry>> m_bots;

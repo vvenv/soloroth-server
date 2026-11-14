@@ -19,10 +19,84 @@
 #include <algorithm>
 #include <vector>
 
-uint8 SelectRandomRaceForClass(uint8 playerClass, Team playerTeam); // PlayerBotMgr.cpp
-
 namespace
 {
+    // The companions: one per class and talent tree on each side, always with
+    // the same name, race, gender and face, so the same people come back.
+    struct RosterBot
+    {
+        char const* name;
+        Team team;
+        uint8 botClass;
+        uint8 race;
+        uint8 gender;
+        CombatBotRoles role;
+        char const* specEn;
+        char const* specZh;
+        char const* specHint;   // part of the premade spec names to prefer
+    };
+
+    RosterBot const ROSTER[] =
+    {
+        { "Aldric",    ALLIANCE, CLASS_WARRIOR, RACE_HUMAN,    GENDER_MALE,   ROLE_MELEE_DPS, "Arms Warrior",           "武器战士",     "arms" },
+        { "Brannoc",   ALLIANCE, CLASS_WARRIOR, RACE_DWARF,    GENDER_MALE,   ROLE_MELEE_DPS, "Fury Warrior",           "狂怒战士",     "fury" },
+        { "Durgan",    ALLIANCE, CLASS_WARRIOR, RACE_DWARF,    GENDER_MALE,   ROLE_TANK,      "Protection Warrior",     "防护战士",     "protection" },
+        { "Elenya",    ALLIANCE, CLASS_PALADIN, RACE_HUMAN,    GENDER_FEMALE, ROLE_HEALER,    "Holy Paladin",           "神圣骑士",     "holy" },
+        { "Hamrik",    ALLIANCE, CLASS_PALADIN, RACE_DWARF,    GENDER_MALE,   ROLE_TANK,      "Protection Paladin",     "防护骑士",     "prot" },
+        { "Cedric",    ALLIANCE, CLASS_PALADIN, RACE_HUMAN,    GENDER_MALE,   ROLE_MELEE_DPS, "Retribution Paladin",    "惩戒骑士",     "retribution" },
+        { "Sylvaine",  ALLIANCE, CLASS_HUNTER,  RACE_NIGHTELF, GENDER_FEMALE, ROLE_RANGE_DPS, "Beast Mastery Hunter",   "野兽控制猎人", "" },
+        { "Gundrik",   ALLIANCE, CLASS_HUNTER,  RACE_DWARF,    GENDER_MALE,   ROLE_RANGE_DPS, "Marksmanship Hunter",    "射击猎人",     "mm" },
+        { "Faelan",    ALLIANCE, CLASS_HUNTER,  RACE_NIGHTELF, GENDER_MALE,   ROLE_RANGE_DPS, "Survival Hunter",        "生存猎人",     "sv" },
+        { "Vesper",    ALLIANCE, CLASS_ROGUE,   RACE_HUMAN,    GENDER_FEMALE, ROLE_MELEE_DPS, "Assassination Rogue",    "刺杀盗贼",     "assa" },
+        { "Fizzwick",  ALLIANCE, CLASS_ROGUE,   RACE_GNOME,    GENDER_MALE,   ROLE_MELEE_DPS, "Combat Rogue",           "战斗盗贼",     "combat" },
+        { "Nyssa",     ALLIANCE, CLASS_ROGUE,   RACE_NIGHTELF, GENDER_FEMALE, ROLE_MELEE_DPS, "Subtlety Rogue",         "敏锐盗贼",     "" },
+        { "Brenna",    ALLIANCE, CLASS_PRIEST,  RACE_DWARF,    GENDER_FEMALE, ROLE_HEALER,    "Discipline Priest",      "戒律牧师",     "holy" },
+        { "Lucienne",  ALLIANCE, CLASS_PRIEST,  RACE_HUMAN,    GENDER_FEMALE, ROLE_HEALER,    "Holy Priest",            "神圣牧师",     "holy" },
+        { "Mordecai",  ALLIANCE, CLASS_PRIEST,  RACE_HUMAN,    GENDER_MALE,   ROLE_RANGE_DPS, "Shadow Priest",          "暗影牧师",     "shadow" },
+        { "Tinkara",   ALLIANCE, CLASS_MAGE,    RACE_GNOME,    GENDER_FEMALE, ROLE_RANGE_DPS, "Arcane Mage",            "奥术法师",     "arcane" },
+        { "Corvin",    ALLIANCE, CLASS_MAGE,    RACE_HUMAN,    GENDER_MALE,   ROLE_RANGE_DPS, "Fire Mage",              "火焰法师",     "fire" },
+        { "Isolde",    ALLIANCE, CLASS_MAGE,    RACE_HUMAN,    GENDER_FEMALE, ROLE_RANGE_DPS, "Frost Mage",             "冰霜法师",     "frost" },
+        { "Malachar",  ALLIANCE, CLASS_WARLOCK, RACE_HUMAN,    GENDER_MALE,   ROLE_RANGE_DPS, "Affliction Warlock",     "痛苦术士",     "affli" },
+        { "Nixwick",   ALLIANCE, CLASS_WARLOCK, RACE_GNOME,    GENDER_MALE,   ROLE_RANGE_DPS, "Demonology Warlock",     "恶魔学识术士", "demo" },
+        { "Seraphine", ALLIANCE, CLASS_WARLOCK, RACE_HUMAN,    GENDER_FEMALE, ROLE_RANGE_DPS, "Destruction Warlock",    "毁灭术士",     "ruin" },
+        { "Aerwynn",   ALLIANCE, CLASS_DRUID,   RACE_NIGHTELF, GENDER_FEMALE, ROLE_RANGE_DPS, "Balance Druid",          "平衡德鲁伊",   "balance" },
+        { "Thalor",    ALLIANCE, CLASS_DRUID,   RACE_NIGHTELF, GENDER_MALE,   ROLE_MELEE_DPS, "Feral Druid",            "野性德鲁伊",   "feral" },
+        { "Nerwen",    ALLIANCE, CLASS_DRUID,   RACE_NIGHTELF, GENDER_FEMALE, ROLE_HEALER,    "Restoration Druid",      "恢复德鲁伊",   "resto" },
+
+        { "Grukash",   HORDE,    CLASS_WARRIOR, RACE_ORC,      GENDER_MALE,   ROLE_MELEE_DPS, "Arms Warrior",           "武器战士",     "arms" },
+        { "Rakzan",    HORDE,    CLASS_WARRIOR, RACE_TROLL,    GENDER_MALE,   ROLE_MELEE_DPS, "Fury Warrior",           "狂怒战士",     "fury" },
+        { "Tahomak",   HORDE,    CLASS_WARRIOR, RACE_TAUREN,   GENDER_MALE,   ROLE_TANK,      "Protection Warrior",     "防护战士",     "protection" },
+        { "Shakara",   HORDE,    CLASS_SHAMAN,  RACE_ORC,      GENDER_FEMALE, ROLE_RANGE_DPS, "Elemental Shaman",       "元素萨满",     "ele" },
+        { "Durgash",   HORDE,    CLASS_SHAMAN,  RACE_ORC,      GENDER_MALE,   ROLE_MELEE_DPS, "Enhancement Shaman",     "增强萨满",     "enha" },
+        { "Halona",    HORDE,    CLASS_SHAMAN,  RACE_TAUREN,   GENDER_FEMALE, ROLE_HEALER,    "Restoration Shaman",     "恢复萨满",     "resto" },
+        { "Grashnak",  HORDE,    CLASS_HUNTER,  RACE_ORC,      GENDER_MALE,   ROLE_RANGE_DPS, "Beast Mastery Hunter",   "野兽控制猎人", "" },
+        { "Zanjira",   HORDE,    CLASS_HUNTER,  RACE_TROLL,    GENDER_FEMALE, ROLE_RANGE_DPS, "Marksmanship Hunter",    "射击猎人",     "mm" },
+        { "Kotori",    HORDE,    CLASS_HUNTER,  RACE_TAUREN,   GENDER_MALE,   ROLE_RANGE_DPS, "Survival Hunter",        "生存猎人",     "sv" },
+        { "Morwenna",  HORDE,    CLASS_ROGUE,   RACE_UNDEAD,   GENDER_FEMALE, ROLE_MELEE_DPS, "Assassination Rogue",    "刺杀盗贼",     "assa" },
+        { "Skarn",     HORDE,    CLASS_ROGUE,   RACE_ORC,      GENDER_MALE,   ROLE_MELEE_DPS, "Combat Rogue",           "战斗盗贼",     "combat" },
+        { "Vexjin",    HORDE,    CLASS_ROGUE,   RACE_TROLL,    GENDER_MALE,   ROLE_MELEE_DPS, "Subtlety Rogue",         "敏锐盗贼",     "" },
+        { "Zalaya",    HORDE,    CLASS_PRIEST,  RACE_TROLL,    GENDER_FEMALE, ROLE_HEALER,    "Discipline Priest",      "戒律牧师",     "holy" },
+        { "Elspeth",   HORDE,    CLASS_PRIEST,  RACE_UNDEAD,   GENDER_FEMALE, ROLE_HEALER,    "Holy Priest",            "神圣牧师",     "holy" },
+        { "Vorlath",   HORDE,    CLASS_PRIEST,  RACE_UNDEAD,   GENDER_MALE,   ROLE_RANGE_DPS, "Shadow Priest",          "暗影牧师",     "shadow" },
+        { "Ashveld",   HORDE,    CLASS_MAGE,    RACE_UNDEAD,   GENDER_MALE,   ROLE_RANGE_DPS, "Arcane Mage",            "奥术法师",     "arcane" },
+        { "Yenjala",   HORDE,    CLASS_MAGE,    RACE_TROLL,    GENDER_FEMALE, ROLE_RANGE_DPS, "Fire Mage",              "火焰法师",     "fire" },
+        { "Halvrik",   HORDE,    CLASS_MAGE,    RACE_UNDEAD,   GENDER_MALE,   ROLE_RANGE_DPS, "Frost Mage",             "冰霜法师",     "frost" },
+        { "Morthis",   HORDE,    CLASS_WARLOCK, RACE_UNDEAD,   GENDER_MALE,   ROLE_RANGE_DPS, "Affliction Warlock",     "痛苦术士",     "affli" },
+        { "Grishna",   HORDE,    CLASS_WARLOCK, RACE_ORC,      GENDER_FEMALE, ROLE_RANGE_DPS, "Demonology Warlock",     "恶魔学识术士", "demo" },
+        { "Cindrel",   HORDE,    CLASS_WARLOCK, RACE_UNDEAD,   GENDER_FEMALE, ROLE_RANGE_DPS, "Destruction Warlock",    "毁灭术士",     "ruin" },
+        { "Aponi",     HORDE,    CLASS_DRUID,   RACE_TAUREN,   GENDER_FEMALE, ROLE_RANGE_DPS, "Balance Druid",          "平衡德鲁伊",   "balance" },
+        { "Hoketah",   HORDE,    CLASS_DRUID,   RACE_TAUREN,   GENDER_MALE,   ROLE_MELEE_DPS, "Feral Druid",            "野性德鲁伊",   "feral" },
+        { "Mahala",    HORDE,    CLASS_DRUID,   RACE_TAUREN,   GENDER_FEMALE, ROLE_HEALER,    "Restoration Druid",      "恢复德鲁伊",   "resto" },
+    };
+
+    uint32 LookSeed(char const* name)
+    {
+        uint32 h = 2166136261u;
+        for (; *name; ++name)
+            h = (h ^ uint8(*name)) * 16777619u;
+        return h ? h : 1;
+    }
+
     uint32 const UPDATE_EVERY_MS = 500;
     // The client finishes loading the dungeon before the bots appear.
     uint32 const FILL_DELAY_MS = 3000;
@@ -31,6 +105,8 @@ namespace
     // A bot that never shows up in the group is forgotten after this.
     uint32 const BOT_LOGIN_GRACE_MS = 30000;
     uint32 const PARTY_SIZE = 5;
+    uint8 const NO_PREFERENCE = 0;  // no class
+
 
     enum : uint32
     {
@@ -201,7 +277,7 @@ void DungeonBotMgr::ForgetGoneBots(uint32 leaderLow)
         m_autoBots.erase(itr);
 }
 
-uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& why)
+uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why)
 {
     bool const zh = IsZh(pPlayer->GetSession());
 
@@ -222,6 +298,7 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& why)
     // Who is in the party already, and as what.
     std::vector<CombatBotRoles> roles;
     std::vector<uint8> classes;
+    std::vector<std::string> names;
     Group* pGroup = pPlayer->GetGroup();
     if (pGroup)
     {
@@ -244,6 +321,7 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& why)
                 continue;
             }
             classes.push_back(pMember->GetClass());
+            names.push_back(pMember->GetName());
             if (PartyBotAI* pAI = GetPartyBotAI(pMember))
                 roles.push_back(pAI->GetRole());
             else
@@ -254,6 +332,7 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& why)
     {
         roles.push_back(GetPlayerRole(pPlayer));
         classes.push_back(pPlayer->GetClass());
+        names.push_back(pPlayer->GetName());
     }
 
     // Bots still logging in count too, or a second fill would double them.
@@ -265,6 +344,7 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& why)
             continue;
         roles.push_back(bot.second.role);
         classes.push_back(bot.second.botClass);
+        names.push_back(bot.second.name);
     }
 
     if (roles.size() >= PARTY_SIZE)
@@ -277,66 +357,97 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& why)
     bool needHealer = std::find(roles.begin(), roles.end(), ROLE_HEALER) == roles.end();
     uint32 melee = uint32(std::count(roles.begin(), roles.end(), ROLE_MELEE_DPS));
 
-    auto unused = [&classes](std::vector<uint8> pool)
+    Team const team = pPlayer->GetTeam();
+    auto present = [&](RosterBot const& r)
     {
-        std::vector<uint8> fresh;
-        for (uint8 c : pool)
-            if (std::find(classes.begin(), classes.end(), c) == classes.end())
-                fresh.push_back(c);
-        return fresh.empty() ? pool : fresh;
+        if (std::find(names.begin(), names.end(), r.name) != names.end())
+            return true;
+        // Out with another player already.
+        return ObjectAccessor::FindPlayerByNameNotInWorld(r.name) != nullptr;
+    };
+    // A roster member for one of `wanted` roles: one of `preferClass` if any
+    // is free, else one whose class the party lacks, else any. Each class
+    // gets the same chance however many of its trees fit.
+    auto pick = [&](std::vector<CombatBotRoles> const& wanted, uint8 preferClass) -> RosterBot const*
+    {
+        std::vector<RosterBot const*> fit, fresh, preferred;
+        for (RosterBot const& r : ROSTER)
+        {
+            if (r.team != team || std::find(wanted.begin(), wanted.end(), r.role) == wanted.end() || present(r))
+                continue;
+            fit.push_back(&r);
+            if (std::find(classes.begin(), classes.end(), r.botClass) == classes.end())
+                fresh.push_back(&r);
+            if (r.botClass == preferClass)
+                preferred.push_back(&r);
+        }
+        std::vector<RosterBot const*> const& pool = !preferred.empty() ? preferred : !fresh.empty() ? fresh : fit;
+        if (pool.empty())
+            return nullptr;
+        std::vector<uint8> poolClasses;
+        for (RosterBot const* r : pool)
+            if (std::find(poolClasses.begin(), poolClasses.end(), r->botClass) == poolClasses.end())
+                poolClasses.push_back(r->botClass);
+        uint8 const botClass = SelectRandomContainerElement(poolClasses);
+        std::vector<RosterBot const*> ofClass;
+        for (RosterBot const* r : pool)
+            if (r->botClass == botClass)
+                ofClass.push_back(r);
+        return SelectRandomContainerElement(ofClass);
     };
 
-    Team const team = pPlayer->GetTeam();
     uint32 const slots = PARTY_SIZE - uint32(roles.size());
     uint32 added = 0;
     for (uint32 i = 0; i < slots; ++i)
     {
-        CombatBotRoles role;
-        uint8 botClass;
+        RosterBot const* r;
         if (needTank)
         {
-            role = ROLE_TANK;
-            botClass = CLASS_WARRIOR;
+            // Warriors tank best; the protection paladin only stands in.
+            r = pick({ ROLE_TANK }, CLASS_WARRIOR);
             needTank = false;
         }
         else if (needHealer)
         {
-            role = ROLE_HEALER;
-            std::vector<uint8> pool = unused({ CLASS_PRIEST, CLASS_DRUID, uint8(team == ALLIANCE ? CLASS_PALADIN : CLASS_SHAMAN) });
-            // Priests heal best of the four; take one when there is none yet.
-            botClass = std::find(pool.begin(), pool.end(), CLASS_PRIEST) != pool.end() ? CLASS_PRIEST : SelectRandomContainerElement(pool);
+            // Priests heal best; take one when the party has none yet.
+            bool const hasPriest = std::find(classes.begin(), classes.end(), CLASS_PRIEST) != classes.end();
+            r = pick({ ROLE_HEALER }, hasPriest ? NO_PREFERENCE : CLASS_PRIEST);
             needHealer = false;
         }
         else
         {
             // At most two melee, so the tank is not crowded and cleaves hit fewer.
-            std::vector<uint8> pool = melee >= 2
-                ? std::vector<uint8>{ CLASS_MAGE, CLASS_HUNTER, CLASS_WARLOCK }
-                : std::vector<uint8>{ CLASS_MAGE, CLASS_HUNTER, CLASS_WARLOCK, CLASS_ROGUE, CLASS_WARRIOR };
-            botClass = SelectRandomContainerElement(unused(pool));
-            role = (botClass == CLASS_ROGUE || botClass == CLASS_WARRIOR) ? ROLE_MELEE_DPS : ROLE_RANGE_DPS;
-            if (role == ROLE_MELEE_DPS)
-                ++melee;
+            r = melee >= 2 ? pick({ ROLE_RANGE_DPS }, NO_PREFERENCE) : pick({ ROLE_MELEE_DPS, ROLE_RANGE_DPS }, NO_PREFERENCE);
         }
-
-        uint8 const botRace = SelectRandomRaceForClass(botClass, team);
-        if (!botRace)
+        if (!r)
             continue;
+        if (r->role == ROLE_MELEE_DPS)
+            ++melee;
 
         float x, y, z;
         pPlayer->GetNearPoint(pPlayer, x, y, z, 0, 3.0f, frand(0.0f, 2 * M_PI_F));
-        PartyBotAI* ai = new PartyBotAI(pPlayer, nullptr, role, botRace, botClass, pPlayer->GetLevel(),
+        PartyBotAI* ai = new PartyBotAI(pPlayer, nullptr, r->role, r->race, r->botClass, pPlayer->GetLevel(),
             pPlayer->GetMapId(), pMap->GetInstanceId(), x, y, z, pPlayer->GetOrientation());
+        ai->SetIdentity(r->name, r->gender, LookSeed(r->name));
+        ai->m_specHint = r->specHint;
         if (!sPlayerBotMgr.AddBot(ai))
         {
             delete ai;
             continue;
         }
         AutoBot& bot = mine[uint32(ai->botEntry->playerGUID)];
-        bot.role = role;
-        bot.botClass = botClass;
+        bot.role = r->role;
+        bot.botClass = r->botClass;
+        bot.name = r->name;
         bot.lastSeen = m_now;
-        classes.push_back(botClass);
+        classes.push_back(r->botClass);
+        names.push_back(r->name);
+        if (!who.empty())
+            who += zh ? "、" : ", ";
+        who += r->name;
+        who += zh ? "（" : " (";
+        who += zh ? r->specZh : r->specEn;
+        who += zh ? "）" : ")";
         ++added;
     }
 
@@ -451,11 +562,11 @@ void DungeonBotMgr::Update(uint32 diff)
         }
         w.fillAt = 0;
 
-        std::string why;
+        std::string who, why;
         bool const zh = IsZh(pPlayer->GetSession());
-        if (uint32 added = Fill(pPlayer, why))
-            ChatHandler(pPlayer).PSendSysMessage(zh ? "%u 个机器人队友加入了队伍（你是%s）。输入 /gm 打开队伍面板。" : "%u bot(s) joined your party (you play %s). Type /gm for the party panel.",
-                added, RoleName(GetPlayerRole(pPlayer), zh));
+        if (Fill(pPlayer, who, why))
+            ChatHandler(pPlayer).PSendSysMessage(zh ? "队友加入了队伍：%s（你是%s）。输入 /gm 打开队伍面板。" : "Joining your party: %s (you play %s). Type /gm for the party panel.",
+                who.c_str(), RoleName(GetPlayerRole(pPlayer), zh));
         else if (!why.empty())
             ChatHandler(pPlayer).SendSysMessage(why.c_str());
     }
@@ -565,15 +676,14 @@ bool ChatHandler::HandleBotsFillCommand(char* /*args*/)
     Player* pPlayer = m_session ? m_session->GetPlayer() : nullptr;
     if (!pPlayer)
         return false;
-    std::string why;
-    uint32 const added = sDungeonBotMgr.Fill(pPlayer, why);
-    if (!added)
+    std::string who, why;
+    if (!sDungeonBotMgr.Fill(pPlayer, who, why))
     {
         SendSysMessage(why.c_str());
         SetSentErrorMessage(true);
         return false;
     }
-    PSendSysMessage(BotsZh(this) ? "%u 个机器人队友正在加入。" : "%u bot(s) on their way.", added);
+    PSendSysMessage(BotsZh(this) ? "队友正在赶来：%s。" : "On their way: %s.", who.c_str());
     return true;
 }
 
