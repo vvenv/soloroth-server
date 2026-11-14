@@ -17,11 +17,14 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "CellImpl.h"
+#include "CreatureGroups.h"
+#include "World.h"
 #include "WorldSession.h"
 #include "Utilities/Random.h"
 
 #include <algorithm>
 #include <cmath>
+#include <set>
 
 namespace
 {
@@ -37,12 +40,29 @@ namespace
     uint32 const SEARCH_MS = 1000;
     uint32 const PULL_TIMEOUT_MS = 20000;
     uint32 const BLACKLIST_MS = 60000;
+    uint32 const GUARDED_RECHECK_MS = 10000;
     // Below this a caster or hunter backs off from a mob in melee range; above it, stands and fights.
     float const RUN_AWAY_HEALTH_PCT = 40.0f;
+    // On top of a mob's aggro radius: spline drift, and the mob's own wandering.
+    float const AGGRO_MARGIN = 5.0f;
+    // Where a hunter or caster stops to open (CombatBotBaseAI::BeginChasing holds 25 yd).
+    float const RANGED_PULL_DIST = 25.0f;
+    uint32 const PATH_CANDIDATES = 6;
+    uint32 const WANDER_TRIES = 6;
 
     float Dist2d(float x1, float y1, float x2, float y2)
     {
         return std::sqrt((x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2));
+    }
+
+    float DistToSegment2d(float px, float py, float ax, float ay, float bx, float by)
+    {
+        float const dx = bx - ax;
+        float const dy = by - ay;
+        float const len2 = dx * dx + dy * dy;
+        float t = len2 > 0.0f ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0.0f;
+        t = std::max(0.0f, std::min(1.0f, t));
+        return Dist2d(px, py, ax + t * dx, ay + t * dy);
     }
 
     float AngleGap(float a, float b)
@@ -878,7 +898,7 @@ Creature* SoloFarmAI::FindTarget()
     uint32 const grayLevel = MaNGOS::XP::GetGrayLevel(me->GetLevel());
     uint32 const topLevel = me->GetLevel() + 2;
 
-    std::vector<std::pair<float, Creature*>> picks;
+    std::vector<std::pair<float, WorldObject*>> picks;
     for (Creature* pCreature : creatures)
     {
         if (pCreature->IsPet() || pCreature->IsTotem() || !pCreature->GetOwnerGuid().IsEmpty())
@@ -903,34 +923,137 @@ Creature* SoloFarmAI::FindTarget()
         if (!me->IsWithinLOSInMap(pCreature))
             continue;
 
-        // A target with hostile company pulls more than one: it ranks as if further away.
-        uint32 company = 0;
-        for (Creature* pOther : creatures)
-            if (pOther != pCreature && pOther->IsHostileTo(me) && pOther->IsWithinDist(pCreature, 10.0f))
-                ++company;
-
-        picks.emplace_back(me->GetDistance(pCreature) + 15.0f * company, pCreature);
+        picks.emplace_back(me->GetDistance(pCreature), pCreature);
     }
 
+    float const stopShort = GetRole() == ROLE_RANGE_DPS ? RANGED_PULL_DIST : 0.0f;
+    return static_cast<Creature*>(PickApproach(picks, AllowedAdds(), stopShort, true));
+}
+
+// Rested, one extra is fine: the class AI sheeps or blinds it. Otherwise only clean pulls.
+uint32 SoloFarmAI::AllowedAdds() const
+{
+    bool const fresh = me->GetHealthPercent() >= 90.0f &&
+        (me->GetPowerType() != POWER_MANA || me->GetPowerPercent(POWER_MANA) >= 80.0f);
+    return fresh ? 1 : 0;
+}
+
+std::vector<SoloFarmAI::Threat> SoloFarmAI::FindThreats() const
+{
+    // Paths may leave the farm circle a little on their way to its edge.
+    float const range = m_radius + 40.0f;
+    std::list<Creature*> creatures;
+    AliveCreatureCheck check{ m_x, m_y, range };
+    MaNGOS::CreatureListSearcher<AliveCreatureCheck> searcher(creatures, check);
+    Cell::VisitGridObjects(m_x, m_y, me->GetMap(), searcher, range);
+
+    std::vector<Threat> threats;
+    for (Creature* pCreature : creatures)
+    {
+        if (pCreature->IsInCombat() || pCreature->IsPet() || !pCreature->GetOwnerGuid().IsEmpty())
+            continue;
+        if (!pCreature->CanInitiateAttack() || pCreature->IsInEvadeMode() || !pCreature->IsHostileTo(me))
+            continue;
+        float const reach = pCreature->GetAttackDistance(me);
+        if (reach > 0.0f)
+            threats.push_back({ pCreature, reach + AGGRO_MARGIN });
+    }
+    return threats;
+}
+
+uint32 SoloFarmAI::CountAdds(std::vector<Threat> const& threats, float x, float y, float z,
+    Creature* pTarget, float stopShort) const
+{
+    PathInfo path(me);
+    path.calculate(x, y, z, false);
+    if (!(path.getPathType() & PATHFIND_NORMAL) || path.Length() > m_radius * 3.0f)
+        return NO_PATH;
+
+    std::set<Creature*> adds;
+    PointsArray const& points = path.getPath();
+    for (size_t i = 1; i < points.size(); ++i)
+    {
+        G3D::Vector3 const& a = points[i - 1];
+        G3D::Vector3 const& b = points[i];
+        if (Dist2d(a.x, a.y, x, y) <= stopShort)
+            break;
+        for (Threat const& threat : threats)
+        {
+            Creature* pCreature = threat.pCreature;
+            if (pCreature == pTarget)
+                continue;
+            if (std::fabs(pCreature->GetPositionZ() - (a.z + b.z) * 0.5f) > threat.reach)
+                continue;
+            if (DistToSegment2d(pCreature->GetPositionX(), pCreature->GetPositionY(), a.x, a.y, b.x, b.y) <= threat.reach)
+                adds.insert(pCreature);
+        }
+    }
+
+    if (pTarget)
+    {
+        // Creature::CallAssistance: a hit mob calls in idle kin that can see it.
+        float const radius = sWorld.getConfig(CONFIG_FLOAT_CREATURE_FAMILY_ASSISTANCE_RADIUS);
+        if (radius > 0.0f)
+        {
+            std::list<Creature*> helpers;
+            MaNGOS::AnyAssistCreatureInRangeCheck check(pTarget, me, radius);
+            MaNGOS::CreatureListSearcher<MaNGOS::AnyAssistCreatureInRangeCheck> searcher(helpers, check);
+            Cell::VisitGridObjects(pTarget, searcher, radius);
+            adds.insert(helpers.begin(), helpers.end());
+        }
+
+        CreatureGroup* pGroup = pTarget->GetCreatureGroup();
+        if (pGroup && pGroup->HasGroupFlag(OPTION_AGGRO_TOGETHER))
+        {
+            auto const addMember = [&](Creature* pMember)
+            {
+                if (pMember && pMember != pTarget && pMember->IsAlive() && !pMember->IsInCombat())
+                    adds.insert(pMember);
+            };
+            pGroup->DoForAllMembers(pTarget->GetMap(), addMember);
+            addMember(pTarget->GetMap()->GetCreature(pGroup->GetOriginalLeaderGuid()));
+        }
+    }
+    return uint32(adds.size());
+}
+
+WorldObject* SoloFarmAI::PickApproach(std::vector<std::pair<float, WorldObject*>>& picks, uint32 allowed,
+    float stopShort, bool fight)
+{
     std::sort(picks.begin(), picks.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
 
+    std::vector<Threat> const threats = picks.empty() ? std::vector<Threat>() : FindThreats();
+    WorldObject* pBest = nullptr;
+    uint32 bestAdds = NO_PATH;
     uint32 tries = 0;
     for (auto const& pick : picks)
     {
-        if (++tries > 4)
+        if (++tries > PATH_CANDIDATES)
             break;
 
-        Creature* pCreature = pick.second;
-        PathInfo path(me);
-        path.calculate(pCreature->GetPositionX(), pCreature->GetPositionY(), pCreature->GetPositionZ(), false);
-        if (!(path.getPathType() & PATHFIND_NORMAL) || path.Length() > m_radius * 3.0f)
+        WorldObject* pObject = pick.second;
+        uint32 const adds = CountAdds(threats, pObject->GetPositionX(), pObject->GetPositionY(),
+            pObject->GetPositionZ(), fight ? pObject->ToCreature() : nullptr, stopShort);
+        if (adds == NO_PATH)
         {
-            Blacklist(pCreature->GetObjectGuid(), BLACKLIST_MS);
+            Blacklist(pObject->GetObjectGuid(), BLACKLIST_MS);
             continue;
         }
-        return pCreature;
+        // Guards may die to the grind or wander off; look again soon.
+        if (adds > allowed)
+        {
+            Blacklist(pObject->GetObjectGuid(), GUARDED_RECHECK_MS);
+            continue;
+        }
+        if (adds < bestAdds)
+        {
+            pBest = pObject;
+            bestAdds = adds;
+        }
+        if (!adds)
+            break;
     }
-    return nullptr;
+    return pBest;
 }
 
 void SoloFarmAI::Wander()
@@ -947,13 +1070,35 @@ void SoloFarmAI::Wander()
     if (m_now < m_idleUntil)
         return;
 
-    float x = m_x;
-    float y = m_y;
-    float z = m_z;
-    if (!me->GetMap()->GetWalkRandomPosition(nullptr, x, y, z, m_radius))
-        return;
+    std::vector<Threat> const threats = FindThreats();
+    uint32 const allowed = AllowedAdds();
+    uint32 bestAdds = NO_PATH;
+    float bestX = 0.0f, bestY = 0.0f, bestZ = 0.0f;
+    for (uint32 i = 0; i < WANDER_TRIES && bestAdds; ++i)
+    {
+        float x = m_x;
+        float y = m_y;
+        float z = m_z;
+        if (!me->GetMap()->GetWalkRandomPosition(nullptr, x, y, z, m_radius))
+            continue;
+        uint32 const adds = CountAdds(threats, x, y, z);
+        if (adds < bestAdds)
+        {
+            bestAdds = adds;
+            bestX = x;
+            bestY = y;
+            bestZ = z;
+        }
+    }
 
-    me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING | MOVE_EXCLUDE_STEEP_SLOPES);
+    // Every way out runs past a mob: wait for it to move, respawn timers, or our health.
+    if (bestAdds > allowed)
+    {
+        m_idleUntil = m_now + urand(2000, 4000);
+        return;
+    }
+
+    me->GetMotionMaster()->MovePoint(0, bestX, bestY, bestZ, MOVE_PATHFINDING | MOVE_EXCLUDE_STEEP_SLOPES);
     m_wandering = true;
 }
 
@@ -1045,8 +1190,7 @@ Creature* SoloFarmAI::FindSkinnable()
     MaNGOS::CreatureListSearcher<Check> searcher(corpses, check);
     Cell::VisitGridObjects(m_x, m_y, me->GetMap(), searcher, m_radius);
 
-    Creature* pBest = nullptr;
-    float best = 0.0f;
+    std::vector<std::pair<float, WorldObject*>> picks;
     for (Creature* pCreature : corpses)
     {
         if (IsBlacklisted(pCreature->GetObjectGuid()))
@@ -1056,14 +1200,9 @@ Creature* SoloFarmAI::FindSkinnable()
             : int32(pCreature->GetLevel()) * 5;
         if (req > me->GetSkillValue(SKILL_SKINNING))
             continue;
-        float const d = me->GetDistance(pCreature);
-        if (!pBest || d < best)
-        {
-            pBest = pCreature;
-            best = d;
-        }
+        picks.emplace_back(me->GetDistance(pCreature), pCreature);
     }
-    return pBest;
+    return static_cast<Creature*>(PickApproach(picks, 0, 0.0f, false));
 }
 
 bool SoloFarmAI::CanOpenQuestChest(GameObject const* pGo) const
@@ -1154,22 +1293,16 @@ GameObject* SoloFarmAI::FindQuestObject()
     MaNGOS::GameObjectListSearcher<Check> searcher(objects, check);
     Cell::VisitGridObjects(m_x, m_y, me->GetMap(), searcher, m_radius);
 
-    GameObject* pBest = nullptr;
-    float best = 0.0f;
+    std::vector<std::pair<float, WorldObject*>> picks;
     for (GameObject* pGo : objects)
     {
         if (IsBlacklisted(pGo->GetObjectGuid()) || !IsQuestInteractGo(pGo))
             continue;
         if (!pGo->PlayerCanUse(me))
             continue;
-        float const d = me->GetDistance(pGo);
-        if (!pBest || d < best)
-        {
-            pBest = pGo;
-            best = d;
-        }
+        picks.emplace_back(me->GetDistance(pGo), pGo);
     }
-    return pBest;
+    return static_cast<GameObject*>(PickApproach(picks, 0, 0.0f, false));
 }
 
 bool SoloFarmAI::UpdateQuestObjects()
@@ -1286,20 +1419,14 @@ GameObject* SoloFarmAI::FindGatherNode()
     MaNGOS::GameObjectListSearcher<Check> searcher(objects, check);
     Cell::VisitGridObjects(m_x, m_y, me->GetMap(), searcher, m_radius);
 
-    GameObject* pBest = nullptr;
-    float best = 0.0f;
+    std::vector<std::pair<float, WorldObject*>> picks;
     for (GameObject* pGo : objects)
     {
         if (IsBlacklisted(pGo->GetObjectGuid()) || !GatherLockType(pGo))
             continue;
-        float const d = me->GetDistance(pGo);
-        if (!pBest || d < best)
-        {
-            pBest = pGo;
-            best = d;
-        }
+        picks.emplace_back(me->GetDistance(pGo), pGo);
     }
-    return pBest;
+    return static_cast<GameObject*>(PickApproach(picks, 0, 0.0f, false));
 }
 
 bool SoloFarmAI::UpdateGather()

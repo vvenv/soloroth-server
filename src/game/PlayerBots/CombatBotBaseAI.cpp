@@ -3160,7 +3160,7 @@ void CombatBotBaseAI::BeginChasing(Unit* pVictim) const
         me->SetCasterChaseDistance(0.0f);
 
     // we use dist = 1 always so we can specify angle, instead of spreading around target like mobs
-    me->GetMotionMaster()->MoveChase(pVictim, 1.0f, m_role == ROLE_MELEE_DPS ? M_PI_F : 0.0f);
+    me->GetMotionMaster()->MoveChase(pVictim, 1.0f, ChaseFromBehind(pVictim) ? M_PI_F : 0.0f);
 }
 
 bool CombatBotBaseAI::SummonShamanTotems()

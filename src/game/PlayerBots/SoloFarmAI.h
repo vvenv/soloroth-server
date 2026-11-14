@@ -54,6 +54,8 @@ private:
     void AssignSoloRole();
 
     bool RunAwayFromTarget(Unit* pEnemy) override;
+    // Alone, the mob turns to face us: circling for its back only drags us past its friends.
+    bool ChaseFromBehind(Unit* /*pVictim*/) const override { return false; }
     bool CanOutpaceAttackers() const;
     bool UpdateCombat();
     bool Rest();
@@ -75,6 +77,23 @@ private:
     bool NeedsCrowdControlWindow() const;
     // Mage sheep only hits a non-victim add; in 1v1 emergencies CC the kill target instead.
     bool TryEmergencyCrowdControl(Unit* pVictim);
+
+    // An idle mob that attacks on sight, and how close we may pass it.
+    struct Threat
+    {
+        Creature* pCreature;
+        float reach;
+    };
+    std::vector<Threat> FindThreats() const;
+    // Mobs a walk to (x, y, z) wakes: threats along the path, stopping `stopShort` from the end,
+    // plus those that assist pTarget once it is hit. NO_PATH when unreachable or too long.
+    uint32 CountAdds(std::vector<Threat> const& threats, float x, float y, float z,
+        Creature* pTarget = nullptr, float stopShort = 0.0f) const;
+    static uint32 const NO_PATH = 0xFFFFFFFF;
+    uint32 AllowedAdds() const;
+    // Nearest first, the fewest adds within `allowed`; `fight` counts the target's assisters.
+    WorldObject* PickApproach(std::vector<std::pair<float, WorldObject*>>& picks, uint32 allowed,
+        float stopShort, bool fight);
 
     void UpdateGrind();
     Creature* FindTarget();

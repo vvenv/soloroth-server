@@ -136,6 +136,7 @@ public:
     uint8 GetHighestHonorRankFromEquippedItems() const;
     void UpdateVisualHonorRankBasedOnItems();
     void BeginChasing(Unit* pVictim) const;
+    virtual bool ChaseFromBehind(Unit* /*pVictim*/) const { return m_role == ROLE_MELEE_DPS; }
     bool SummonShamanTotems();
     SpellCastResult CastWeaponBuff(SpellEntry const* pSpellEntry, EquipmentSlots slot);
     bool UseTrinketEffects(bool onlyToBreakCC = false);
