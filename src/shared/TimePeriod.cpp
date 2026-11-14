@@ -15,7 +15,6 @@
  */
 
 #include "TimePeriod.h"
-#include "Platform/CompilerDefs.h"
 
 #ifdef _WIN32
     #include <Windows.h>
@@ -25,11 +24,22 @@
 ScopedTimerPeriod set_time_period(const std::chrono::milliseconds ms)
 {
 #ifdef _WIN32
-    PROCESS_POWER_THROTTLING_STATE throttling = {};
-    throttling.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
-    throttling.ControlMask = PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
-    throttling.StateMask = 0;
-    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &throttling, sizeof(throttling));
+    // Windows 11 may ignore timer resolution while minimized; opt out via
+    // SetProcessInformation. Resolve at runtime: MinGW headers often omit the
+    // declaration, and older Windows lack the export; either way skip.
+    using SetProcessInformationFn = BOOL (WINAPI*)(HANDLE, PROCESS_INFORMATION_CLASS, LPVOID, DWORD);
+    if (HMODULE const kernel32 = GetModuleHandleW(L"kernel32.dll"))
+    {
+        if (auto const setProcessInformation = reinterpret_cast<SetProcessInformationFn>(
+                GetProcAddress(kernel32, "SetProcessInformation")))
+        {
+            PROCESS_POWER_THROTTLING_STATE throttling = {};
+            throttling.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+            throttling.ControlMask = PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+            throttling.StateMask = 0;
+            setProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &throttling, sizeof(throttling));
+        }
+    }
 
     auto count = ms.count();
     const auto result = timeBeginPeriod(count);
