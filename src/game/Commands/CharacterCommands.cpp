@@ -59,6 +59,37 @@ bool ChatHandler::HandleCharacterAIInfoCommand(char* /*args*/)
     return true;
 }
 
+static bool XpRateZh(WorldSession const* pSession)
+{
+    if (!pSession)
+        return false;
+    int const index = pSession->GetSessionDbLocaleIndex();
+    return index >= 0 && sObjectMgr.GetLocaleForIndex(index) == LOCALE_zhCN;
+}
+
+// `.xprate` with no argument, `quiet` or after a change: the rate the player
+// gets, as a machine line the GMBox addon reads and a sentence.
+static void ShowXpRate(ChatHandler* handler, Player* pPlayer, bool quiet)
+{
+    float const personal = pPlayer->GetPersonalXpRate() < 0.0f ? 1.0f : pPlayer->GetPersonalXpRate();
+    float const server = sWorld.getConfig(CONFIG_FLOAT_RATE_XP_KILL);
+    // The first line is also read by the GMBox addon: keep its shape.
+    handler->PSendSysMessage("[xp] personal=%g server=%g max=%g", personal, server,
+        sWorld.getConfig(CONFIG_FLOAT_RATE_XP_PERSONAL_MAX));
+    if (quiet)
+        return;
+    bool const zh = XpRateZh(handler->GetSession());
+    if (personal <= 0.0f)
+        handler->SendSysMessage(zh ? "经验已停止：不再获得经验，任务的经验奖励折成金币。"
+                                   : "Experience is off: none is gained, and quest experience is paid in gold.");
+    else if (zh)
+        handler->PSendSysMessage("经验倍率：%g 倍（服务器 %g 倍 × 个人 %g）。少拿的任务经验折成金币。",
+            server * personal, server, personal);
+    else
+        handler->PSendSysMessage("Experience rate: %gx (server %gx times personal %g). Quest experience not taken is paid in gold.",
+            server * personal, server, personal);
+}
+
 bool ChatHandler::HandleModifyXpRateCommand(char* args)
 {
     // Only a GM can modify another player's rates.
@@ -71,9 +102,24 @@ bool ChatHandler::HandleModifyXpRateCommand(char* args)
         return false;
     }
 
+    std::string const arg = args ? args : "";
+    if (arg.empty() || arg == "quiet")
+    {
+        ShowXpRate(this, pPlayer, !arg.empty());
+        return true;
+    }
+
     float xp;
-    if (!ExtractFloat(&args, xp))
+    if (arg == "off")
+        xp = 0.0f;
+    else if (arg == "on")
+        xp = 1.0f;
+    else if (!ExtractFloat(&args, xp))
+    {
+        SendSysMessage(XpRateZh(m_session) ? "用法：.xprate [on|off|0..1]" : "Usage: .xprate [on|off|0..1]");
+        SetSentErrorMessage(true);
         return false;
+    }
 
     if (xp < sWorld.getConfig(CONFIG_FLOAT_RATE_XP_PERSONAL_MIN))
     {
@@ -88,7 +134,11 @@ bool ChatHandler::HandleModifyXpRateCommand(char* args)
     }
 
     pPlayer->SetPersonalXpRate(xp);
-    PSendSysMessage(LANG_XP_RATE_SET, (pPlayer != m_session->GetPlayer() ? (std::string(pPlayer->GetName()) + std::string("'s")).c_str() : "your"), xp);
+    pPlayer->SavePersonalXpRate();
+    if (pPlayer != m_session->GetPlayer())
+        PSendSysMessage(LANG_XP_RATE_SET, (std::string(pPlayer->GetName()) + std::string("'s")).c_str(), xp);
+    else
+        ShowXpRate(this, pPlayer, false);
     return true;
 }
 

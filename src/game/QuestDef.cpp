@@ -224,25 +224,25 @@ int32 Quest::GetRewMoneyMaxLevelAtComplete() const
     return int32(GetRewMoneyMaxLevel() * sWorld.getConfig(CONFIG_FLOAT_RATE_DROP_MONEY));
 }
 
-int32 Quest::GetRewMoneyLowLevel(uint32 playerLevel) const
+int32 Quest::GetRewMoneyLowLevel(uint32 playerLevel, float xpShare) const
 {
     if (!RewXP || playerLevel >= sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL))
         return 0;
 
-    uint32 const xp = XPValue(playerLevel);
-    if (xp >= RewXP)
+    float const taken = std::min(float(XPValue(playerLevel)), float(RewXP)) * std::max(0.0f, std::min(xpShare, 1.0f));
+    if (taken >= float(RewXP))
         return 0;
 
-    return int32(GetRewMoneyMaxLevelAtComplete() * float(RewXP - xp) / float(RewXP));
+    return int32(GetRewMoneyMaxLevelAtComplete() * (float(RewXP) - taken) / float(RewXP));
 }
 
-int32 Quest::GetRewOrReqMoneyFor(uint32 playerLevel) const
+int32 Quest::GetRewOrReqMoneyFor(uint32 playerLevel, float xpShare) const
 {
     int32 const money = GetRewOrReqMoney();
     if (HasQuestFlag(QUEST_FLAGS_HIDDEN_REWARDS) || money < 0)
         return money;
 
-    return money + GetRewMoneyLowLevel(playerLevel);
+    return money + GetRewMoneyLowLevel(playerLevel, xpShare);
 }
 
 bool Quest::IsAllowedInRaid() const

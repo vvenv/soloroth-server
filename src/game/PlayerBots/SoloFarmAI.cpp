@@ -105,6 +105,7 @@ namespace
         }
     };
 
+#if SUPPORTED_CLIENT_BUILD > CLIENT_BUILD_1_6_1
     struct FishingHoleCheck
     {
         float x, y, range;
@@ -114,6 +115,7 @@ namespace
                 pGo->GetDistance2d(x, y) <= range;
         }
     };
+#endif
 
     // SetFacingToObject launches a facing spline with MOVEFLAG_FORWARD; the next
     // Player::SetPosition then interrupts casts that have SPELL_INTERRUPT_FLAG_MOVEMENT
@@ -375,7 +377,7 @@ bool SoloFarmAI::NeedsCrowdControlWindow() const
 {
     if (me->GetAttackers().size() >= 2)
         return true;
-    // Same band as kite / combat potion / self-heal: buy a second to bandage or run.
+    // Low: a controlled target is what lets us back off, heal or bandage at all.
     return me->GetHealthPercent() < RUN_AWAY_HEALTH_PCT;
 }
 
@@ -498,12 +500,15 @@ void SoloFarmAI::UpdateAI(uint32 const diff)
 
 // ------------------------------------------------------------------ combat --
 
-// Alone, backing off from a mob that keeps up only leads it on until it leashes home and
-// drops the fight. Kite only when the ones next to us cannot follow (Frost Nova, Entangling
-// Roots, stuns, Wing Clip / Concussive Shot slows, or busy with the pet), or when low.
+// Alone, backing off from a mob that keeps up (slowed included) only takes hits on the way
+// and can lead it home to leash; even when low, potion / heal / CC beat running. Back off
+// only when the ones next to us cannot follow, and not when a lone target is nearly dead.
 bool SoloFarmAI::RunAwayFromTarget(Unit* pEnemy)
 {
-    if (me->GetHealthPercent() >= RUN_AWAY_HEALTH_PCT && !CanOutpaceAttackers())
+    if (!CanOutpaceAttackers())
+        return false;
+    if (pEnemy && me->GetAttackers().size() <= 1 &&
+        (pEnemy->GetHealthPercent() < 20.0f || pEnemy->GetHealth() * 3 < me->GetHealth()))
         return false;
     return PartyBotAI::RunAwayFromTarget(pEnemy);
 }
@@ -519,8 +524,6 @@ bool SoloFarmAI::CanOutpaceAttackers() const
         if (pAttacker->GetVictim() != me)
             continue;
         if (pAttacker->HasUnitState(UNIT_STATE_CAN_NOT_MOVE | UNIT_STATE_CONFUSED))
-            continue;
-        if (pAttacker->HasAuraType(SPELL_AURA_MOD_DECREASE_SPEED))
             continue;
         return false;
     }
@@ -584,6 +587,22 @@ bool SoloFarmAI::UpdateCombat()
         me->GetMotionMaster()->Clear(false, true);
         me->GetMotionMaster()->MoveIdle();
         return true;
+    }
+
+    // AttackStart turns on auto-attack, which swings in every gap between casts once the mob
+    // is in reach. A caster with mana keeps to spells; out of mana it melees after all.
+    if (GetRole() == ROLE_RANGE_DPS && me->GetClass() != CLASS_HUNTER &&
+        me->GetShapeshiftForm() == FORM_NONE && me->GetPowerType() == POWER_MANA)
+    {
+        bool const melee = me->GetPowerPercent(POWER_MANA) < 10.0f &&
+            !me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL);
+        if (melee && !me->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+            me->Attack(pVictim, true);
+        else if (!melee && me->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+        {
+            me->ClearUnitState(UNIT_STATE_MELEE_ATTACKING);
+            me->SendMeleeAttackStop(pVictim);
+        }
     }
 
     if (me->IsNonMeleeSpellCasted(false, false, true))
@@ -1620,9 +1639,11 @@ bool SoloFarmAI::FindFishingSpot()
 
     // Schools first, from the shore around them, facing them.
     std::list<GameObject*> holes;
+#if SUPPORTED_CLIENT_BUILD > CLIENT_BUILD_1_6_1
     FishingHoleCheck holeCheck{ m_x, m_y, m_radius + m_castMax };
     MaNGOS::GameObjectListSearcher<FishingHoleCheck> holeSearcher(holes, holeCheck);
     Cell::VisitGridObjects(m_x, m_y, pMap, holeSearcher, m_radius + m_castMax);
+#endif
 
     for (GameObject* pHole : holes)
     {

@@ -1454,6 +1454,7 @@ class ObjectMgr
         }
 
         QuestRelationsMap& GetCreatureQuestRelationsMap() { return m_CreatureQuestRelations; }
+        QuestRelationsMap const& GetGOQuestRelationsMap() const { return m_GOQuestRelations; }
 
         void ResetOldMailCounter() { m_OldMailCounter = 0; }
         void IncrementOldMailCounter(uint32 count) { m_OldMailCounter += count; }

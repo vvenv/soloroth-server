@@ -686,6 +686,8 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder *holder)
         pCurrChar->SetStandState(UNIT_STAND_STATE_STAND);
 
     sAchievementMgr.OnLogin(pCurrChar);
+    if (!alreadyOnline)
+        pCurrChar->LoadPersonalXpRate();
 
     m_playerLoading = false;
     delete holder;

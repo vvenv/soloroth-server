@@ -469,7 +469,7 @@ void PlayerMenu::SendQuestGiverQuestDetails(Quest const* pQuest, ObjectGuid npcG
     packet->quest = pQuest;
     packet->autoFinish = ActivateAccept; // I have no idea here this is used
     Player const* player = GetMenuSession()->GetPlayer();
-    packet->money = player ? pQuest->GetRewOrReqMoneyFor(player->GetLevel()) : pQuest->GetRewOrReqMoney();
+    packet->money = player ? pQuest->GetRewOrReqMoneyFor(player->GetLevel(), player->GetQuestXpShare()) : pQuest->GetRewOrReqMoney();
     GetMenuSession()->SendPacket(std::move(packet));
 }
 
@@ -481,7 +481,7 @@ void PlayerMenu::SendQuestGiverOfferReward(Quest const* pQuest, ObjectGuid npcGu
     packet->quest = pQuest;
     packet->autoFinish = EnableNext; // I have no idea here this is used
     Player const* player = GetMenuSession()->GetPlayer();
-    packet->money = player ? pQuest->GetRewOrReqMoneyFor(player->GetLevel()) : pQuest->GetRewOrReqMoney();
+    packet->money = player ? pQuest->GetRewOrReqMoneyFor(player->GetLevel(), player->GetQuestXpShare()) : pQuest->GetRewOrReqMoney();
     GetMenuSession()->SendPacket(std::move(packet));
 }
 

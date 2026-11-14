@@ -18,6 +18,7 @@
 set (game_SRCS
     AccountMgr.cpp
     AchievementMgr.cpp
+    DungeonQuests.cpp
     AuraRemovalMgr.cpp
     AutoBroadCastMgr.cpp
     Camera.cpp

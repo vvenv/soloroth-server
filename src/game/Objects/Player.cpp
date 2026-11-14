@@ -3010,6 +3010,22 @@ void Player::SendLogXPGain(uint32 givenXP, Unit const* victim, uint32 restXP) co
     GetSession()->SendPacket(std::move(packet));
 }
 
+void Player::LoadPersonalXpRate()
+{
+    if (std::unique_ptr<QueryResult> result = CharacterDatabase.PQuery(
+            "SELECT `rate` FROM `character_xp_rate` WHERE `guid` = %u", GetGUIDLow()))
+        SetPersonalXpRate(result->Fetch()[0].GetFloat());
+}
+
+void Player::SavePersonalXpRate() const
+{
+    if (m_personalXpRate < 0.0f)
+        CharacterDatabase.PExecute("DELETE FROM `character_xp_rate` WHERE `guid` = %u", GetGUIDLow());
+    else
+        CharacterDatabase.PExecute("REPLACE INTO `character_xp_rate` (`guid`, `rate`) VALUES (%u, %f)",
+            GetGUIDLow(), m_personalXpRate);
+}
+
 void Player::GiveXP(uint32 xp, Unit const* victim)
 {
 #if SUPPORTED_CLIENT_BUILD > CLIENT_BUILD_1_7_1
@@ -4489,6 +4505,7 @@ void Player::DeleteFromDB(ObjectGuid playerGuid, uint32 accountId, bool updateRe
             CharacterDatabase.PExecute("DELETE FROM `character_pet` WHERE `owner_guid` = '%u'", lowGuid);
             CharacterDatabase.PExecute("DELETE FROM `guild_eventlog` WHERE `player_guid1` = '%u' OR `player_guid2` = '%u'", lowGuid, lowGuid);
             AchievementMgr::DeleteCharacter(lowGuid);
+            CharacterDatabase.PExecute("DELETE FROM `character_xp_rate` WHERE `guid` = '%u'", lowGuid);
             sTicketMgr->RemovePlayerReferences(playerGuid);
             CharacterDatabase.CommitTransaction();
             break;
@@ -13152,8 +13169,10 @@ void Player::RewardQuest(Quest const* pQuest, uint32 reward, WorldObject* questE
     if (GetLevel() < sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL))
     {
         GiveXP(xp , nullptr);
-        // A quest the player has outgrown pays the lost experience in gold.
-        if (int32 money = pQuest->GetRewMoneyLowLevel(GetLevel()))
+        if (GetPersonalXpRate() >= 0.0f)
+            xp = uint32(xp * GetPersonalXpRate());
+        // Experience the player outgrew or turned down (.xprate) is paid in gold.
+        if (int32 money = pQuest->GetRewMoneyLowLevel(GetLevel(), GetQuestXpShare()))
             LogModifyMoney(money, "QuestLowLevel", questEnder->GetObjectGuid(), questId);
     }
     else if (int32 money = pQuest->GetRewMoneyMaxLevelAtComplete())
@@ -14363,7 +14382,7 @@ void Player::SendQuestReward(Quest const* pQuest, uint32 XP) const
     if (GetLevel() < sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL))
     {
         packet->xp = XP;
-        packet->money = pQuest->GetRewOrReqMoney() + pQuest->GetRewMoneyLowLevel(GetLevel());
+        packet->money = pQuest->GetRewOrReqMoney() + pQuest->GetRewMoneyLowLevel(GetLevel(), GetQuestXpShare());
     }
     else
     {

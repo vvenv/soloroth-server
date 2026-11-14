@@ -253,11 +253,12 @@ class Quest
         int32  GetRewOrReqMoney() const;
         uint32 GetRewMoneyMaxLevel() const { return RewMoneyMaxLevel; }
         int32 GetRewMoneyMaxLevelAtComplete() const;
-        // Gold paid for the experience a player has outgrown: the quest's level 60
-        // conversion, scaled by the share of RewXP that XPValue no longer grants.
-        int32 GetRewMoneyLowLevel(uint32 playerLevel) const;
+        // Gold paid for the experience a player does not take: the quest's level 60
+        // conversion, scaled by the share of RewXP that XPValue no longer grants or
+        // that xpShare (the player's own rate, 0..1) turns down.
+        int32 GetRewMoneyLowLevel(uint32 playerLevel, float xpShare = 1.0f) const;
         // Money shown in the quest dialogs and paid on completion below max level.
-        int32 GetRewOrReqMoneyFor(uint32 playerLevel) const;
+        int32 GetRewOrReqMoneyFor(uint32 playerLevel, float xpShare = 1.0f) const;
         uint8 GetRewRepSpilloverMask() const { return RewRepSpilloverMask; }
         uint32 GetRewXP() const { return RewXP; }
                                                             // use in XP calculation at client

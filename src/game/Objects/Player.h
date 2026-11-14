@@ -1476,6 +1476,10 @@ class Player final: public Unit
     public:
         void SetPersonalXpRate(float rate) { if (rate >= 0) m_personalXpRate = rate; }
         float GetPersonalXpRate() const { return m_personalXpRate; }
+        // The part of a quest's experience this character takes (0..1); the rest is paid in gold.
+        float GetQuestXpShare() const { return m_personalXpRate < 0.0f ? 1.0f : std::min(m_personalXpRate, 1.0f); }
+        void LoadPersonalXpRate();
+        void SavePersonalXpRate() const;
         void GiveXP(uint32 xp, Unit const* victim);
         void GiveLevel(uint32 level);
         void InitStatsForLevel(bool reapplyMods = false);
