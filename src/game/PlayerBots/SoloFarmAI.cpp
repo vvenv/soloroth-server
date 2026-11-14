@@ -44,9 +44,12 @@ namespace
     // Below this a caster or hunter backs off from a mob in melee range; above it, stands and fights.
     float const RUN_AWAY_HEALTH_PCT = 40.0f;
     // On top of a mob's aggro radius: spline drift, and the mob's own wandering.
-    float const AGGRO_MARGIN = 5.0f;
+    float const AGGRO_MARGIN = 2.0f;
+    // Two adds and more: skipped however rested we are.
+    uint32 const MAX_ADDS = 1;
     // Where a hunter or caster stops to open (CombatBotBaseAI::BeginChasing holds 25 yd).
     float const RANGED_PULL_DIST = 25.0f;
+    float const KITE_DIST = 15.0f;
     uint32 const PATH_CANDIDATES = 6;
     uint32 const WANDER_TRIES = 6;
 
@@ -527,10 +530,70 @@ bool SoloFarmAI::RunAwayFromTarget(Unit* pEnemy)
 {
     if (!CanOutpaceAttackers())
         return false;
-    if (pEnemy && me->GetAttackers().size() <= 1 &&
+    if (!pEnemy || me->GetMap()->IsDungeon())
+        return false;
+    if (me->GetAttackers().size() <= 1 &&
         (pEnemy->GetHealthPercent() < 20.0f || pEnemy->GetHealth() * 3 < me->GetHealth()))
         return false;
-    return PartyBotAI::RunAwayFromTarget(pEnemy);
+
+    // Straight back first, then fanning out; no way clear of other mobs, stand and fight.
+    static float const offsets[] = { 0.0f, 0.6f, -0.6f, 1.2f, -1.2f, 1.8f, -1.8f };
+    std::vector<Threat> const threats = FindThreats();
+    for (float offset : offsets)
+    {
+        float x, y, z;
+        pEnemy->GetNearPoint(me, x, y, z, 0.0f, KITE_DIST, pEnemy->GetAngle(me) + offset);
+        if (CountAdds(threats, x, y, z) == 0 && me->GetMotionMaster()->MoveDistance(pEnemy, KITE_DIST, offset))
+            return true;
+    }
+    return false;
+}
+
+std::vector<SpellEntry const*> SoloFarmAI::RunnerStopSpells(Unit const* pVictim) const
+{
+    switch (me->GetClass())
+    {
+        case CLASS_WARRIOR:
+            return { m_spells.warrior.pHamstring, m_spells.warrior.pConcussionBlow, m_spells.warrior.pPiercingHowl };
+        case CLASS_PALADIN:
+            return { m_spells.paladin.pHammerOfJustice };
+        case CLASS_HUNTER:
+            return { m_spells.hunter.pConcussiveShot, m_spells.hunter.pWingClip };
+        case CLASS_ROGUE:
+            return { m_spells.rogue.pKidneyShot, m_spells.rogue.pGouge };
+        case CLASS_PRIEST:
+            return { m_spells.priest.pMindFlay };
+        case CLASS_SHAMAN:
+            return { m_spells.shaman.pFrostShock };
+        case CLASS_MAGE:
+        {
+            // Frost Nova hits around us only.
+            SpellEntry const* pNova = me->IsWithinDist(pVictim, 8.0f) ? m_spells.mage.pFrostNova : nullptr;
+            return { pNova, m_spells.mage.pFrostbolt, m_spells.mage.pConeofCold };
+        }
+        case CLASS_WARLOCK:
+            return { m_spells.warlock.pCurseofExhaustion };
+        case CLASS_DRUID:
+            return { m_spells.druid.pBash, m_spells.druid.pEntanglingRoots };
+        default:
+            return {};
+    }
+}
+
+// Creature::DoFleeToGetAssistance: a mob low on health runs off and brings back kin from
+// CreatureFamilyFleeAssistanceRadius (30 yd). Root, snare or stun it before it gets there.
+bool SoloFarmAI::StopRunner(Unit* pVictim)
+{
+    if (pVictim->HasAuraType(SPELL_AURA_MOD_FEAR) || pVictim->HasUnitState(UNIT_STATE_CAN_NOT_MOVE))
+        return false;
+    MovementGeneratorType const type = pVictim->GetMotionMaster()->GetCurrentMovementGeneratorType();
+    if (type != ASSISTANCE_MOTION_TYPE && type != TIMED_FLEEING_MOTION_TYPE && !pVictim->HasUnitState(UNIT_STATE_FLEEING))
+        return false;
+
+    for (SpellEntry const* pSpell : RunnerStopSpells(pVictim))
+        if (pSpell && CanTryToCastSpell(pVictim, pSpell) && DoCastSpell(pVictim, pSpell) == SPELL_CAST_OK)
+            return true;
+    return false;
 }
 
 bool SoloFarmAI::CanOutpaceAttackers() const
@@ -636,6 +699,9 @@ bool SoloFarmAI::UpdateCombat()
         UseConsumable(0, SPELL_EFFECT_ENERGIZE))
         return true;
 
+    if (StopRunner(pVictim))
+        return true;
+
     if (!me->IsMoving())
     {
         if (!me->HasUnitState(UNIT_STATE_MELEE_ATTACKING) &&
@@ -677,6 +743,19 @@ bool SoloFarmAI::HealSelf()
     return HealInjuredTarget(me);
 }
 
+// Rest() then holds until 95% health and mana.
+void SoloFarmAI::BeginRest()
+{
+    if (m_resting)
+        return;
+    m_resting = true;
+    m_wandering = false;
+    me->GetMotionMaster()->Clear(false, true);
+    me->GetMotionMaster()->MoveIdle();
+    if (!me->movespline->Finalized())
+        me->StopMoving();
+}
+
 bool SoloFarmAI::Rest()
 {
     bool const usesMana = me->GetPowerType() == POWER_MANA;
@@ -696,12 +775,7 @@ bool SoloFarmAI::Rest()
 
     if (!m_resting)
     {
-        m_resting = true;
-        m_wandering = false;
-        me->GetMotionMaster()->Clear(false, true);
-        me->GetMotionMaster()->MoveIdle();
-        if (!me->movespline->Finalized())
-            me->StopMoving();
+        BeginRest();
         return true;
     }
 
@@ -875,8 +949,15 @@ void SoloFarmAI::UpdateGrind()
     if (m_now >= m_nextSearch)
     {
         m_nextSearch = m_now + SEARCH_MS;
-        if (Creature* pTarget = FindTarget())
+        uint32 adds = 0;
+        if (Creature* pTarget = FindTarget(adds))
         {
+            // Only pulls that bring a friend left: take them rested.
+            if (adds > AllowedAdds())
+            {
+                BeginRest();
+                return;
+            }
             m_pullGuid = pTarget->GetObjectGuid();
             m_pullStart = m_now;
             m_wandering = false;
@@ -888,7 +969,7 @@ void SoloFarmAI::UpdateGrind()
     Wander();
 }
 
-Creature* SoloFarmAI::FindTarget()
+Creature* SoloFarmAI::FindTarget(uint32& adds)
 {
     std::list<Creature*> creatures;
     AliveCreatureCheck check{ m_x, m_y, m_radius };
@@ -927,7 +1008,7 @@ Creature* SoloFarmAI::FindTarget()
     }
 
     float const stopShort = GetRole() == ROLE_RANGE_DPS ? RANGED_PULL_DIST : 0.0f;
-    return static_cast<Creature*>(PickApproach(picks, AllowedAdds(), stopShort, true));
+    return static_cast<Creature*>(PickApproach(picks, MAX_ADDS, stopShort, true, &adds));
 }
 
 // Rested, one extra is fine: the class AI sheeps or blinds it. Otherwise only clean pulls.
@@ -954,9 +1035,21 @@ std::vector<SoloFarmAI::Threat> SoloFarmAI::FindThreats() const
             continue;
         if (!pCreature->CanInitiateAttack() || pCreature->IsInEvadeMode() || !pCreature->IsHostileTo(me))
             continue;
-        float const reach = pCreature->GetAttackDistance(me);
-        if (reach > 0.0f)
-            threats.push_back({ pCreature, reach + AGGRO_MARGIN });
+        float reach = pCreature->GetAttackDistance(me);
+        if (reach <= 0.0f)
+            continue;
+        reach += AGGRO_MARGIN;
+
+        // A random mover strolls into a fight anywhere within its wander radius of home.
+        float x = pCreature->GetPositionX();
+        float y = pCreature->GetPositionY();
+        float z = pCreature->GetPositionZ();
+        if (pCreature->GetDefaultMovementType() == RANDOM_MOTION_TYPE && pCreature->GetWanderDistance() > 0.0f)
+        {
+            pCreature->GetRespawnCoord(x, y, z);
+            reach += pCreature->GetWanderDistance();
+        }
+        threats.push_back({ pCreature, x, y, z, reach });
     }
     return threats;
 }
@@ -982,9 +1075,9 @@ uint32 SoloFarmAI::CountAdds(std::vector<Threat> const& threats, float x, float 
             Creature* pCreature = threat.pCreature;
             if (pCreature == pTarget)
                 continue;
-            if (std::fabs(pCreature->GetPositionZ() - (a.z + b.z) * 0.5f) > threat.reach)
+            if (std::fabs(threat.z - (a.z + b.z) * 0.5f) > threat.reach)
                 continue;
-            if (DistToSegment2d(pCreature->GetPositionX(), pCreature->GetPositionY(), a.x, a.y, b.x, b.y) <= threat.reach)
+            if (DistToSegment2d(threat.x, threat.y, a.x, a.y, b.x, b.y) <= threat.reach)
                 adds.insert(pCreature);
         }
     }
@@ -1018,7 +1111,7 @@ uint32 SoloFarmAI::CountAdds(std::vector<Threat> const& threats, float x, float 
 }
 
 WorldObject* SoloFarmAI::PickApproach(std::vector<std::pair<float, WorldObject*>>& picks, uint32 allowed,
-    float stopShort, bool fight)
+    float stopShort, bool fight, uint32* pAdds)
 {
     std::sort(picks.begin(), picks.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
 
@@ -1053,6 +1146,8 @@ WorldObject* SoloFarmAI::PickApproach(std::vector<std::pair<float, WorldObject*>
         if (!adds)
             break;
     }
+    if (pAdds)
+        *pAdds = bestAdds;
     return pBest;
 }
 

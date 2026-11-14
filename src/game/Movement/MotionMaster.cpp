@@ -880,13 +880,13 @@ void MotionMaster::MoveCharge(Unit* target, uint32 delay, bool triggerAutoAttack
         Mutate(new ChargeMovementGenerator<Creature>(*(m_owner->ToCreature()), *target, delay, triggerAutoAttack, 0.0f, meleeReach));
 }
 
-bool MotionMaster::MoveDistance(Unit const* pTarget, float distance)
+bool MotionMaster::MoveDistance(Unit const* pTarget, float distance, float angleOffset)
 {
     if (m_owner->GetTransport())
         return false;
 
     float x, y, z;
-    pTarget->GetNearPoint(m_owner, x, y, z, 0, distance, pTarget->GetAngle(m_owner));
+    pTarget->GetNearPoint(m_owner, x, y, z, 0, distance, pTarget->GetAngle(m_owner) + angleOffset);
     
     if (z > (m_owner->GetPositionZ() + 10.0f))
         return false;
