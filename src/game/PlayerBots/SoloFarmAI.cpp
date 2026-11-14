@@ -230,6 +230,15 @@ bool SoloFarmAI::Start(Player* pPlayer, SoloFarmMode mode, float radius)
 
     // Gather also picks up quest goobers / glowing chests, so a profession is not required.
 
+    // Create-info Opening ranks (3365 / 6477 / 6478 / 22810). Old characters sometimes miss
+    // them; without 6478 locked quest chests like Tirisfal Pumpkin never get a kneeling open.
+    if (mode != SOLO_FARM_FISH)
+    {
+        for (uint32 spellId : { 3365u, 6477u, 6478u, 22810u })
+            if (!pPlayer->HasSpell(spellId))
+                pPlayer->LearnSpell(spellId, false);
+    }
+
     pPlayer->SetAI(new SoloFarmAI(pPlayer, mode, radius));
 
     SoloFarmAI* pAI = Of(pPlayer);
@@ -369,6 +378,40 @@ void SoloFarmAI::AssignSoloRole()
     // Nobody to heal but ourselves: healers fight, and heal themselves when low.
     if (m_role == ROLE_HEALER)
         m_role = me->GetClass() == CLASS_PALADIN ? ROLE_MELEE_DPS : ROLE_RANGE_DPS;
+}
+
+bool SoloFarmAI::NeedsCrowdControlWindow() const
+{
+    if (me->GetAttackers().size() >= 2)
+        return true;
+    // Same band as kite / combat potion / self-heal: buy a second to bandage or run.
+    if (me->GetHealthPercent() < RUN_AWAY_HEALTH_PCT)
+        return true;
+    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == DISTANCING_MOTION_TYPE)
+        return true;
+    return false;
+}
+
+bool SoloFarmAI::CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget) const
+{
+    if (!NeedsCrowdControlWindow())
+        return false;
+    return PartyBotAI::CanUseCrowdControl(pSpellEntry, pTarget);
+}
+
+bool SoloFarmAI::TryEmergencyCrowdControl(Unit* pVictim)
+{
+    if (!pVictim || !NeedsCrowdControlWindow())
+        return false;
+    // Multi-pull: class AI already sheeps/blinds a different attacker via CanUseCrowdControl.
+    if (me->GetAttackers().size() >= 2)
+        return false;
+
+    SpellEntry const* pCC = GetCrowdControlSpell();
+    if (!pCC || !CanTryToCastSpell(pVictim, pCC) ||
+        !PartyBotAI::CanUseCrowdControl(pCC, pVictim))
+        return false;
+    return DoCastSpell(pVictim, pCC) == SPELL_CAST_OK;
 }
 
 void SoloFarmAI::UpdateAI(uint32 const diff)
@@ -561,6 +604,10 @@ bool SoloFarmAI::UpdateCombat()
                 break;
         }
     }
+
+    // 1v1 low-HP: sheep/shackle/hibernate the kill target so we can kite, potion or bandage.
+    if (TryEmergencyCrowdControl(pVictim))
+        return true;
 
     // Also before the fight starts: a caster opens from range, which is what starts it.
     UpdateInCombatAI();
@@ -758,6 +805,9 @@ Creature* SoloFarmAI::FindTarget()
             continue;
         if (!IsValidHostileTarget(pCreature))
             continue;
+        // Grid search finds mobs behind hills and barns; without LOS the chase path is a guess.
+        if (!me->IsWithinLOSInMap(pCreature))
+            continue;
 
         // A target with hostile company pulls more than one: it ranks as if further away.
         uint32 company = 0;
@@ -869,6 +919,8 @@ bool SoloFarmAI::TakeOpenLoot()
     m_gatherGuid.Clear();
     m_gatherSpell = 0;
     m_gatherFails = 0;
+    m_questGuid.Clear();
+    m_questFails = 0;
     if (!all)
         Stop(SOLO_STOP_BAGS_FULL);
     return true;
@@ -1056,8 +1108,8 @@ bool SoloFarmAI::UpdateQuestObjects()
         }
         else
         {
-            float const reach = pGo->GetGOInfo()->GetInteractionDistance() + 1.0f;
-            if (!me->IsWithinDistInMap(pGo, reach))
+            // Locked chests (Tirisfal Pumpkin, etc.) use the Opening spell's range.
+            if (!pGo->IsAtInteractDistance(me))
             {
                 if (!me->IsMoving())
                     me->GetMotionMaster()->MovePoint(0, pGo->GetPositionX(), pGo->GetPositionY(),
@@ -1075,13 +1127,23 @@ bool SoloFarmAI::UpdateQuestObjects()
             }
             else if (pGo->GetGoType() == GAMEOBJECT_TYPE_CHEST)
             {
-                ok = me->SoloLootGameObject(pGo);
-                if (!ok)
+                // Kneeling / Opening locks need the real open spell; SoloLoot is the fallback
+                // when the character never learned the create-info Opening ranks.
+                if (SpellEntry const* pOpen = pGo->GetSpellForLock(me))
                 {
-                    Stop(SOLO_STOP_BAGS_FULL);
-                    m_questGuid.Clear();
-                    m_questFails = 0;
-                    return true;
+                    if (me->CastSpell(pGo, pOpen, false) == SPELL_CAST_OK)
+                        return true;
+                }
+                else
+                {
+                    ok = me->SoloLootGameObject(pGo);
+                    if (!ok)
+                    {
+                        Stop(SOLO_STOP_BAGS_FULL);
+                        m_questGuid.Clear();
+                        m_questFails = 0;
+                        return true;
+                    }
                 }
             }
 

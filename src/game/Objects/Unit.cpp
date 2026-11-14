@@ -7206,7 +7206,10 @@ void Unit::SetSpeedRateReal(UnitMoveType mtype, float rate)
 {
     m_speedRates[mtype] = rate;
     PropagateSpeedChange();
-    CallForAllControlledUnits(SetSpeedRateHelper(mtype, true), CONTROLLED_PET | CONTROLLED_GUARDIANS | CONTROLLED_CHARM | CONTROLLED_MINIPET);
+    // Pets need a map (GetPet → GetMap asserts). Player ctor sets the solo
+    // default run rate before m_currMap exists; skip the walk until then.
+    if (FindMap())
+        CallForAllControlledUnits(SetSpeedRateHelper(mtype, true), CONTROLLED_PET | CONTROLLED_GUARDIANS | CONTROLLED_CHARM | CONTROLLED_MINIPET);
 }
 
 void Unit::SetRooted(bool apply)

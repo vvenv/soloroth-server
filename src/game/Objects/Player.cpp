@@ -117,6 +117,7 @@ Player::Player(WorldSession* session) : Unit(),
     m_objectType |= TYPEMASK_PLAYER;
     m_objectTypeId = TYPEID_PLAYER;
     // Create-object packets read GetSpeed before any UpdateSpeed; match the default.
+    // SetSpeedRateReal skips pet propagation while FindMap() is null (this ctor).
     SetSpeedRateReal(MOVE_RUN, m_soloMoveSpeed);
 
     m_valuesCount = PLAYER_END;

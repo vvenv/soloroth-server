@@ -68,6 +68,11 @@ private:
     bool DoesGather() const { return m_mode == SOLO_FARM_GATHER || m_mode == SOLO_FARM_ALL; }
     // Quest goobers / glowing chests: grind, gather and all (not fishing).
     bool DoesQuestObjects() const { return m_mode != SOLO_FARM_FISH; }
+    // Multi-pull, or a 1v1 window to kite / bandage / potion / self-heal.
+    bool CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget) const override;
+    bool NeedsCrowdControlWindow() const;
+    // Mage sheep only hits a non-victim add; in 1v1 emergencies CC the kill target instead.
+    bool TryEmergencyCrowdControl(Unit* pVictim);
 
     void UpdateGrind();
     Creature* FindTarget();
