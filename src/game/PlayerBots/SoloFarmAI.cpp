@@ -1648,6 +1648,12 @@ void SoloFarmAI::UpdateFishing()
     if (me->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
     {
         GameObject* pBobber = me->GetGameObject(m_fishingSpell);
+        if (pBobber && m_castPending)
+        {
+            m_castPending = false;
+            m_castFails = 0;
+            ++m_casts;
+        }
         if (pBobber && pBobber->getLootState() == GO_READY)
         {
             if (!m_reelAt)
@@ -1722,15 +1728,21 @@ void SoloFarmAI::UpdateFishing()
         return;
     }
 
-    if (me->CastSpell(me, m_fishingSpell, false) == SPELL_CAST_OK && me->GetGameObject(m_fishingSpell))
+    // A server-side channel starts on the next spell update, so the bobber shows up a tick later.
+    // A cast that left none found no water where it fell (SPELL_FAILED_NOT_FISHABLE).
+    bool failed = m_castPending;
+    m_castPending = false;
+    if (!failed)
     {
-        m_castFails = 0;
-        ++m_casts;
-        return;
+        if (me->CastSpell(me, m_fishingSpell, false) == SPELL_CAST_OK)
+        {
+            m_castPending = true;
+            return;
+        }
+        failed = true;
     }
 
-    // The bobber found no water where it fell (SPELL_FAILED_NOT_FISHABLE): another spot.
-    if (++m_castFails >= 3)
+    if (failed && ++m_castFails >= 3)
     {
         m_badSpots.emplace_back(m_spotX, m_spotY);
         m_hasSpot = false;
@@ -1944,6 +1956,7 @@ bool SoloFarmAI::FindFishingSpot()
         m_moveTries = 0;
         m_castFails = 0;
         m_casts = 0;
+        m_castPending = false;
         return true;
     }
     return false;

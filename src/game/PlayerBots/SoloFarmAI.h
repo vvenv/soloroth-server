@@ -156,6 +156,7 @@ private:
     uint32 m_castFails = 0;
     uint32 m_casts = 0;
     uint32 m_reelAt = 0;
+    bool m_castPending = false;
     std::vector<std::pair<float, float>> m_badSpots;
 
     // Gathering (herb / mine / skin).
