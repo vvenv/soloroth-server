@@ -10,6 +10,7 @@
 #include "MoveSpline.h"
 #include "PathFinder.h"
 #include "Spell.h"
+#include "SpellAuras.h"
 #include "SpellMgr.h"
 #include "ObjectMgr.h"
 #include "Chat.h"
@@ -54,6 +55,31 @@ namespace
     float const KITE_DIST = 15.0f;
     uint32 const PATH_CANDIDATES = 6;
     uint32 const WANDER_TRIES = 6;
+
+    float EffectRadius(SpellEntry const* pSpell, float fallback)
+    {
+        float radius = 0.0f;
+        if (!pSpell)
+            return fallback;
+        for (int i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        {
+            if (!pSpell->EffectRadiusIndex[i])
+                continue;
+            if (SpellRadiusEntry const* pEntry = sSpellRadiusStore.LookupEntry(pSpell->EffectRadiusIndex[i]))
+                radius = std::max(radius, Spells::GetSpellRadius(pEntry));
+        }
+        return radius > 0.0f ? radius : fallback;
+    }
+
+    bool AppliesFear(SpellEntry const* pSpell)
+    {
+        if (!pSpell)
+            return false;
+        for (int i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            if (pSpell->Effect[i] == SPELL_EFFECT_APPLY_AURA && pSpell->EffectApplyAuraName[i] == SPELL_AURA_MOD_FEAR)
+                return true;
+        return false;
+    }
 
     float Dist2d(float x1, float y1, float x2, float y2)
     {
@@ -280,12 +306,12 @@ bool SoloFarmAI::Start(Player* pPlayer, SoloFarmMode mode, float radius)
                 uint32(radius));
             break;
         case SOLO_FARM_FIGHT:
-            chat.SendSysMessage(zh ? "开始半自动打怪：你自己走路。怪物攻击你，或你停下来并选中 30 码内的怪时，自动追击、放技能、吃药。不游荡找怪。走路不会停止；停止用 .solo stop。"
-                                   : "Assist on: you walk. It fights anything that attacks you, and a mob you target while standing still within 30 yards: chase, spells, potions. It does not wander. Walking does not stop it; .solo stop does.");
+            chat.SendSysMessage(zh ? "开始半自动打怪：你自己走路。怪物攻击你，或你停下来并选中 30 码内的怪时，自动追击、放技能。血量或法力过低会喝药水；定身后会后撤或闪现；多只怪会控住一只。不游荡找怪。走路不会停止；停止用 .solo stop。"
+                                   : "Assist on: you walk. It fights anything that attacks you, and a mob you target while standing still within 30 yards: chase and spells. It drinks a potion when health or mana is low, backs off or blinks after a root, and crowd-controls an extra mob. It does not wander. Walking does not stop it; .solo stop does.");
             break;
         default:
-            chat.PSendSysMessage(zh ? "开始自动打怪：以这里为中心 %u 码内游荡、找怪、战斗、拾取；血蓝低了会吃喝休息。输入 .solo stop，或在角色站定时按移动键即可停止。"
-                                    : "Auto grinding within %u yards of here: wanders, picks fights, loots, and eats or drinks when low. Type .solo stop, or press a movement key while standing, to stop.",
+            chat.PSendSysMessage(zh ? "开始自动打怪：以这里为中心 %u 码内游荡、找怪、战斗、拾取；血蓝低了会吃喝休息。战斗中血量或法力过低会喝药水；定身后会后撤或闪现；多只怪会控住一只。输入 .solo stop，或在角色站定时按移动键即可停止。"
+                                    : "Auto grinding within %u yards of here: wanders, picks fights, loots, and eats or drinks when low. In a fight it drinks a potion when health or mana is low, backs off or blinks after a root, and crowd-controls an extra mob. Type .solo stop, or press a movement key while standing, to stop.",
                 uint32(radius));
             break;
     }
@@ -423,6 +449,29 @@ bool SoloFarmAI::NeedsCrowdControlWindow() const
     return me->GetHealthPercent() < RUN_AWAY_HEALTH_PCT;
 }
 
+bool SoloFarmAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const
+{
+    if (!PartyBotAI::CanTryToCastSpell(pTarget, pSpellEntry))
+        return false;
+
+    // Arcane Explosion, Cone of Cold, Multi-Shot and the like land on a sheep
+    // standing next to the kill target. One hit and the control is gone.
+    if (!pSpellEntry->IsAreaOfEffectSpell() || pSpellEntry->IsPositiveSpell())
+        return true;
+
+    float const radius = EffectRadius(pSpellEntry, 8.0f);
+    for (auto const pAttacker : me->GetAttackers())
+    {
+        if (!IsBreakableControl(pAttacker))
+            continue;
+        if (me->GetDistance(pAttacker) <= radius)
+            return false;
+        if (pTarget && pTarget != me && pTarget->GetDistance(pAttacker) <= radius)
+            return false;
+    }
+    return true;
+}
+
 bool SoloFarmAI::CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget) const
 {
     if (!NeedsCrowdControlWindow())
@@ -443,6 +492,267 @@ bool SoloFarmAI::TryEmergencyCrowdControl(Unit* pVictim)
         !PartyBotAI::CanUseCrowdControl(pCC, pVictim))
         return false;
     return DoCastSpell(pVictim, pCC) == SPELL_CAST_OK;
+}
+
+bool SoloFarmAI::IsBreakableControl(Unit const* pTarget) const
+{
+    if (!pTarget)
+        return false;
+    for (auto const& aura : pTarget->GetSpellAuraHolderMap())
+    {
+        SpellEntry const* pSpell = aura.second->GetSpellProto();
+        if (!pSpell || pSpell->IsPositiveSpell())
+            continue;
+        // Polymorph, fear, hibernate, shackle, blind, banish: any damage removes them.
+        if (pSpell->HasAuraInterruptFlag(AURA_INTERRUPT_DAMAGE_CANCELS))
+            return true;
+    }
+    return false;
+}
+
+bool SoloFarmAI::HasOurDamageOverTime(Unit const* pTarget) const
+{
+    if (!pTarget)
+        return false;
+    for (auto const& aura : pTarget->GetSpellAuraHolderMap())
+    {
+        if (aura.second->GetCasterGuid() != me->GetObjectGuid())
+            continue;
+        SpellEntry const* pSpell = aura.second->GetSpellProto();
+        if (!pSpell)
+            continue;
+        for (int i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        {
+            if (pSpell->Effect[i] != SPELL_EFFECT_APPLY_AURA)
+                continue;
+            uint32 const kind = pSpell->EffectApplyAuraName[i];
+            if (kind == SPELL_AURA_PERIODIC_DAMAGE || kind == SPELL_AURA_PERIODIC_DAMAGE_PERCENT ||
+                kind == SPELL_AURA_PERIODIC_LEECH)
+                return true;
+        }
+    }
+    return false;
+}
+
+bool SoloFarmAI::WantsDistance() const
+{
+    if (me->GetClass() == CLASS_HUNTER)
+        return true;
+    if (GetRole() != ROLE_RANGE_DPS)
+        return false;
+    // Bear and cat have no cast kit. Caster form and a moonkin do.
+    return me->GetShapeshiftForm() == FORM_NONE || me->GetShapeshiftForm() == FORM_MOONKIN;
+}
+
+void SoloFarmAI::HoldPetOffControlled()
+{
+    Pet* pPet = me->GetPet();
+    if (!pPet || !pPet->IsAlive() || !pPet->AI())
+        return;
+
+    Unit* pPetTarget = pPet->GetVictim();
+    if (!pPetTarget || !IsBreakableControl(pPetTarget))
+        return;
+
+    Unit* pKill = me->GetVictim();
+    if (pKill && pKill != pPetTarget && pKill->IsAlive() && !IsBreakableControl(pKill))
+    {
+        if (CharmInfo* pCharm = pPet->GetCharmInfo())
+            pCharm->SetIsCommandAttack(true);
+        pPet->AI()->AttackStart(pKill);
+        return;
+    }
+    pPet->AttackStop();
+}
+
+std::vector<SpellEntry const*> SoloFarmAI::LongControlSpells() const
+{
+    std::vector<SpellEntry const*> spells;
+    auto add = [&](SpellEntry const* pSpell)
+    {
+        if (pSpell)
+            spells.push_back(pSpell);
+    };
+    switch (me->GetClass())
+    {
+        case CLASS_MAGE: add(m_spells.mage.pPolymorph); break;
+        case CLASS_PRIEST: add(m_spells.priest.pShackleUndead); break;
+        case CLASS_WARLOCK:
+            add(m_spells.warlock.pBanish);
+            add(m_spells.warlock.pFear);
+            break;
+        case CLASS_DRUID: add(m_spells.druid.pHibernate); break;
+        case CLASS_HUNTER: add(m_spells.hunter.pScareBeast); break;
+        case CLASS_ROGUE: add(m_spells.rogue.pBlind); break;
+        default: break;
+    }
+    return spells;
+}
+
+bool SoloFarmAI::TryControlExtra(Unit* pVictim)
+{
+    // A polymorph cast stops movement. Do not start one in the middle of a retreat.
+    if (me->IsMoving() || !me->movespline->Finalized() ||
+        me->GetMotionMaster()->GetCurrentMovementGeneratorType() == DISTANCING_MOTION_TYPE)
+        return false;
+
+    std::vector<Unit*> extras;
+    auto consider = [&](Unit* pUnit)
+    {
+        if (!pUnit || pUnit == pVictim || !pUnit->IsAlive() || !IsValidHostileTarget(pUnit))
+            return;
+        if (IsBreakableControl(pUnit) || HasOurDamageOverTime(pUnit) || pUnit->GetHealthPercent() <= 20.0f)
+            return;
+        if (std::find(extras.begin(), extras.end(), pUnit) == extras.end())
+            extras.push_back(pUnit);
+    };
+    for (auto const pAttacker : me->GetAttackers())
+        consider(pAttacker);
+    if (Pet* pPet = me->GetPet())
+        for (auto const pAttacker : pPet->GetAttackers())
+            consider(pAttacker);
+    if (extras.empty())
+        return false;
+
+    // Frost Nova hits everything around us, including a sheep we just cast.
+    // Root first, then control once the nova is on cooldown.
+    if (me->GetClass() == CLASS_MAGE && m_spells.mage.pFrostNova && me->IsSpellReady(m_spells.mage.pFrostNova))
+    {
+        float const radius = EffectRadius(m_spells.mage.pFrostNova, 10.0f);
+        for (Unit* pAdd : extras)
+            if (me->GetDistance(pAdd) <= radius && !pAdd->HasUnitState(UNIT_STATE_ROOT))
+                return false;
+    }
+
+    std::sort(extras.begin(), extras.end(), [](Unit* a, Unit* b)
+    {
+        return a->GetHealthPercent() > b->GetHealthPercent();
+    });
+
+    std::vector<Threat> const threats = FindThreats();
+    auto runsIntoPack = [&](Unit* pAdd)
+    {
+        for (Threat const& threat : threats)
+            if (threat.pCreature && pAdd->GetDistance(threat.pCreature) < 12.0f)
+                return true;
+        return false;
+    };
+
+    for (SpellEntry const* pSpell : LongControlSpells())
+    {
+        bool const fear = AppliesFear(pSpell);
+        for (Unit* pAdd : extras)
+        {
+            if (pSpell->TargetCreatureType && !(pSpell->TargetCreatureType & pAdd->GetCreatureTypeMask()))
+                continue;
+            if (pSpell->GetMechanic() && pAdd->IsImmuneToMechanic(Mechanics(pSpell->GetMechanic())))
+                continue;
+            if (fear && runsIntoPack(pAdd))
+                continue;
+            if (!CanTryToCastSpell(pAdd, pSpell) || !PartyBotAI::CanUseCrowdControl(pSpell, pAdd))
+                continue;
+            if (DoCastSpell(pAdd, pSpell) == SPELL_CAST_OK)
+                return true;
+        }
+    }
+    return false;
+}
+
+bool SoloFarmAI::TryBlinkAway(Unit* pEnemy)
+{
+    SpellEntry const* pBlink = m_spells.mage.pBlink;
+    if (me->GetClass() != CLASS_MAGE || !pBlink || !pEnemy)
+        return false;
+    // Already out of the swing. A blink from there just spends the cooldown.
+    if (me->GetCombatDistance(pEnemy) > 10.0f)
+        return false;
+    if (!CanTryToCastSpell(me, pBlink))
+        return false;
+
+    // Blink teleports forward along facing, about one nova's width past the mob.
+    float const reach = EffectRadius(pBlink, 15.0f);
+    std::vector<Threat> const threats = FindThreats();
+    static float const offsets[] = { 0.0f, 0.6f, -0.6f, 1.2f, -1.2f };
+    for (float offset : offsets)
+    {
+        float const o = me->GetAngle(pEnemy) + M_PI_F + offset;
+        float const x = me->GetPositionX() + reach * std::cos(o);
+        float const y = me->GetPositionY() + reach * std::sin(o);
+        float const z = me->GetPositionZ();
+        bool wakes = false;
+        for (Threat const& threat : threats)
+        {
+            if (std::fabs(threat.z - z) > threat.reach)
+                continue;
+            if (Dist2d(threat.x, threat.y, x, y) <= threat.reach)
+                wakes = true;
+        }
+        if (wakes)
+            continue;
+
+        if (!me->movespline->Finalized() || me->IsMoving())
+            me->StopMoving();
+        me->SetOrientation(o);
+        return DoCastSpell(me, pBlink) == SPELL_CAST_OK;
+    }
+    return false;
+}
+
+bool SoloFarmAI::TryEscapeMelee(Unit* pVictim)
+{
+    if (!pVictim || !WantsDistance() || me->GetMap()->IsDungeon())
+        return false;
+
+    // A retreat is already running. Casting here (Cone of Cold, Arcane Explosion)
+    // stops it on top of the pack and breaks a root we just spent. Blink is the
+    // exception: Nova and Blink share the global cooldown, so the teleport can
+    // only happen once the walk has already started.
+    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == DISTANCING_MOTION_TYPE)
+    {
+        if (me->GetCombatDistance(pVictim) <= 10.0f && TryBlinkAway(pVictim))
+        {
+            me->GetMotionMaster()->Clear(false, true);
+            me->GetMotionMaster()->MoveIdle();
+        }
+        return true;
+    }
+
+    bool const close = me->GetCombatDistance(pVictim) < 8.0f || GetAttackersInRangeCount(8.0f) > 0;
+    if (!close)
+        return false;
+
+    if (!CanOutpaceAttackers())
+    {
+        // Root the pack, then leave on a later tick once the aura has landed.
+        // Nova and Blink share the global cooldown, so they cannot both go off now.
+        if (me->GetClass() == CLASS_MAGE && m_spells.mage.pFrostNova &&
+            !pVictim->HasUnitState(UNIT_STATE_ROOT) &&
+            !pVictim->HasUnitState(UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL) &&
+            CanTryToCastSpell(me, m_spells.mage.pFrostNova) &&
+            DoCastSpell(me, m_spells.mage.pFrostNova) == SPELL_CAST_OK)
+            return true;
+
+        if (me->GetClass() == CLASS_DRUID && me->GetShapeshiftForm() == FORM_NONE &&
+            m_spells.druid.pEntanglingRoots && !IsBreakableControl(pVictim) &&
+            !pVictim->HasUnitState(UNIT_STATE_ROOT) &&
+            CanTryToCastSpell(pVictim, m_spells.druid.pEntanglingRoots) &&
+            DoCastSpell(pVictim, m_spells.druid.pEntanglingRoots) == SPELL_CAST_OK)
+            return true;
+
+        return false;
+    }
+
+    if (TryBlinkAway(pVictim))
+        return true;
+
+    // Disengage leaps backward, so the cast has to face the mob.
+    if (me->GetClass() == CLASS_HUNTER && m_spells.hunter.pDisengage &&
+        me->GetCombatDistance(pVictim) < 8.0f &&
+        CanTryToCastSpell(pVictim, m_spells.hunter.pDisengage) &&
+        DoCastSpell(pVictim, m_spells.hunter.pDisengage) == SPELL_CAST_OK)
+        return true;
+
+    return RunAwayFromTarget(pVictim);
 }
 
 void SoloFarmAI::UpdateAI(uint32 const diff)
@@ -713,9 +1023,32 @@ bool SoloFarmAI::UpdateCombat()
         return true;
     }
 
+    // A sheep (or fear, shackle, blind) is the kill target only when it was the only mob.
+    // With another still swinging, fight that one and leave the control alone.
+    if (IsBreakableControl(pVictim))
+    {
+        Unit* pLoose = nullptr;
+        auto considerLoose = [&](Unit* pUnit)
+        {
+            if (!pLoose && pUnit && pUnit != pVictim && pUnit->IsAlive() &&
+                !IsBreakableControl(pUnit) && IsValidHostileTarget(pUnit))
+                pLoose = pUnit;
+        };
+        for (auto const pAttacker : me->GetAttackers())
+            considerLoose(pAttacker);
+        if (Pet* pPet = me->GetPet())
+            for (auto const pAttacker : pPet->GetAttackers())
+                considerLoose(pAttacker);
+
+        if (pLoose && AttackStart(pLoose))
+            pVictim = pLoose;
+    }
+
+    HoldPetOffControlled();
+
     // AttackStart turns on auto-attack, which swings in every gap between casts once the mob
     // is in reach. A caster with mana keeps to spells; out of mana it melees after all.
-    if (GetRole() == ROLE_RANGE_DPS && me->GetClass() != CLASS_HUNTER &&
+    if (!IsBreakableControl(pVictim) && GetRole() == ROLE_RANGE_DPS && me->GetClass() != CLASS_HUNTER &&
         me->GetShapeshiftForm() == FORM_NONE && me->GetPowerType() == POWER_MANA)
     {
         bool const melee = me->GetPowerPercent(POWER_MANA) < 10.0f &&
@@ -732,18 +1065,68 @@ bool SoloFarmAI::UpdateCombat()
     if (me->IsNonMeleeSpellCasted(false, false, true))
         return true;
 
-    if (me->GetHealthPercent() < 30.0f && UseConsumable(0, SPELL_EFFECT_HEAL))
-        return true;
-    if (me->GetHealthPercent() < 45.0f && HealSelf())
-        return true;
-    if (me->GetPowerType() == POWER_MANA && me->GetPowerPercent(POWER_MANA) < 15.0f &&
-        UseConsumable(0, SPELL_EFFECT_ENERGIZE))
+    // The controlled target is the only one left: drink, heal, and step back
+    // instead of breaking it with the next swing or bolt.
+    if (IsBreakableControl(pVictim))
+    {
+        bool const stillLow = me->GetHealthPercent() < 80.0f ||
+            (me->GetPowerType() == POWER_MANA && me->GetPowerPercent(POWER_MANA) < 50.0f);
+        if (stillLow)
+        {
+            if (me->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+            {
+                me->ClearUnitState(UNIT_STATE_MELEE_ATTACKING);
+                me->SendMeleeAttackStop(pVictim);
+            }
+            if (me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
+                me->InterruptSpell(CURRENT_AUTOREPEAT_SPELL, true);
+            if (me->GetHealthPercent() < 85.0f && HealSelf())
+                return true;
+            if (me->GetHealthPercent() < 70.0f && UseConsumable(0, SPELL_EFFECT_HEAL, true))
+                return true;
+            if (me->GetPowerType() == POWER_MANA && me->GetPowerPercent(POWER_MANA) < 60.0f &&
+                UseConsumable(0, SPELL_EFFECT_ENERGIZE, true))
+                return true;
+            TryEscapeMelee(pVictim);
+            return true;
+        }
+    }
+
+    bool const crowded = me->GetAttackers().size() >= 2;
+    float const hpLine = crowded ? 55.0f : 40.0f;
+    if (me->GetHealthPercent() < hpLine)
+    {
+        if (HealSelf())
+            return true;
+        if (UseConsumable(0, SPELL_EFFECT_HEAL, true))
+            return true;
+    }
+    // A mana potion with the mob nearly dead just sits on the shared potion cooldown.
+    bool const ending = !crowded && pVictim->GetHealthPercent() < 15.0f && me->GetHealthPercent() >= hpLine;
+    float const manaLine = crowded ? 40.0f : 30.0f;
+    if (!ending && me->GetPowerType() == POWER_MANA && me->GetPowerPercent(POWER_MANA) < manaLine &&
+        UseConsumable(0, SPELL_EFFECT_ENERGIZE, true))
         return true;
 
     if (StopRunner(pVictim))
         return true;
 
-    if (!me->IsMoving())
+    if (TryControlExtra(pVictim))
+        return true;
+
+    // 1v1 and low: sheep the kill target, then the block above drinks and steps back.
+    // Not during a retreat: the cast would stop it.
+    if (!crowded && !me->IsMoving() && me->movespline->Finalized() &&
+        me->GetMotionMaster()->GetCurrentMovementGeneratorType() != DISTANCING_MOTION_TYPE &&
+        TryEmergencyCrowdControl(pVictim))
+        return true;
+
+    if (TryEscapeMelee(pVictim))
+        return true;
+
+    // Rooted, and already outside the swing: do not chase back in while the root holds.
+    bool const holdRange = WantsDistance() && CanOutpaceAttackers() && me->GetCombatDistance(pVictim) < 20.0f;
+    if (!holdRange && !me->IsMoving())
     {
         if (!me->HasUnitState(UNIT_STATE_MELEE_ATTACKING) &&
             (GetRole() == ROLE_MELEE_DPS || GetRole() == ROLE_TANK) &&
@@ -761,16 +1144,6 @@ bool SoloFarmAI::UpdateCombat()
                 break;
         }
     }
-
-    // 1v1 low-HP: sheep/shackle/hibernate the kill target so we can kite, potion or bandage.
-    if (TryEmergencyCrowdControl(pVictim))
-        return true;
-
-    if (GetRole() == ROLE_RANGE_DPS && !me->HasUnitState(UNIT_STATE_CAN_NOT_MOVE) &&
-        me->GetMotionMaster()->GetCurrentMovementGeneratorType() != DISTANCING_MOTION_TYPE &&
-        me->GetCombatDistance(pVictim) < 8.0f && CanOutpaceAttackers() &&
-        RunAwayFromTarget(pVictim))
-        return true;
 
     // Also before the fight starts: a caster opens from range, which is what starts it.
     UpdateInCombatAI();
@@ -838,9 +1211,17 @@ bool SoloFarmAI::Rest()
     return true;
 }
 
-bool SoloFarmAI::UseConsumable(uint32 auraType, uint32 effect)
+bool SoloFarmAI::UseConsumable(uint32 auraType, uint32 effect, bool combat)
 {
-    Item* pBest = nullptr;
+    struct Candidate
+    {
+        Item* item;
+        int32 power;
+        bool conjured;
+        uint32 itemLevel;
+    };
+    std::vector<Candidate> picks;
+
     ForEachBagItem(me, [&](Item* pItem)
     {
         ItemPrototype const* pProto = pItem->GetProto();
@@ -854,22 +1235,50 @@ bool SoloFarmAI::UseConsumable(uint32 auraType, uint32 effect)
             SpellEntry const* pSpell = sSpellMgr.GetSpellEntry(itemSpell.SpellId);
             if (!pSpell || !me->IsSpellReady(pSpell, pProto))
                 continue;
+            // Bandages and food cannot be used in combat (1.12): cast time, or the peaceful-only flag.
+            if (combat && (pSpell->HasAttribute(SPELL_ATTR_NOT_IN_COMBAT_ONLY_PEACEFUL) || pSpell->GetCastTime(me) > 0))
+                continue;
 
+            int32 power = 0;
             bool match = false;
             for (uint32 i = 0; i < MAX_SPELL_EFFECTS; ++i)
             {
-                if (auraType && pSpell->Effect[i] == SPELL_EFFECT_APPLY_AURA && pSpell->EffectApplyAuraName[i] == auraType)
-                    match = true;
-                if (effect && pSpell->Effect[i] == effect &&
-                    (effect != SPELL_EFFECT_ENERGIZE || pSpell->EffectMiscValue[i] == POWER_MANA))
-                    match = true;
+                bool const aura = auraType && pSpell->Effect[i] == SPELL_EFFECT_APPLY_AURA &&
+                    pSpell->EffectApplyAuraName[i] == auraType;
+                bool const direct = effect && pSpell->Effect[i] == effect &&
+                    (effect != SPELL_EFFECT_ENERGIZE || pSpell->EffectMiscValue[i] == POWER_MANA);
+                if (!aura && !direct)
+                    continue;
+                match = true;
+                power = std::max(power, pSpell->CalculateSimpleValue(SpellEffectIndex(i)));
             }
-            if (match && (!pBest || pProto->ItemLevel > pBest->GetProto()->ItemLevel))
-                pBest = pItem;
+            if (!match)
+                continue;
+
+            picks.push_back({ pItem, power, pProto->IsConjuredConsumable(), pProto->ItemLevel });
+            break;
         }
     });
 
-    return pBest && UseItemEffect(pBest);
+    if (picks.empty())
+        return false;
+
+    // A healthstone or mana gem does not share the potion cooldown. Spend that first.
+    std::sort(picks.begin(), picks.end(), [&](Candidate const& a, Candidate const& b)
+    {
+        if (combat && a.conjured != b.conjured)
+            return a.conjured && !b.conjured;
+        if (combat && a.power != b.power)
+            return a.power > b.power;
+        return a.itemLevel > b.itemLevel;
+    });
+
+    // Out of combat, one best food or drink. In combat, the next candidate if that cast fails.
+    uint32 const tries = combat ? picks.size() : 1;
+    for (uint32 i = 0; i < tries; ++i)
+        if (UseItemEffect(picks[i].item))
+            return true;
+    return false;
 }
 
 // Mage water / food / mana gem and warlock healthstone, best known rank, topped up between

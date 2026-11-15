@@ -66,7 +66,8 @@ private:
     bool Rest();
     void BeginRest();
     bool HealSelf();
-    bool UseConsumable(uint32 auraType, uint32 effect = 0);
+    // `combat`: an instant potion or stone. Food, drink and bandages are the out-of-combat call.
+    bool UseConsumable(uint32 auraType, uint32 effect = 0, bool combat = false);
     bool Conjure();
     bool LootCorpses();
     uint32 FreeBagSlots() const;
@@ -84,11 +85,25 @@ private:
         return (m_mode == SOLO_FARM_GRIND || m_mode == SOLO_FARM_GATHER || m_mode == SOLO_FARM_ALL) &&
             !me->IsNoQuest();
     }
+    bool CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const override;
     // Multi-pull, or a 1v1 window to kite / bandage / potion / self-heal.
     bool CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget) const override;
     bool NeedsCrowdControlWindow() const;
+    // Polymorph, hibernate, shackle, banish, blind, scare beast, fear: breaks when hit.
+    bool IsBreakableControl(Unit const* pTarget) const;
+    bool HasOurDamageOverTime(Unit const* pTarget) const;
+    // A caster or hunter. A bear, cat or melee spec stays in.
+    bool WantsDistance() const;
+    // The pet (and our swings) on a sheep break it. Keep them on the kill target.
+    void HoldPetOffControlled();
+    std::vector<SpellEntry const*> LongControlSpells() const;
     // Mage sheep only hits a non-victim add; in 1v1 emergencies CC the kill target instead.
     bool TryEmergencyCrowdControl(Unit* pVictim);
+    // One add, not the kill target. Stationary CC first; a fear only if it will not run into more mobs.
+    bool TryControlExtra(Unit* pVictim);
+    // After a root (Frost Nova, Entangling Roots): blink or disengage, otherwise walk out.
+    bool TryEscapeMelee(Unit* pVictim);
+    bool TryBlinkAway(Unit* pEnemy);
 
     // An idle mob that attacks on sight, and how close we may pass the middle of its roam.
     struct Threat

@@ -50,7 +50,7 @@ public:
     void AddToPlayerGroup();
     void LevelUpTo(uint32 level);
 
-    bool CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const final;
+    bool CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const override;
     Player* GetPartyLeader() const;
     bool AttackStart(Unit* pVictim);
     Unit* SelectAttackTarget(Player* pLeader) const;
