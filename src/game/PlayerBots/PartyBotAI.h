@@ -65,6 +65,10 @@ public:
     bool IsValidDistancingTarget(Unit* pTarget, Unit* pEnemy);
     Unit* GetDistancingTarget(Unit* pEnemy);
     virtual bool RunAwayFromTarget(Unit* pEnemy);
+    // Polymorph / hibernate / blind / shackle nearby: do not splash it, and the
+    // tank drags the rest of the pack clear so the party can use AoE.
+    Unit* FindBreakableCrowdControlNear(float radius) const;
+    bool PullFightAwayFromCrowdControl();
     bool CrowdControlMarkedTargets();
     bool EnterCombatDruidForm();
     bool ShouldEnterStealth() const;

@@ -65,7 +65,10 @@ private:
     bool UpdateCombat();
     bool Rest();
     void BeginRest();
+    void CancelRest();
     bool HealSelf();
+    // Equipped wand plus Shoot (5019): OOM keeps shooting instead of running into melee.
+    bool HasUsableWand() const;
     // `combat`: an instant potion or stone. Food, drink and bandages are the out-of-combat call.
     bool UseConsumable(uint32 auraType, uint32 effect = 0, bool combat = false);
     bool Conjure();

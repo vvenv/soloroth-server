@@ -53,6 +53,9 @@ namespace
     // Assist: how far a mob the player targeted (while standing) may be. No area search.
     float const ASSIST_PULL_DIST = 30.0f;
     float const KITE_DIST = 15.0f;
+    // Below this a caster stops spending mana spells: wand if equipped, else melee.
+    float const OOM_MANA_PCT = 10.0f;
+    uint32 const SPELL_SHOOT_WAND = 5019;
     uint32 const PATH_CANDIDATES = 6;
     uint32 const WANDER_TRIES = 6;
 
@@ -306,12 +309,12 @@ bool SoloFarmAI::Start(Player* pPlayer, SoloFarmMode mode, float radius)
                 uint32(radius));
             break;
         case SOLO_FARM_FIGHT:
-            chat.SendSysMessage(zh ? "开始半自动打怪：你自己走路。怪物攻击你，或你停下来并选中 30 码内的怪时，自动追击、放技能。血量或法力过低会喝药水；定身后会后撤或闪现；多只怪会控住一只。不游荡找怪。走路不会停止；停止用 .solo stop。"
-                                   : "Assist on: you walk. It fights anything that attacks you, and a mob you target while standing still within 30 yards: chase and spells. It drinks a potion when health or mana is low, backs off or blinks after a root, and crowd-controls an extra mob. It does not wander. Walking does not stop it; .solo stop does.");
+            chat.SendSysMessage(zh ? "开始半自动打怪：你自己走路。怪物攻击你，或你停下来并选中 30 码内的怪时，自动追击、放技能。血量或法力过低会喝药水；法力耗尽时有魔杖就继续射击，否则上去近战；站着不动、没有选中目标时血蓝低了会坐下吃喝。定身后会后撤或闪现；多只怪会控住一只。不游荡找怪。走路不会停止；停止用 .solo stop。"
+                                   : "Assist on: you walk. It fights anything that attacks you, and a mob you target while standing still within 30 yards: chase and spells. It drinks a potion when health or mana is low; out of mana it wands if equipped, else melees. Standing still with nothing selected, it sits to eat or drink when low. It backs off or blinks after a root, and crowd-controls an extra mob. It does not wander. Walking does not stop it; .solo stop does.");
             break;
         default:
-            chat.PSendSysMessage(zh ? "开始自动打怪：以这里为中心 %u 码内游荡、找怪、战斗、拾取；血蓝低了会吃喝休息。战斗中血量或法力过低会喝药水；定身后会后撤或闪现；多只怪会控住一只。输入 .solo stop，或在角色站定时按移动键即可停止。"
-                                    : "Auto grinding within %u yards of here: wanders, picks fights, loots, and eats or drinks when low. In a fight it drinks a potion when health or mana is low, backs off or blinks after a root, and crowd-controls an extra mob. Type .solo stop, or press a movement key while standing, to stop.",
+            chat.PSendSysMessage(zh ? "开始自动打怪：以这里为中心 %u 码内游荡、找怪、战斗、拾取；血蓝低了会坐下吃喝休息。战斗中血量或法力过低会喝药水；法力耗尽时有魔杖就继续射击，否则上去近战；定身后会后撤或闪现；多只怪会控住一只。输入 .solo stop，或在角色站定时按移动键即可停止。"
+                                    : "Auto grinding within %u yards of here: wanders, picks fights, loots, and sits to eat or drink when low. In a fight it drinks a potion when health or mana is low; out of mana it wands if equipped, else melees. It backs off or blinks after a root, and crowd-controls an extra mob. Type .solo stop, or press a movement key while standing, to stop.",
                 uint32(radius));
             break;
     }
@@ -1046,16 +1049,36 @@ bool SoloFarmAI::UpdateCombat()
 
     HoldPetOffControlled();
 
-    // AttackStart turns on auto-attack, which swings in every gap between casts once the mob
-    // is in reach. A caster with mana keeps to spells; out of mana it melees after all.
-    if (!IsBreakableControl(pVictim) && GetRole() == ROLE_RANGE_DPS && me->GetClass() != CLASS_HUNTER &&
+    if (me->GetStandState() != UNIT_STAND_STATE_STAND)
+        me->SetStandState(UNIT_STAND_STATE_STAND);
+    if (m_resting)
+        m_resting = false;
+
+    // Wand Shoot is autorepeat: moving (including a chase tick) cancels it. Keep shooting.
+    if (me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) && me->GetClass() != CLASS_HUNTER)
+        return true;
+
+    // Out of mana: wand at range when equipped, otherwise close in and swing.
+    bool const casterOom = !IsBreakableControl(pVictim) && GetRole() == ROLE_RANGE_DPS &&
+        me->GetClass() != CLASS_HUNTER && me->GetShapeshiftForm() == FORM_NONE &&
+        me->GetPowerType() == POWER_MANA && me->GetPowerPercent(POWER_MANA) < OOM_MANA_PCT;
+    bool const useWand = casterOom && HasUsableWand();
+    bool const goMelee = casterOom && !useWand;
+    if (useWand)
+    {
+        if (me->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+        {
+            me->ClearUnitState(UNIT_STATE_MELEE_ATTACKING);
+            me->SendMeleeAttackStop(pVictim);
+        }
+    }
+    else if (GetRole() == ROLE_RANGE_DPS && me->GetClass() != CLASS_HUNTER &&
         me->GetShapeshiftForm() == FORM_NONE && me->GetPowerType() == POWER_MANA)
     {
-        bool const melee = me->GetPowerPercent(POWER_MANA) < 10.0f &&
-            !me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL);
-        if (melee && !me->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+        // AttackStart turns on auto-attack; with mana (or no wand while OOM) keep swings as needed.
+        if (goMelee && !me->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
             me->Attack(pVictim, true);
-        else if (!melee && me->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+        else if (!goMelee && me->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
         {
             me->ClearUnitState(UNIT_STATE_MELEE_ATTACKING);
             me->SendMeleeAttackStop(pVictim);
@@ -1124,14 +1147,37 @@ bool SoloFarmAI::UpdateCombat()
     if (TryEscapeMelee(pVictim))
         return true;
 
+    // After potions and CC: OOM with a wand keeps the range and shoots.
+    if (useWand)
+    {
+        if (!me->IsMoving() && me->movespline->Finalized() && me->GetCombatDistance(pVictim) <= 30.0f)
+        {
+            if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
+            {
+                me->GetMotionMaster()->Clear(false, true);
+                me->GetMotionMaster()->MoveIdle();
+            }
+            me->CastSpell(pVictim, SPELL_SHOOT_WAND, false);
+            return true;
+        }
+        if (!me->IsMoving())
+            BeginChasing(pVictim);
+        return true;
+    }
+
     // Rooted, and already outside the swing: do not chase back in while the root holds.
-    bool const holdRange = WantsDistance() && CanOutpaceAttackers() && me->GetCombatDistance(pVictim) < 20.0f;
+    // OOM without a wand: drop the range hold and walk into melee.
+    bool const holdRange = !goMelee && WantsDistance() && CanOutpaceAttackers() &&
+        me->GetCombatDistance(pVictim) < 20.0f;
     if (!holdRange && !me->IsMoving())
     {
         if (!me->HasUnitState(UNIT_STATE_MELEE_ATTACKING) &&
-            (GetRole() == ROLE_MELEE_DPS || GetRole() == ROLE_TANK) &&
+            (goMelee || GetRole() == ROLE_MELEE_DPS || GetRole() == ROLE_TANK) &&
             AttackStart(pVictim))
             return true;
+
+        if (goMelee && me->HasDistanceCasterMovement())
+            me->SetCasterChaseDistance(0.0f);
 
         switch (me->GetMotionMaster()->GetCurrentMovementGeneratorType())
         {
@@ -1170,6 +1216,23 @@ void SoloFarmAI::BeginRest()
         me->StopMoving();
 }
 
+void SoloFarmAI::CancelRest()
+{
+    if (!m_resting)
+        return;
+    m_resting = false;
+    if (me->GetStandState() != UNIT_STAND_STATE_STAND)
+        me->SetStandState(UNIT_STAND_STATE_STAND);
+}
+
+bool SoloFarmAI::HasUsableWand() const
+{
+    if (!me->HasSpell(SPELL_SHOOT_WAND))
+        return false;
+    Item* pRanged = me->GetWeaponForAttack(RANGED_ATTACK, true, true);
+    return pRanged && pRanged->GetProto()->SubClass == ITEM_SUBCLASS_WEAPON_WAND;
+}
+
 bool SoloFarmAI::Rest()
 {
     bool const usesMana = me->GetPowerType() == POWER_MANA;
@@ -1178,12 +1241,7 @@ bool SoloFarmAI::Rest()
 
     if (!needHealth && !needMana)
     {
-        if (m_resting)
-        {
-            m_resting = false;
-            if (me->GetStandState() != UNIT_STAND_STATE_STAND)
-                me->SetStandState(UNIT_STAND_STATE_STAND);
-        }
+        CancelRest();
         return false;
     }
 
@@ -1207,7 +1265,11 @@ bool SoloFarmAI::Rest()
     if (needMana && !me->HasAuraType(SPELL_AURA_MOD_POWER_REGEN))
         UseConsumable(SPELL_AURA_MOD_POWER_REGEN);
 
-    // Without food or drink, wait for the natural regeneration.
+    // Food and drink sit on their own. Without them, sit for the spirit regen tick.
+    if (me->GetStandState() == UNIT_STAND_STATE_STAND &&
+        !me->HasAuraType(SPELL_AURA_MOD_REGEN) && !me->HasAuraType(SPELL_AURA_MOD_POWER_REGEN))
+        me->SetStandState(UNIT_STAND_STATE_SIT);
+
     return true;
 }
 
@@ -1436,18 +1498,33 @@ void SoloFarmAI::UpdateFight()
 {
     // Combat (aggro or a pull already in progress) is handled before this runs.
     ReleaseBody();
+
+    // Walking owns the body: stand up from a sit-to-rest between pulls.
+    if (me->IsMoving() || !me->movespline->Finalized())
+    {
+        CancelRest();
+        return;
+    }
+
     if (TryAssistPull())
     {
+        CancelRest();
         UpdateCombat();
         return;
     }
 
-    // Buff while they stand with nothing targeted. Out-of-combat buffs clear the
+    // Buff or rest while they stand with nothing targeted. Out-of-combat buffs clear the
     // current target, so a selected mob (or a quest giver) is left alone.
-    // No conjure and no sit-to-eat: both would take the body they are steering.
-    if (me->IsMoving() || !me->movespline->Finalized() || me->IsMounted() ||
-        !me->GetSelectionGuid().IsEmpty())
+    // No conjure: that would take the body they are steering for a cast.
+    if (me->IsMounted() || !me->GetSelectionGuid().IsEmpty())
+    {
+        CancelRest();
         return;
+    }
+
+    if (Rest())
+        return;
+
     UpdateOutOfCombatAI();
 }
 

@@ -298,41 +298,50 @@ bool PartyBotAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpell
     if (!CombatBotBaseAI::CanTryToCastSpell(pTarget, pSpellEntry))
         return false;
 
-    if (pSpellEntry->IsAreaOfEffectSpell() && !pSpellEntry->IsPositiveSpell() && !IsInDuel())
+    if (IsInDuel() || pSpellEntry->IsPositiveSpell())
+        return true;
+
+    // Do not open a sheep / hibernate / blind / shackle (player's or a bot's).
+    if (pTarget && pTarget != me && pTarget->HasBreakableByDamageCrowdControlAura())
+        return false;
+
+    if (pSpellEntry->IsAreaOfEffectSpell())
     {
+        // Marked CC: hold every AoE so the marked target is not opened by splash.
         if (!m_marksToCC.empty())
             return false;
 
-        // do not cast aoe if it will pull aggro
-        if (m_role != ROLE_TANK)
+        float radius;
+        if (pSpellEntry->EffectRadiusIndex[0])
+            radius = Spells::GetSpellRadius(sSpellRadiusStore.LookupEntry(pSpellEntry->EffectRadiusIndex[0]));
+        else if (pSpellEntry->EffectRadiusIndex[1])
+            radius = Spells::GetSpellRadius(sSpellRadiusStore.LookupEntry(pSpellEntry->EffectRadiusIndex[1]));
+        else if (pSpellEntry->EffectRadiusIndex[2])
+            radius = Spells::GetSpellRadius(sSpellRadiusStore.LookupEntry(pSpellEntry->EffectRadiusIndex[2]));
+        else
+            radius = 10.0f;
+
+        std::list<Unit*> targets;
+        me->GetEnemyListInRadiusAround(pTarget, radius, targets);
+
+        for (auto const& pEnemy : targets)
         {
-            float radius;
-            if (pSpellEntry->EffectRadiusIndex[0])
-                radius = Spells::GetSpellRadius(sSpellRadiusStore.LookupEntry(pSpellEntry->EffectRadiusIndex[0]));
-            else if (pSpellEntry->EffectRadiusIndex[1])
-                radius = Spells::GetSpellRadius(sSpellRadiusStore.LookupEntry(pSpellEntry->EffectRadiusIndex[1]));
-            else if (pSpellEntry->EffectRadiusIndex[2])
-                radius = Spells::GetSpellRadius(sSpellRadiusStore.LookupEntry(pSpellEntry->EffectRadiusIndex[2]));
-            else
-                radius = 10.0f;
+            if (pEnemy->HasBreakableByDamageCrowdControlAura())
+                return false;
 
-            std::list<Unit*> targets;
-            me->GetEnemyListInRadiusAround(pTarget, radius, targets);
-
-            for (auto const& pEnemy : targets)
+            // do not cast aoe if it will pull aggro
+            if (m_role != ROLE_TANK &&
+                ((pEnemy->GetLevel() + 5) > me->GetLevel()) &&
+                ((pEnemy->GetHealth() * 4) > me->GetHealth()) &&
+                pEnemy->GetVictim() && pEnemy->GetVictim() != me &&
+                pEnemy->IsValidAttackTarget(me) &&
+                pEnemy->CanHaveThreatList())
             {
-                if (((pEnemy->GetLevel() + 5) > me->GetLevel()) &&
-                    ((pEnemy->GetHealth() * 4) > me->GetHealth()) &&
-                    pEnemy->GetVictim() && pEnemy->GetVictim() != me &&
-                    pEnemy->IsValidAttackTarget(me) &&
-                    pEnemy->CanHaveThreatList())
-                {
-                    float const myThreat = pEnemy->GetThreatManager().getThreat(me);
-                    float const victimThreat = pEnemy->GetThreatManager().getThreat(pEnemy->GetVictim());
+                float const myThreat = pEnemy->GetThreatManager().getThreat(me);
+                float const victimThreat = pEnemy->GetThreatManager().getThreat(pEnemy->GetVictim());
 
-                    if (victimThreat < (myThreat + me->GetMaxHealth()))
-                        return false;
-                }
+                if (victimThreat < (myThreat + me->GetMaxHealth()))
+                    return false;
             }
         }
     }
@@ -357,6 +366,61 @@ bool PartyBotAI::CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget
     }
 
     return true;
+}
+
+Unit* PartyBotAI::FindBreakableCrowdControlNear(float radius) const
+{
+    auto pick = [](std::list<Unit*> const& targets) -> Unit*
+    {
+        for (Unit* pUnit : targets)
+            if (pUnit && pUnit->HasBreakableByDamageCrowdControlAura())
+                return pUnit;
+        return nullptr;
+    };
+
+    std::list<Unit*> targets;
+    me->GetEnemyListInRadiusAround(me, radius, targets);
+    if (Unit* pCC = pick(targets))
+        return pCC;
+
+    if (Unit* pVictim = me->GetVictim())
+    {
+        targets.clear();
+        me->GetEnemyListInRadiusAround(pVictim, radius, targets);
+        return pick(targets);
+    }
+    return nullptr;
+}
+
+bool PartyBotAI::PullFightAwayFromCrowdControl()
+{
+    if (m_role != ROLE_TANK || IsInDuel())
+        return false;
+
+    Unit* pVictim = me->GetVictim();
+    if (!pVictim || !IsValidHostileTarget(pVictim))
+        return false;
+
+    // Sheep sits still; keep the active fight outside typical AoE / cleave range.
+    float const searchRadius = 18.0f;
+    float const safeDist = 14.0f;
+    Unit* pCC = FindBreakableCrowdControlNear(searchRadius);
+    if (!pCC)
+        return false;
+
+    if (me->GetDistance(pCC) >= safeDist && pVictim->GetDistance(pCC) >= safeDist)
+        return false;
+
+    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == DISTANCING_MOTION_TYPE)
+        return true;
+
+    // Drag the pack away from the sheep. Try a few bearings so a wall or pit
+    // does not strand the tank (Ragefire lava etc.).
+    float const offsets[] = { 0.0f, 0.9f, -0.9f, 1.8f, -1.8f, 2.7f, -2.7f };
+    for (float offset : offsets)
+        if (me->GetMotionMaster()->MoveDistance(pCC, safeDist + 4.0f, offset))
+            return true;
+    return false;
 }
 
 bool PartyBotAI::AttackStart(Unit* pVictim)
@@ -1119,7 +1183,11 @@ void PartyBotAI::UpdateInCombatAI()
                 }
             }
 
-            // Taunt target if its attacking someone else.
+            // Player (or a bot) sheeped an add: drag the rest clear so AoE does not open it.
+            bool const dragging = PullFightAwayFromCrowdControl();
+
+            // Taunt target if its attacking someone else (also while dragging).
+            pVictim = me->GetVictim();
             if (pVictim && pVictim->GetVictim() != me)
             {
                 for (const auto& pSpellEntry : m_spellListTaunt)
@@ -1131,6 +1199,9 @@ void PartyBotAI::UpdateInCombatAI()
                     }
                 }
             }
+
+            if (dragging)
+                return;
         }
         else if (CrowdControlMarkedTargets())
             return;
@@ -1770,7 +1841,8 @@ void PartyBotAI::UpdateInCombatAI_Hunter()
             Unit* pAttacker = *me->GetAttackers().begin();
 
             if (m_spells.hunter.pScareBeast &&
-                CanTryToCastSpell(pAttacker, m_spells.hunter.pScareBeast))
+                CanTryToCastSpell(pAttacker, m_spells.hunter.pScareBeast) &&
+                CanUseCrowdControl(m_spells.hunter.pScareBeast, pAttacker))
             {
                 if (DoCastSpell(pAttacker, m_spells.hunter.pScareBeast) == SPELL_CAST_OK)
                     return;
@@ -2411,7 +2483,8 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
         {
             Unit* pAttacker = *me->GetAttackers().begin();
             if ((pAttacker->GetHealth() > me->GetHealth()) &&
-                CanTryToCastSpell(pAttacker, m_spells.warlock.pBanish))
+                CanTryToCastSpell(pAttacker, m_spells.warlock.pBanish) &&
+                CanUseCrowdControl(m_spells.warlock.pBanish, pAttacker))
             {
                 if (DoCastSpell(pAttacker, m_spells.warlock.pBanish) == SPELL_CAST_OK)
                     return;
