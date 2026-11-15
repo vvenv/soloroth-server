@@ -446,6 +446,7 @@ bool WorldSession::ForcePlayerLogoutDelay()
             SetDisconnectedSession();
             m_disconnectTimer = 120000;
             GetPlayer()->OnDisconnected();
+            GetPlayer()->KeepInstanceProgress();
             GetPlayer()->SaveToDB();
             return true;
         }
@@ -754,7 +755,7 @@ void WorldSession::LogoutPlayer(bool Save)
 
         // Refresh apres ca
         inWorld = _player->IsInWorld() && _player->FindMap();
-        if (!inWorld)
+        if (!inWorld && !_player->IsBeingTeleported())
         {
             Save = false;
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "[CRASH] Player %s is not in world during logout.", _player->GetName());
@@ -792,6 +793,10 @@ void WorldSession::LogoutPlayer(bool Save)
         // Remove pet
         _player->RemovePet(PET_SAVE_AS_CURRENT);
 
+        // Before the bind check and the save. A dropped client never reaches
+        // the group disband, and that disband is what used to delete the 5-man.
+        _player->KeepInstanceProgress();
+
         // Dungeon anti-exploit. Should be before save
         bool removedFromMap = false;
         if (Map* map = _player->FindMap())
@@ -810,8 +815,10 @@ void WorldSession::LogoutPlayer(bool Save)
 
         // empty buyback items and save the player in the database
         // some save parts only correctly work in case player present in map/player_lists (pets, etc)
+        // force: a crash during a teleport must not defer the write until
+        // after this player object is deleted.
         if (Save)
-            _player->SaveToDB(false, removedFromMap);
+            _player->SaveToDB(false, true);
 
         // Leave all channels before player delete...
         _player->CleanupChannels();

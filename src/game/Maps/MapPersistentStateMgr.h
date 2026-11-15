@@ -27,6 +27,7 @@
 #include "Policies/Singleton.h"
 #include <list>
 #include <map>
+#include <set>
 #include <unordered_map>
 #include <shared_mutex>
 #include "Database/DatabaseEnv.h"
@@ -211,6 +212,12 @@ class DungeonPersistentState : public MapPersistentState
         bool CanReset() const { return m_canReset; }
         void SetCanReset(bool canReset) { m_canReset = canReset; }
 
+        // character_instance rows. Not dropped when the player object is
+        // destroyed, so a disconnect still owns the dungeon after the group goes.
+        void NoteCharacterBind(uint32 lowGuid) { m_characterBinds.insert(lowGuid); }
+        void ForgetCharacterBind(uint32 lowGuid) { m_characterBinds.erase(lowGuid); }
+        bool HasCharacterBind() const { return !m_characterBinds.empty(); }
+
         /* Saved when the instance is generated for the first time */
         void SaveToDB();
         /* When the instance is being reset (permanently deleted) */
@@ -230,6 +237,7 @@ class DungeonPersistentState : public MapPersistentState
 
         time_t m_resetTime;
         bool m_canReset;
+        std::set<uint32> m_characterBinds;
 
         /* the only reason the instSave-object links are kept is because
            the object-instSave links need to be broken at reset time

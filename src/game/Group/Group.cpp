@@ -543,11 +543,13 @@ void Group::ChangeLeader(ObjectGuid guid)
 void Group::Disband(bool hideDestroy, ObjectGuid initiator)
 {
     Player* player;
-    Player* remainingPlayer = nullptr;
+    std::vector<Player*> realMembers;
 
     for (const auto& itr : m_memberSlots)
     {
         player = sObjectMgr.GetPlayer(itr.guid);
+        if (player && !player->IsBot())
+            realMembers.push_back(player);
         if (!player)
             continue;
 
@@ -590,8 +592,6 @@ void Group::Disband(bool hideDestroy, ObjectGuid initiator)
         // only the person who initiated the disband should be kicked from instance, as he left by choice
         if (initiator.IsEmpty() || initiator == player->GetObjectGuid())
             _homebindIfInstance(player);
-        else
-            remainingPlayer = player;
     }
 
     if (IsInLFG())
@@ -614,19 +614,36 @@ void Group::Disband(bool hideDestroy, ObjectGuid initiator)
         CharacterDatabase.PExecute("DELETE FROM `groups` WHERE `group_id`='%u'", m_Id);
         CharacterDatabase.PExecute("DELETE FROM `group_member` WHERE `group_id`='%u'", m_Id);
 
-        // transfer instance save to last player in dungeon
-        if (remainingPlayer)
+        // Non-permanent dungeon saves live on the group. Hand them to the real
+        // members before the disband reset, including someone who already
+        // walked out. A logged-out member is not in realMembers; their save
+        // was copied in KeepInstanceProgress and is kept below.
+        std::vector<std::pair<uint32, DungeonPersistentState*>> keeps;
+        for (auto const& bind : m_boundInstances)
+            if (!bind.second.perm && bind.second.state)
+                keeps.push_back(std::make_pair(bind.first, bind.second.state));
+
+        for (auto const& keep : keeps)
         {
-            BoundInstancesMap::iterator itr = m_boundInstances.find(remainingPlayer->GetMapId());
-            if (itr != m_boundInstances.end() && !itr->second.perm &&
-                !remainingPlayer->GetBoundInstance(remainingPlayer->GetMapId()))
+            bool handed = false;
+            for (Player* human : realMembers)
             {
-                remainingPlayer->BindToInstance(itr->second.state, itr->second.perm, false);
-                CharacterDatabase.PExecute("DELETE FROM `group_instance` WHERE `leader_guid` = '%u' AND `instance` = '%u'",
-                    GetLeaderGuid().GetCounter(), itr->second.state->GetInstanceId());
-                itr->second.state->RemoveGroup(this);               // save can become invalid
-                m_boundInstances.erase(itr);
+                InstancePlayerBind* mine = human->GetBoundInstance(keep.first);
+                if (mine && (mine->perm || mine->state != keep.second))
+                    continue;
+                if (!mine)
+                    human->BindToInstance(keep.second, false, false);
+                else
+                    keep.second->NoteCharacterBind(human->GetGUIDLow());
+                handed = true;
             }
+            if (!handed)
+                continue;
+
+            CharacterDatabase.PExecute("DELETE FROM `group_instance` WHERE `leader_guid` = '%u' AND `instance` = '%u'",
+                GetLeaderGuid().GetCounter(), keep.second->GetInstanceId());
+            keep.second->RemoveGroup(this);               // save can become invalid
+            m_boundInstances.erase(keep.first);
         }
 
         CharacterDatabase.CommitTransaction();
@@ -2183,11 +2200,16 @@ void Group::ResetInstances(InstanceResetMethod method, Player* SendMsgTo)
             }
         }
 
+        // A character still owns this save (disconnect, or the handoff above).
+        // Reset() would mark the loaded map to wipe respawns on unload.
+        bool const kept = method == INSTANCE_RESET_GROUP_DISBAND && state->HasCharacterBind();
+
         bool isEmpty = true;
         // if the map is loaded, reset it
-        if (Map* map = sMapMgr.FindMap(state->GetMapId(), state->GetInstanceId()))
-            if (map->IsDungeon() && !(method == INSTANCE_RESET_GROUP_DISBAND && !state->CanReset()))
-                isEmpty = ((DungeonMap*)map)->Reset(method);
+        if (!kept)
+            if (Map* map = sMapMgr.FindMap(state->GetMapId(), state->GetInstanceId()))
+                if (map->IsDungeon() && !(method == INSTANCE_RESET_GROUP_DISBAND && !state->CanReset()))
+                    isEmpty = ((DungeonMap*)map)->Reset(method);
 
         if (SendMsgTo)
         {
@@ -2200,7 +2222,7 @@ void Group::ResetInstances(InstanceResetMethod method, Player* SendMsgTo)
         if (isEmpty || method == INSTANCE_RESET_GROUP_DISBAND)
         {
             // do not reset the instance, just unbind if others are permanently bound to it
-            if (state->CanReset())
+            if (state->CanReset() && !kept)
                 state->DeleteFromDB();
             else
                 CharacterDatabase.PExecute("DELETE FROM `group_instance` WHERE `instance` = '%u'", state->GetInstanceId());

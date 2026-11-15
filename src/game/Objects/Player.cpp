@@ -41,6 +41,7 @@
 #include "ChannelMgr.h"
 #include "MapManager.h"
 #include "MapPersistentStateMgr.h"
+#include "InstanceData.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Geometry.h"
@@ -4522,7 +4523,6 @@ void Player::DeleteFromDB(ObjectGuid playerGuid, uint32 accountId, bool updateRe
             CharacterDatabase.PExecute("DELETE FROM `guild_eventlog` WHERE `player_guid1` = '%u' OR `player_guid2` = '%u'", lowGuid, lowGuid);
             AchievementMgr::DeleteCharacter(lowGuid);
             CharacterDatabase.PExecute("DELETE FROM `character_xp_rate` WHERE `guid` = '%u'", lowGuid);
-            CharacterDatabase.PExecute("DELETE FROM `character_noquest` WHERE `guid` = '%u'", lowGuid);
             CharacterDatabase.PExecute("DELETE FROM `character_noquest_kills` WHERE `guid` = '%u'", lowGuid);
             CharacterDatabase.PExecute("DELETE FROM `character_companions` WHERE `bot_guid` = '%u'", lowGuid);
             sTicketMgr->RemovePlayerReferences(playerGuid);
@@ -15986,6 +15986,7 @@ void Player::UnbindInstance(BoundInstancesMap::iterator &itr, bool unload)
         if (!unload)
             CharacterDatabase.PExecute("DELETE FROM `character_instance` WHERE `guid` = '%u' AND `instance` = '%u'",
                                        GetGUIDLow(), itr->second.state->GetInstanceId());
+        itr->second.state->ForgetCharacterBind(GetGUIDLow());
         itr->second.state->RemovePlayer(this);              // state can become invalid
         m_boundInstances.erase(itr++);
     }
@@ -16017,9 +16018,13 @@ InstancePlayerBind* Player::BindToInstance(DungeonPersistentState* state, bool p
         if (bind.state != state)
         {
             if (bind.state)
+            {
+                bind.state->ForgetCharacterBind(GetGUIDLow());
                 bind.state->RemovePlayer(this);
+            }
             state->AddPlayer(this);
         }
+        state->NoteCharacterBind(GetGUIDLow());
 
         if (permanent)
             state->SetCanReset(false);
@@ -16033,6 +16038,38 @@ InstancePlayerBind* Player::BindToInstance(DungeonPersistentState* state, bool p
     }
     else
         return nullptr;
+}
+
+void Player::KeepInstanceProgress()
+{
+    // 5-man progress lives on the group. The player object is gone by the time
+    // that group disbands after a disconnect, so the save has to sit on the
+    // character or the next login is a fresh dungeon.
+    if (IsBot())
+        return;
+
+    if (Group* group = GetGroup())
+    {
+        std::vector<DungeonPersistentState*> saves;
+        for (auto const& itr : group->GetBoundInstances())
+            if (!itr.second.perm && itr.second.state)
+                saves.push_back(itr.second.state);
+
+        for (DungeonPersistentState* state : saves)
+        {
+            InstancePlayerBind* mine = GetBoundInstance(state->GetMapId());
+            if (mine && (mine->perm || mine->state != state))
+                continue;
+            if (!mine)
+                BindToInstance(state, false, false);
+            else
+                state->NoteCharacterBind(GetGUIDLow());
+        }
+    }
+
+    if (Map* map = FindMap())
+        if (InstanceData* data = map->GetInstanceData())
+            data->SaveToDB();
 }
 
 DungeonPersistentState* Player::GetBoundInstanceSaveForSelfOrGroup(uint32 mapId)
@@ -16501,8 +16538,15 @@ void Player::SaveToDB(bool online, bool force)
     }
     else
     {
+        // A client crash on the loading screen saves this branch. Instance 0
+        // would fail the login bind check and drop the player at the entrance.
+        uint32 instanceId = 0;
+        if (DungeonPersistentState* state = GetBoundInstanceSaveForSelfOrGroup(GetTeleportDest().mapId))
+            instanceId = state->GetInstanceId();
+        else if (GetMapId() == GetTeleportDest().mapId)
+            instanceId = GetInstanceId();
         uberInsert.addUInt32(GetTeleportDest().mapId);
-        uberInsert.addUInt32(0);
+        uberInsert.addUInt32(instanceId);
         uberInsert.addFloat(finiteAlways(GetTeleportDest().x));
         uberInsert.addFloat(finiteAlways(GetTeleportDest().y));
         uberInsert.addFloat(finiteAlways(GetTeleportDest().z));

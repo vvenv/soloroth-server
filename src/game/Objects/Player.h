@@ -1489,11 +1489,9 @@ class Player final: public Unit
         void LoadPersonalXpRate();
         void SavePersonalXpRate() const;
 
-        // No-quest mode (`.noquest`, NoQuest.cpp): no quest is ever offered or
-        // shown; those whose objectives are all kills or creature drops count
-        // and pay out from killing alone.
+        // No quests are offered or shown (NoQuest.cpp). Ones whose objectives
+        // are all kills or creature drops still count and pay out from killing.
         bool IsNoQuest() const { return m_noQuest; }
-        void SetNoQuest(bool on);
         void LoadNoQuest();
         bool NoQuestOpen(Quest const* pQuest) const;
         void NoQuestKilled(uint32 entry);
@@ -2456,6 +2454,9 @@ class Player final: public Unit
         void UnbindInstance(uint32 mapId, bool unload = false);
         void UnbindInstance(BoundInstancesMap::iterator &itr, bool unload = false);
         InstancePlayerBind* BindToInstance(DungeonPersistentState* save, bool permanent, bool load = false);
+        // 5-man progress is stored on the group. Copy it onto this character
+        // before logout or the group disbands, and write the instance script.
+        void KeepInstanceProgress();
         void SendRaidInfo() const;
         void SendSavedInstances() const;
         static void ConvertInstancesToGroup(Player* player, Group* group = nullptr, ObjectGuid player_guid = ObjectGuid());
