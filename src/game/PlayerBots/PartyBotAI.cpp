@@ -259,37 +259,38 @@ bool PartyBotAI::DrinkAndEat()
     return needToEat || needToDrink;
 }
 
-bool PartyBotAI::ShouldAutoRevive() const
+// Resurrection, Redemption, Ancestral Spirit, Rebirth. Every rank: a premade
+// spec learns the highest rank only, and a healer class often has none of them
+// (a balance druid, a protection paladin).
+static bool KnowsResurrection(Player const* pPlayer)
 {
-    if (me->GetDeathState() == DEAD)
-        return true;
+    static uint32 const spells[] =
+    {
+        2006, 2010, 10880, 10881, 20770,
+        7328, 10322, 10324, 20772, 20773,
+        2008, 20609, 20610, 20776, 20777,
+        20484, 20739, 20742, 20747, 20748,
+    };
+    for (uint32 spellId : spells)
+        if (pPlayer->HasSpell(spellId))
+            return true;
+    return false;
+}
 
-    bool alivePlayerNearby = false;
+bool PartyBotAI::AllyWillResurrect() const
+{
     Group* pGroup = me->GetGroup();
     if (!pGroup)
         return false;
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
-        if (Player* pMember = itr->getSource())
-        {
-            if (pMember == me)
-                continue;
-
-            if (pMember->IsInCombat())
-                return false;
-
-            if (pMember->IsAlive())
-            {
-                if (IsHealerClass(pMember->GetClass()))
-                    return false;
-
-                if (me->IsWithinDistInMap(pMember, 15.0f))
-                    alivePlayerNearby = true;
-            }
-        }
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == me || !pMember->IsAlive() || pMember->GetMapId() != me->GetMapId())
+            continue;
+        if (KnowsResurrection(pMember))
+            return true;
     }
-
-    return alivePlayerNearby;
+    return false;
 }
 
 bool PartyBotAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const
@@ -468,32 +469,69 @@ Unit* PartyBotAI::SelectPartyAttackTarget() const
 
 Player* PartyBotAI::SelectResurrectionTarget() const
 {
-    if (IsInDuel())
+    if (IsInDuel() || !m_resurrectionSpell)
         return nullptr;
 
     Group* pGroup = me->GetGroup();
     if (!pGroup)
         return nullptr;
+
+    // Closest corpse on this map. Range and line of sight are checked by the
+    // caller: a body around a corner is still the one to walk to.
+    Player* pClosest = nullptr;
+    float closest = 0.0f;
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
-        if (Player* pMember = itr->getSource())
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == me || pMember->GetDeathState() != CORPSE)
+            continue;
+        if (pMember->GetMapId() != me->GetMapId())
+            continue;
+
+        float const dist = me->GetDistance(pMember);
+        if (!pClosest || dist < closest)
         {
-            // Can't resurrect self.
-            if (pMember == me)
-                continue;
-
-            if (pMember->GetDeathState() != CORPSE)
-                continue;
-
-            if (!me->IsWithinLOSInMap(pMember))
-                continue;
-
-            if (m_resurrectionSpell->IsTargetInRange(me, pMember))
-                return pMember;
+            pClosest = pMember;
+            closest = dist;
         }
     }
+    return pClosest;
+}
 
-    return nullptr;
+bool PartyBotAI::MoveToResurrect()
+{
+    Player* pCorpse = SelectResurrectionTarget();
+    if (!pCorpse)
+    {
+        m_rezTargetGuid.Clear();
+        return false;
+    }
+
+    // In 1.12 the body stays where it fell. Following the leader walks away from it.
+    if (m_resurrectionSpell->IsTargetInRange(me, pCorpse) && me->IsWithinLOSInMap(pCorpse))
+    {
+        if (CanTryToCastSpell(pCorpse, m_resurrectionSpell) &&
+            DoCastSpell(pCorpse, m_resurrectionSpell) == SPELL_CAST_OK)
+            return true;
+
+        if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != IDLE_MOTION_TYPE)
+        {
+            me->StopMoving();
+            me->GetMotionMaster()->Clear(false, true);
+            me->GetMotionMaster()->MoveIdle();
+        }
+        return true;
+    }
+
+    if (m_rezTargetGuid != pCorpse->GetObjectGuid() ||
+        me->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
+    {
+        m_rezTargetGuid = pCorpse->GetObjectGuid();
+        me->StopMoving();
+        me->GetMotionMaster()->Clear(false, true);
+        me->GetMotionMaster()->MovePoint(0, pCorpse->GetPositionX(), pCorpse->GetPositionY(), pCorpse->GetPositionZ(), MOVE_PATHFINDING);
+    }
+    return true;
 }
 
 Player* PartyBotAI::SelectShieldTarget() const
@@ -793,18 +831,57 @@ void PartyBotAI::UpdateAI(uint32 const diff)
                 me->RepopAtGraveyard();
             }
         }
+        else if (me->GetDeathState() == DEAD)
+        {
+            // Already a ghost (released outside a dungeon). Stand up where we are.
+            me->ResurrectPlayer(0.5f);
+            me->SpawnCorpseBones();
+            me->CastSpell(me, PB_SPELL_HONORLESS_TARGET, true);
+            m_corpseSeconds = 0;
+        }
+        else if (me->IsRessurectRequested())
+        {
+            // A resurrect spell is waiting on an accept. The packet handler accepts it.
+        }
         else
         {
-            if (ShouldAutoRevive())
+            bool memberInCombat = false;
+            if (Group* pGroup = me->GetGroup())
             {
-                me->ResurrectPlayer(0.5f);
-                me->SpawnCorpseBones();
-                me->CastSpell(me, PB_SPELL_HONORLESS_TARGET, true);
+                for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+                {
+                    if (Player* pMember = itr->getSource())
+                        if (pMember != me && pMember->IsInCombat())
+                            memberInCombat = true;
+                }
+            }
+
+            // The leader released and is at the graveyard outside. Standing up
+            // here would teleport us out to them (the follow catch-up).
+            bool const leaderGhostOutside = pLeader && !pLeader->IsAlive() && pLeader->GetMapId() != me->GetMapId();
+
+            if (memberInCombat || leaderGhostOutside)
+                m_corpseSeconds = 0;
+            else
+            {
+                ++m_corpseSeconds;
+                // Someone who knows a rez spell gets time to walk over and cast.
+                // A healer class with no such spell (a balance druid) does not count.
+                uint32 const wait = AllyWillResurrect() ? 45 : 5;
+                if (m_corpseSeconds >= wait)
+                {
+                    me->ResurrectPlayer(0.5f);
+                    me->SpawnCorpseBones();
+                    me->CastSpell(me, PB_SPELL_HONORLESS_TARGET, true);
+                    m_corpseSeconds = 0;
+                }
             }
         }
 
         return;
     }
+
+    m_corpseSeconds = 0;
 
     if (me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
     {
@@ -846,6 +923,10 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
     if (!me->IsInCombat())
     {
+        // Before drinking or following: a corpse does not come to us.
+        if (MoveToResurrect())
+            return;
+
         if (DrinkAndEat())
         {
             if (!me->IsWithinDistInMap(pLeader, 100.0f))
@@ -981,12 +1062,6 @@ void PartyBotAI::UpdateOutOfCombatAI()
 {
     if (!IsInDuel())
     {
-        if (m_resurrectionSpell)
-            if (Player* pTarget = SelectResurrectionTarget())
-                if (CanTryToCastSpell(pTarget, m_resurrectionSpell))
-                    if (DoCastSpell(pTarget, m_resurrectionSpell) == SPELL_CAST_OK)
-                        return;
-
         if (m_role != ROLE_TANK && me->GetVictim() && CrowdControlMarkedTargets())
             return;
     }

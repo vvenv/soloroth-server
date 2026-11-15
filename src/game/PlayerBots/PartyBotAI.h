@@ -56,11 +56,12 @@ public:
     Unit* SelectAttackTarget(Player* pLeader) const;
     Unit* SelectPartyAttackTarget() const;
     Player* SelectResurrectionTarget() const;
+    bool MoveToResurrect();
+    bool AllyWillResurrect() const;
     Player* SelectShieldTarget() const;
     Unit* GetMarkedTarget(RaidTargetIcon mark) const;
     virtual bool CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget) const;
     bool DrinkAndEat();
-    bool ShouldAutoRevive() const;
     bool IsValidDistancingTarget(Unit* pTarget, Unit* pEnemy);
     Unit* GetDistancingTarget(Unit* pEnemy);
     virtual bool RunAwayFromTarget(Unit* pEnemy);
@@ -107,6 +108,8 @@ public:
     float m_o = 0.0f;
     bool m_resetSpellData = false;
     bool m_companion = false;   // a saved character that levels with its leader (DungeonBotMgr)
+    ObjectGuid m_rezTargetGuid;
+    uint32 m_corpseSeconds = 0;
 };
 
 #endif
