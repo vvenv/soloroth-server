@@ -78,7 +78,7 @@ private:
     bool DoesGather() const { return m_mode == SOLO_FARM_GATHER || m_mode == SOLO_FARM_ALL; }
     // The player keeps the body between pulls. A movement key must not end the mode.
     bool PlayerSteers() const { return m_mode == SOLO_FARM_FIGHT; }
-    // Quest goobers / glowing chests: grind, gather and all (not fishing, not assist).
+    // Ground objects that exist for a quest. Off for a character with no quest log.
     bool DoesQuestObjects() const
     {
         return (m_mode == SOLO_FARM_GRIND || m_mode == SOLO_FARM_GATHER || m_mode == SOLO_FARM_ALL) &&

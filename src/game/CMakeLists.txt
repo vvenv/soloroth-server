@@ -18,7 +18,6 @@
 set (game_SRCS
     AccountMgr.cpp
     AchievementMgr.cpp
-    DungeonQuests.cpp
     NoQuest.cpp
     AuraRemovalMgr.cpp
     AutoBroadCastMgr.cpp

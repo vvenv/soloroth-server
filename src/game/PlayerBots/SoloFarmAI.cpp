@@ -256,7 +256,7 @@ bool SoloFarmAI::Start(Player* pPlayer, SoloFarmMode mode, float radius)
         }
     }
 
-    // Gather also picks up quest goobers / glowing chests, so a profession is not required.
+    // A profession is not required to start; herbs, ore and skinning still need the skill.
 
     pPlayer->SetAI(new SoloFarmAI(pPlayer, mode, radius));
 
@@ -270,38 +270,23 @@ bool SoloFarmAI::Start(Player* pPlayer, SoloFarmMode mode, float radius)
                 uint32(radius));
             break;
         case SOLO_FARM_GATHER:
-            if (pPlayer->IsNoQuest())
-                chat.PSendSysMessage(zh ? "开始自动采集：在这里 %u 码内采药、挖矿、剥皮（有技能和工具才做）。输入 .solo stop，或在角色站定时按移动键即可停止。"
-                                        : "Auto gathering within %u yards of here: herbs, ore and skinning (only with the skill and tools). Type .solo stop, or press a movement key while standing, to stop.",
-                    uint32(radius));
-            else
-                chat.PSendSysMessage(zh ? "开始自动采集：在这里 %u 码内采药、挖矿、剥皮（有技能和工具才做），并点地上的任务道具和发光箱子。输入 .solo stop，或在角色站定时按移动键即可停止。"
-                                        : "Auto gathering within %u yards of here: herbs, ore and skinning (only with the skill and tools), plus quest objects and glowing chests. Type .solo stop, or press a movement key while standing, to stop.",
-                    uint32(radius));
+            chat.PSendSysMessage(zh ? "开始自动采集：在这里 %u 码内采药、挖矿、剥皮（有技能和工具才做）。输入 .solo stop，或在角色站定时按移动键即可停止。"
+                                    : "Auto gathering within %u yards of here: herbs, ore and skinning (only with the skill and tools). Type .solo stop, or press a movement key while standing, to stop.",
+                uint32(radius));
             break;
         case SOLO_FARM_ALL:
-            if (pPlayer->IsNoQuest())
-                chat.PSendSysMessage(zh ? "开始自动挂机：在这里 %u 码内能打就打、能采就采、能钓就钓（有技能才做）。输入 .solo stop，或在角色站定时按移动键即可停止。"
-                                        : "Auto farming within %u yards of here: fights, gathers and fishes when you can. Type .solo stop, or press a movement key while standing, to stop.",
-                    uint32(radius));
-            else
-                chat.PSendSysMessage(zh ? "开始自动挂机：在这里 %u 码内能打就打、能采就采、能钓就钓（有技能才做），也会点任务道具和发光箱子。输入 .solo stop，或在角色站定时按移动键即可停止。"
-                                        : "Auto farming within %u yards of here: fights, gathers and fishes when you can, and uses quest objects and glowing chests. Type .solo stop, or press a movement key while standing, to stop.",
-                    uint32(radius));
+            chat.PSendSysMessage(zh ? "开始自动挂机：在这里 %u 码内能打就打、能采就采、能钓就钓（有技能才做）。输入 .solo stop，或在角色站定时按移动键即可停止。"
+                                    : "Auto farming within %u yards of here: fights, gathers and fishes when you can. Type .solo stop, or press a movement key while standing, to stop.",
+                uint32(radius));
             break;
         case SOLO_FARM_FIGHT:
             chat.SendSysMessage(zh ? "开始半自动打怪：你自己走路。怪物攻击你，或你停下来并选中 30 码内的怪时，自动追击、放技能、吃药。不游荡找怪。走路不会停止；停止用 .solo stop。"
                                    : "Assist on: you walk. It fights anything that attacks you, and a mob you target while standing still within 30 yards: chase, spells, potions. It does not wander. Walking does not stop it; .solo stop does.");
             break;
         default:
-            if (pPlayer->IsNoQuest())
-                chat.PSendSysMessage(zh ? "开始自动打怪：以这里为中心 %u 码内游荡、找怪、战斗、拾取；血蓝低了会吃喝休息。输入 .solo stop，或在角色站定时按移动键即可停止。"
-                                        : "Auto grinding within %u yards of here: wanders, picks fights, loots, and eats or drinks when low. Type .solo stop, or press a movement key while standing, to stop.",
-                    uint32(radius));
-            else
-                chat.PSendSysMessage(zh ? "开始自动打怪：以这里为中心 %u 码内游荡、找怪、战斗、拾取，也会点任务道具和发光箱子；血蓝低了会吃喝休息。输入 .solo stop，或在角色站定时按移动键即可停止。"
-                                        : "Auto grinding within %u yards of here: wanders, picks fights, loots, uses quest objects and glowing chests, and eats or drinks when low. Type .solo stop, or press a movement key while standing, to stop.",
-                    uint32(radius));
+            chat.PSendSysMessage(zh ? "开始自动打怪：以这里为中心 %u 码内游荡、找怪、战斗、拾取；血蓝低了会吃喝休息。输入 .solo stop，或在角色站定时按移动键即可停止。"
+                                    : "Auto grinding within %u yards of here: wanders, picks fights, loots, and eats or drinks when low. Type .solo stop, or press a movement key while standing, to stop.",
+                uint32(radius));
             break;
     }
     return true;

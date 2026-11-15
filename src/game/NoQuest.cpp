@@ -1,10 +1,10 @@
 /*
- * No-quest mode (`.noquest on`): a character that never sees a quest. No giver
- * marks or offers one, nothing starts one. Under the hood a quest whose every
- * objective is a kill or an item creatures drop still counts while the
- * character kills, and pays out the moment it is done: the experience, money
- * and reputation of a turn-in, the best fitting choice item, mail for what the
- * bags cannot hold. Only those gains show.
+ * There is no quest log. No giver marks or offers a quest, and nothing starts
+ * one. Under the hood a quest whose every objective is a kill or an item
+ * creatures drop still counts while the character kills, and pays out the
+ * moment it is done: the experience, money and reputation of a turn-in, the
+ * best fitting choice item, mail for what the bags cannot hold. Only those
+ * gains show.
  *
  * Earlier quests of a chain are not required (they are mostly talking and
  * carrying); class, race, level, skill, reputation and exclusive groups are.
@@ -12,18 +12,12 @@
 
 #include "NoQuest.h"
 #include "Player.h"
-#include "Chat.h"
 #include "World.h"
 #include "ObjectMgr.h"
-#include "WorldSession.h"
 #include "Group.h"
 #include "Formulas.h"
-#include "Language.h"
 #include "Creature.h"
 #include "LootMgr.h"
-#include "GossipDef.h"
-#include "ScriptMgr.h"
-#include <shared_mutex>
 #include <map>
 #include <set>
 #include <unordered_map>
@@ -41,14 +35,6 @@ namespace
     std::unordered_map<uint32, NoQuestEntry> g_quests;
     std::multimap<uint32, uint32> g_byKill;     // creature -> quests killing it counts for
     std::multimap<uint32, uint32> g_byItem;     // item -> quests needing it
-
-    bool IsZh(WorldSession const* pSession)
-    {
-        if (!pSession)
-            return false;
-        int const index = pSession->GetSessionDbLocaleIndex();
-        return index >= 0 && sObjectMgr.GetLocaleForIndex(index) == LOCALE_zhCN;
-    }
 
     bool CreatureFriendly(Player const* pPlayer, uint32 entry)
     {
@@ -294,53 +280,11 @@ void NoQuest::FillBossEpics(Player* player, Loot& loot)
     }
 }
 
-void Player::SetNoQuest(bool on)
-{
-    m_noQuest = on;
-    if (on)
-    {
-        CharacterDatabase.PExecute("REPLACE INTO `character_noquest` (`guid`) VALUES (%u)", GetGUIDLow());
-        // Quests already in the log would keep showing; drop them.
-        for (int i = 0; i < MAX_QUEST_LOG_SIZE; ++i)
-            if (GetQuestSlotQuestId(i))
-                RemoveQuestAtSlot(i);
-        GrantShamanTotems();
-    }
-    else
-        CharacterDatabase.PExecute("DELETE FROM `character_noquest` WHERE `guid` = %u", GetGUIDLow());
-
-    // The client asks a giver's mark only when the giver comes into view:
-    // tell the ones already in sight.
-    std::vector<ObjectGuid> visible;
-    {
-        std::shared_lock<std::shared_timed_mutex> lock(m_visibleGUIDs_lock);
-        visible.assign(m_visibleGUIDs.begin(), m_visibleGUIDs.end());
-    }
-    for (ObjectGuid const& guid : visible)
-    {
-        if (!guid.IsCreatureOrPet())
-            continue;
-        Creature* pCreature = GetMap()->GetAnyTypeCreature(guid);
-        if (!pCreature || !pCreature->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_QUESTGIVER))
-            continue;
-        uint32 status = DIALOG_STATUS_NONE;
-        if (!on && !pCreature->IsHostileTo(this))
-        {
-            status = sScriptMgr.GetDialogStatus(this, pCreature);
-            if (status > 6)
-                status = GetSession()->GetDialogStatus(this, pCreature, DIALOG_STATUS_NONE);
-        }
-        PlayerTalkClass->SendQuestGiverStatus(uint8(status), guid);
-    }
-}
-
 void Player::LoadNoQuest()
 {
-    m_noQuest = false;
+    // Every character. A quest already in the log would keep showing; drop it.
+    m_noQuest = true;
     m_noQuestKills.clear();
-    if (std::unique_ptr<QueryResult> result = CharacterDatabase.PQuery(
-            "SELECT 1 FROM `character_noquest` WHERE `guid` = %u", GetGUIDLow()))
-        m_noQuest = true;
     if (std::unique_ptr<QueryResult> result = CharacterDatabase.PQuery(
             "SELECT `quest`, `count1`, `count2`, `count3`, `count4`, `item1`, `item2`, `item3`, `item4` "
             "FROM `character_noquest_kills` WHERE `guid` = %u", GetGUIDLow()))
@@ -354,13 +298,10 @@ void Player::LoadNoQuest()
         }
         while (result->NextRow());
     }
-    if (m_noQuest)
-    {
-        for (int i = 0; i < MAX_QUEST_LOG_SIZE; ++i)
-            if (GetQuestSlotQuestId(i))
-                RemoveQuestAtSlot(i);
-        GrantShamanTotems();
-    }
+    for (int i = 0; i < MAX_QUEST_LOG_SIZE; ++i)
+        if (GetQuestSlotQuestId(i))
+            RemoveQuestAtSlot(i);
+    GrantShamanTotems();
 }
 
 void Player::GrantShamanTotems()
@@ -490,40 +431,4 @@ void Player::NoQuestItemAdded(uint32 itemId)
     for (Quest const* pQuest : touched)
         if (NoQuestOpen(pQuest) && NoQuestTryComplete(this, pQuest))
             m_noQuestKills.erase(pQuest->GetQuestId());
-}
-
-bool ChatHandler::HandleNoQuestCommand(char* args)
-{
-    Player* pPlayer = m_session ? m_session->GetPlayer() : nullptr;
-    if (!pPlayer)
-        return false;
-
-    std::string const arg = args ? args : "";
-    bool const zh = IsZh(m_session);
-    if (arg == "on" || arg == "off")
-        pPlayer->SetNoQuest(arg == "on");
-    else if (!arg.empty() && arg != "quiet")
-    {
-        SendSysMessage(zh ? "用法：.noquest [on|off]" : "Usage: .noquest [on|off]");
-        SetSentErrorMessage(true);
-        return false;
-    }
-
-    float const rate = sWorld.getConfig(CONFIG_FLOAT_RATE_XP_NOQUEST_KILL);
-    // Also read by the GMBox addon: keep its shape.
-    PSendSysMessage("[noquest] on=%u kill=%g", pPlayer->IsNoQuest() ? 1 : 0, rate);
-    if (arg == "quiet")
-        return true;
-
-    if (!pPlayer->IsNoQuest())
-    {
-        SendSysMessage(zh ? "打怪模式已关闭：任务照常在任务给予者那里接和交。"
-                          : "No-quest mode is off: quests are taken and turned in as usual.");
-        return true;
-    }
-    if (zh)
-        PSendSysMessage("打怪模式已开启：不接任务，NPC 不再提任务；只靠击杀和拾取就能完成的任务，奖励会在完成时直接给你。击杀经验 %g 倍。", rate);
-    else
-        PSendSysMessage("No-quest mode is on: no quests are offered; what quests done by killing and looting would give comes to you as you kill. Kill experience %gx.", rate);
-    return true;
 }
