@@ -317,6 +317,7 @@ void WorldSession::HandleMovementOpcodes(WorldPackets::Movement::MovementPacket 
         return;
 
     // A key the player pressed while the body was theirs ends `.solo grind` / `.solo fish`.
+    // `.solo fight` keeps going: that mode is the player walking.
     if (pPlayerMover == _player && _player->AI())
     {
         switch (opcode)

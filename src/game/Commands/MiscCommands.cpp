@@ -2007,6 +2007,7 @@ bool ChatHandler::HandleSoloAutoLootCommand(char* args)
 }
 
 // `.solo grind|fish|gather|all [yards]`: around where the character stands now.
+// `.solo fight`: combat only. The player walks; there is no radius.
 static bool SoloFarmStart(WorldSession* session, char const* args, SoloFarmMode mode)
 {
     Player* pPlayer = session ? session->GetPlayer() : nullptr;
@@ -2040,6 +2041,16 @@ bool ChatHandler::HandleSoloGatherCommand(char* args)
 bool ChatHandler::HandleSoloAllCommand(char* args)
 {
     return SoloFarmStart(m_session, args, SOLO_FARM_ALL);
+}
+
+bool ChatHandler::HandleSoloFightCommand(char* /*args*/)
+{
+    Player* pPlayer = m_session ? m_session->GetPlayer() : nullptr;
+    if (!pPlayer)
+        return false;
+
+    SoloFarmAI::Start(pPlayer, SOLO_FARM_FIGHT, 0.0f);
+    return true;
 }
 
 bool ChatHandler::HandleSoloStopCommand(char* /*args*/)

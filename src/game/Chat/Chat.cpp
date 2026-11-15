@@ -133,6 +133,7 @@ ChatCommand * ChatHandler::getCommandTable()
         { "fish",       SEC_PLAYER,             false, &ChatHandler::HandleSoloFishCommand,            "", nullptr },
         { "gather",     SEC_PLAYER,             false, &ChatHandler::HandleSoloGatherCommand,          "", nullptr },
         { "all",        SEC_PLAYER,             false, &ChatHandler::HandleSoloAllCommand,             "", nullptr },
+        { "fight",      SEC_PLAYER,             false, &ChatHandler::HandleSoloFightCommand,           "", nullptr },
         { "stop",       SEC_PLAYER,             false, &ChatHandler::HandleSoloStopCommand,            "", nullptr },
         { "farm",       SEC_PLAYER,             false, &ChatHandler::HandleSoloFarmCommand,            "", nullptr },
         { nullptr,      0,                      false, nullptr,                                        "", nullptr },

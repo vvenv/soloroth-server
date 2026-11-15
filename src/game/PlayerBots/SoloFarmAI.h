@@ -4,8 +4,10 @@
 #include "PartyBotAI.h"
 
 // Soloroth: the player's own character farming around where it was started
-// (`.solo grind` / `fish` / `gather` / `all`). The server drives the body with splines, as it
-// does for Charge or fear; the class rotations are the party bots'.
+// (`.solo grind` / `fish` / `gather` / `all`), or fighting while they steer
+// (`.solo fight`). The server drives the body with splines, as it does for
+// Charge or fear; the class rotations are the party bots'. Fight mode never
+// picks a destination: the player walks, and a spline is only the chase.
 
 enum SoloFarmMode : uint8
 {
@@ -13,6 +15,7 @@ enum SoloFarmMode : uint8
     SOLO_FARM_FISH,
     SOLO_FARM_GATHER,
     SOLO_FARM_ALL,
+    SOLO_FARM_FIGHT,
 };
 
 enum SoloFarmStop : uint8
@@ -73,8 +76,14 @@ private:
     bool DoesGrind() const { return m_mode == SOLO_FARM_GRIND || m_mode == SOLO_FARM_ALL; }
     bool DoesFish() const { return m_mode == SOLO_FARM_FISH || m_mode == SOLO_FARM_ALL; }
     bool DoesGather() const { return m_mode == SOLO_FARM_GATHER || m_mode == SOLO_FARM_ALL; }
-    // Quest goobers / glowing chests: grind, gather and all (not fishing).
-    bool DoesQuestObjects() const { return m_mode != SOLO_FARM_FISH && !me->IsNoQuest(); }
+    // The player keeps the body between pulls. A movement key must not end the mode.
+    bool PlayerSteers() const { return m_mode == SOLO_FARM_FIGHT; }
+    // Quest goobers / glowing chests: grind, gather and all (not fishing, not assist).
+    bool DoesQuestObjects() const
+    {
+        return (m_mode == SOLO_FARM_GRIND || m_mode == SOLO_FARM_GATHER || m_mode == SOLO_FARM_ALL) &&
+            !me->IsNoQuest();
+    }
     // Multi-pull, or a 1v1 window to kite / bandage / potion / self-heal.
     bool CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget) const override;
     bool NeedsCrowdControlWindow() const;
@@ -99,6 +108,12 @@ private:
     WorldObject* PickApproach(std::vector<std::pair<float, WorldObject*>>& picks, uint32 allowed,
         float stopShort, bool fight, uint32* pAdds = nullptr);
 
+    void UpdateFight();
+    // Hand the body back once nothing is being fought, so client movement applies again.
+    // `force` clears a chase even when a victim is still set (the player just died).
+    void ReleaseBody(bool force = false);
+    // The mob the player has targeted, when they are standing still within pull range.
+    bool TryAssistPull();
     void UpdateGrind();
     // `adds`: the extra mobs the returned pull is expected to bring.
     Creature* FindTarget(uint32& adds);

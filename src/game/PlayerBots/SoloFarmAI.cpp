@@ -49,6 +49,8 @@ namespace
     uint32 const MAX_ADDS = 1;
     // Where a hunter or caster stops to open (CombatBotBaseAI::BeginChasing holds 25 yd).
     float const RANGED_PULL_DIST = 25.0f;
+    // Assist: how far a mob the player targeted (while standing) may be. No area search.
+    float const ASSIST_PULL_DIST = 30.0f;
     float const KITE_DIST = 15.0f;
     uint32 const PATH_CANDIDATES = 6;
     uint32 const WANDER_TRIES = 6;
@@ -195,6 +197,7 @@ char const* SoloFarmAI::ModeWire() const
         case SOLO_FARM_FISH: return "fish";
         case SOLO_FARM_GATHER: return "gather";
         case SOLO_FARM_ALL: return "all";
+        case SOLO_FARM_FIGHT: return "fight";
         default: return "grind";
     }
 }
@@ -286,6 +289,10 @@ bool SoloFarmAI::Start(Player* pPlayer, SoloFarmMode mode, float radius)
                                         : "Auto farming within %u yards of here: fights, gathers and fishes when you can, and uses quest objects and glowing chests. Type .solo stop, or press a movement key while standing, to stop.",
                     uint32(radius));
             break;
+        case SOLO_FARM_FIGHT:
+            chat.SendSysMessage(zh ? "开始半自动打怪：你自己走路。怪物攻击你，或你停下来并选中 30 码内的怪时，自动追击、放技能、吃药。不游荡找怪。走路不会停止；停止用 .solo stop。"
+                                   : "Assist on: you walk. It fights anything that attacks you, and a mob you target while standing still within 30 yards: chase, spells, potions. It does not wander. Walking does not stop it; .solo stop does.");
+            break;
         default:
             if (pPlayer->IsNoQuest())
                 chat.PSendSysMessage(zh ? "开始自动打怪：以这里为中心 %u 码内游荡、找怪、战斗、拾取；血蓝低了会吃喝休息。输入 .solo stop，或在角色站定时按移动键即可停止。"
@@ -308,6 +315,10 @@ void SoloFarmAI::StopFor(Player* pPlayer, SoloFarmStop reason)
 
 void SoloFarmAI::OnManualMove(Player* pPlayer)
 {
+    // Assist exists so the player can walk. A key only ends the modes that steer.
+    if (SoloFarmAI* pAI = Of(pPlayer))
+        if (pAI->PlayerSteers())
+            return;
     StopFor(pPlayer, SOLO_STOP_MOVED);
 }
 
@@ -365,25 +376,33 @@ void SoloFarmAI::Stop(SoloFarmStop reason)
             case SOLO_FARM_FISH: what = zh ? "钓鱼" : "fishing"; break;
             case SOLO_FARM_GATHER: what = zh ? "采集" : "gathering"; break;
             case SOLO_FARM_GRIND: what = zh ? "打怪" : "grinding"; break;
+            case SOLO_FARM_FIGHT: what = zh ? "半自动打怪" : "assist"; break;
             default: break;
         }
         char line[256] = {};
+        // "自动打怪" reads wrong in front of "半自动打怪".
+        bool const assist = m_mode == SOLO_FARM_FIGHT;
         switch (reason)
         {
             case SOLO_STOP_COMMAND:
-                snprintf(line, sizeof(line), zh ? "已停止自动%s。" : "Auto %s stopped.", what);
+                snprintf(line, sizeof(line), assist ? (zh ? "已停止半自动打怪。" : "Assist stopped.")
+                                                    : (zh ? "已停止自动%s。" : "Auto %s stopped."), what);
                 break;
             case SOLO_STOP_MOVED:
-                snprintf(line, sizeof(line), zh ? "你移动了角色，自动%s已停止。" : "You moved, so auto %s stopped.", what);
+                snprintf(line, sizeof(line), assist ? (zh ? "你移动了角色，半自动打怪已停止。" : "You moved, so assist stopped.")
+                                                    : (zh ? "你移动了角色，自动%s已停止。" : "You moved, so auto %s stopped."), what);
                 break;
             case SOLO_STOP_DIED:
-                snprintf(line, sizeof(line), zh ? "角色死亡，自动%s已停止。" : "You died; auto %s stopped.", what);
+                snprintf(line, sizeof(line), assist ? (zh ? "角色死亡，半自动打怪已停止。" : "You died; assist stopped.")
+                                                    : (zh ? "角色死亡，自动%s已停止。" : "You died; auto %s stopped."), what);
                 break;
             case SOLO_STOP_BAGS_FULL:
-                snprintf(line, sizeof(line), zh ? "背包满了，自动%s已停止。" : "Your bags are full; auto %s stopped.", what);
+                snprintf(line, sizeof(line), assist ? (zh ? "背包满了，半自动打怪已停止。" : "Your bags are full; assist stopped.")
+                                                    : (zh ? "背包满了，自动%s已停止。" : "Your bags are full; auto %s stopped."), what);
                 break;
             case SOLO_STOP_LEFT_AREA:
-                snprintf(line, sizeof(line), zh ? "离开了区域，自动%s已停止。" : "You left the area; auto %s stopped.", what);
+                snprintf(line, sizeof(line), assist ? (zh ? "离开了区域，半自动打怪已停止。" : "You left the area; assist stopped.")
+                                                    : (zh ? "离开了区域，自动%s已停止。" : "You left the area; auto %s stopped."), what);
                 break;
             case SOLO_STOP_NO_POLE:
                 snprintf(line, sizeof(line), zh ? "换不上鱼竿（背包没有鱼竿，或放不下副手），自动钓鱼已停止。"
@@ -453,11 +472,27 @@ void SoloFarmAI::UpdateAI(uint32 const diff)
 
     if (!me->IsAlive())
     {
-        Stop(SOLO_STOP_DIED);
+        // Assist stays armed through a corpse run. The other modes end.
+        if (!PlayerSteers())
+            Stop(SOLO_STOP_DIED);
+        else
+            ReleaseBody(true);
         return;
     }
 
-    if (me->GetMapId() != m_mapId || me->IsTaxiFlying() ||
+    if (PlayerSteers())
+    {
+        // No camp radius: the player is the one crossing the map.
+        if (me->IsTaxiFlying() || me->GetTransport())
+            return;
+        if (me->GetMap()->IsBattleGround())
+        {
+            Say("Battlegrounds turn assist off.", "战场里不能半自动打怪，已停止。");
+            Stop(SOLO_STOP_SILENT);
+            return;
+        }
+    }
+    else if (me->GetMapId() != m_mapId || me->IsTaxiFlying() ||
         !me->IsWithinDist2d(m_x, m_y, m_radius + 60.0f))
     {
         Stop(SOLO_STOP_LEFT_AREA);
@@ -491,6 +526,12 @@ void SoloFarmAI::UpdateAI(uint32 const diff)
             RestoreWeapons();
         if (UpdateCombat())
             return;
+    }
+
+    if (PlayerSteers())
+    {
+        UpdateFight();
+        return;
     }
 
     if (m_mode == SOLO_FARM_FISH)
@@ -942,6 +983,78 @@ bool SoloFarmAI::IsBlacklisted(ObjectGuid guid) const
 {
     auto const itr = m_blacklist.find(guid);
     return itr != m_blacklist.end() && itr->second > m_now;
+}
+
+// ------------------------------------------------------------------- assist --
+
+void SoloFarmAI::ReleaseBody(bool force)
+{
+    if (!force && (me->GetVictim() || !me->GetAttackers().empty()))
+        return;
+
+    switch (me->GetMotionMaster()->GetCurrentMovementGeneratorType())
+    {
+        case CHASE_MOTION_TYPE:
+        case DISTANCING_MOTION_TYPE:
+            me->GetMotionMaster()->Clear(false, true);
+            me->GetMotionMaster()->MoveIdle();
+            if (!me->movespline->Finalized())
+                me->StopMoving();
+            break;
+        default:
+            break;
+    }
+}
+
+bool SoloFarmAI::TryAssistPull()
+{
+    // Walking owns the body. A targeted mob is a pull only once the player has stopped.
+    // Still flagged in combat after a kill is fine: they stopped and picked the next mob.
+    if (me->IsMoving() || !me->movespline->Finalized() || me->GetVictim())
+        return false;
+
+    Unit* pTarget = me->GetMap()->GetUnit(me->GetSelectionGuid());
+    Creature* pCreature = pTarget ? pTarget->ToCreature() : nullptr;
+    if (!pCreature || !pCreature->IsAlive())
+        return false;
+    if (pCreature->IsPet() || pCreature->IsTotem() || !pCreature->GetOwnerGuid().IsEmpty())
+        return false;
+    if (pCreature->GetCreatureInfo()->type == CREATURE_TYPE_CRITTER || pCreature->IsCivilian() ||
+        pCreature->IsGuard() || pCreature->GetUInt32Value(UNIT_NPC_FLAGS))
+        return false;
+    if (pCreature->IsInEvadeMode() || IsBlacklisted(pCreature->GetObjectGuid()))
+        return false;
+    if (pCreature->HasLootRecipient() && !pCreature->IsTappedBy(me))
+        return false;
+    if (pCreature->GetVictim() && pCreature->GetVictim() != me && pCreature->GetVictim() != me->GetPet())
+        return false;
+    if (!IsValidHostileTarget(pCreature) || !me->IsWithinLOSInMap(pCreature))
+        return false;
+    if (me->GetDistance(pCreature) > ASSIST_PULL_DIST)
+        return false;
+
+    m_pullGuid = pCreature->GetObjectGuid();
+    m_pullStart = m_now;
+    return AttackStart(pCreature);
+}
+
+void SoloFarmAI::UpdateFight()
+{
+    // Combat (aggro or a pull already in progress) is handled before this runs.
+    ReleaseBody();
+    if (TryAssistPull())
+    {
+        UpdateCombat();
+        return;
+    }
+
+    // Buff while they stand with nothing targeted. Out-of-combat buffs clear the
+    // current target, so a selected mob (or a quest giver) is left alone.
+    // No conjure and no sit-to-eat: both would take the body they are steering.
+    if (me->IsMoving() || !me->movespline->Finalized() || me->IsMounted() ||
+        !me->GetSelectionGuid().IsEmpty())
+        return;
+    UpdateOutOfCombatAI();
 }
 
 // ----------------------------------------------------------------- grinding --
