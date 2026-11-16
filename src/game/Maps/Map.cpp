@@ -2124,9 +2124,20 @@ bool DungeonMap::CanEnter(Player* player)
 
     if (m_resetAfterUnload)
     {
-        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "[DungeonReset] %s attempted to enter map %u, instance %u during reset", player->GetName(), GetId(), m_instanceId);
-        player->SendTransferAborted(TRANSFER_ABORT_NOT_FOUND);
-        return false;
+        // The timer elapsed while this character still owns the run (they
+        // stepped out, bots were still inside). Let them back in.
+        DungeonPersistentState* bound = player->GetBoundInstanceSaveForSelfOrGroup(GetId());
+        if (bound && bound->GetInstanceId() == GetInstanceId())
+        {
+            m_resetAfterUnload = false;
+            m_unloadWhenEmpty = false;
+        }
+        else
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "[DungeonReset] %s attempted to enter map %u, instance %u during reset", player->GetName(), GetId(), m_instanceId);
+            player->SendTransferAborted(TRANSFER_ABORT_NOT_FOUND);
+            return false;
+        }
     }
 
     // World of Warcraft Client Patch 1.11.0 (2006-06-20)

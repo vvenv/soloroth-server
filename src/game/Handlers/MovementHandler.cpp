@@ -181,8 +181,14 @@ void WorldSession::HandleMoveWorldportAck()
     else if (!mEntry->IsDungeon())
     {
         MapEntry const* oldMapEntry = sMapStorage.LookupEntry<MapEntry>(oldLoc.mapId);
-        if (oldMapEntry->IsDungeon())
+        if (oldMapEntry && oldMapEntry->IsDungeon())
+        {
+            // A .go or hearth lands here. Copy the group's 5-man save onto the
+            // character before the leave hook drops the personal copy.
+            if (oldMapEntry->IsNonRaidDungeon())
+                GetPlayer()->KeepInstanceProgress();
             GetPlayer()->ResetPersonalInstanceOnLeaveDungeon(oldLoc.mapId);
+        }
     }
 
     GetPlayer()->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_ENTER_WORLD_CANCELS);

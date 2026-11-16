@@ -955,6 +955,18 @@ void MapPersistentStateManager::_ResetInstance(uint32 mapId, uint32 instanceId)
             }
             else
             {
+                // A character bind means they left and mean to come back.
+                // Arming a wipe here deletes the run when the map later unloads.
+                DungeonPersistentState* state = (DungeonPersistentState*)itr->second;
+                if (state->HasCharacterBind())
+                {
+                    time_t later = time(nullptr) + 2 * HOUR;
+                    if (state->GetResetTime() < later)
+                        state->SetResetTime(later);
+                    m_Scheduler.ScheduleReset(true, state->GetResetTime(),
+                        DungeonResetEvent(RESET_EVENT_NORMAL_DUNGEON, mapId, instanceId));
+                    return;
+                }
                 ((DungeonMap*)iMap)->Reset(INSTANCE_RESET_RESPAWN_DELAY);
                 return;
             }

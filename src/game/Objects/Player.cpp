@@ -17285,8 +17285,8 @@ void Player::ResetPersonalInstanceOnLeaveDungeon(uint32 mapId)
     {
         if (itr->second.state != pGroupBind->state)
             ResetInstance(INSTANCE_RESET_GROUP_JOIN, itr);
-        else
-            UnbindInstance(itr, false);
+        // The matching save stays on the character. Unbinding it on the way
+        // out is what made a teleport leave a fresh dungeon behind.
     }
 }
 
