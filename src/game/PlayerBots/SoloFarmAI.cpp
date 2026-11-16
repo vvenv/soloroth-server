@@ -967,10 +967,83 @@ bool SoloFarmAI::CanOutpaceAttackers() const
     return near;
 }
 
+bool SoloFarmAI::IsAlly(Unit const* pUnit) const
+{
+    if (!pUnit)
+        return false;
+    // The victim of a pull is a player, or a pet / guardian whose owner is.
+    Player* pPlayer = pUnit->GetCharmerOrOwnerPlayerOrPlayerItself();
+    if (!pPlayer || pPlayer->GetMapId() != me->GetMapId())
+        return false;
+    if (pPlayer == me)
+        return true;
+    Group const* pGroup = me->GetGroup();
+    return pGroup && pGroup == pPlayer->GetGroup();
+}
+
+bool SoloFarmAI::FightingAlly(Creature const* pCreature) const
+{
+    return pCreature && IsAlly(pCreature->GetVictim());
+}
+
+Unit* SoloFarmAI::SelectAllyAttacker() const
+{
+    // Assist mode keeps the body until the player is attacked or targets something.
+    if (PlayerSteers())
+        return nullptr;
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return nullptr;
+
+    Unit* pBest = nullptr;
+    float best = 0.0f;
+    auto consider = [&](Unit* pUnit)
+    {
+        if (!pUnit || !pUnit->IsAlive() || pUnit->GetMapId() != me->GetMapId())
+            return;
+        for (auto const pAttacker : pUnit->GetAttackers())
+        {
+            if (!pAttacker->IsAlive() || !IsValidHostileTarget(pAttacker))
+                continue;
+            if (Creature* pCreature = pAttacker->ToCreature())
+                if (pCreature->IsInEvadeMode())
+                    continue;
+            // Followers pull just past the circle the search walks. Farther than that leaves the camp.
+            if (!pAttacker->IsWithinDist2d(m_x, m_y, m_radius + 40.0f))
+                continue;
+            float const distance = me->GetDistance(pAttacker);
+            if (!pBest || distance < best)
+            {
+                pBest = pAttacker;
+                best = distance;
+            }
+        }
+    };
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == me)
+            continue;
+        consider(pMember);
+        consider(pMember->GetPet());
+    }
+    return pBest;
+}
+
 bool SoloFarmAI::UpdateCombat()
 {
     Unit* pVictim = me->GetVictim();
     if (pVictim && !IsValidHostileTarget(pVictim))
+    {
+        me->AttackStop();
+        pVictim = nullptr;
+    }
+
+    // Party combat flags us too (1.12). A pull that has not turned to us yet is dropped
+    // so a mob already hitting a party member is the one we run to.
+    Unit* pAlly = SelectAllyAttacker();
+    if (pVictim && pAlly && pVictim != pAlly && !FightingAlly(pVictim->ToCreature()))
     {
         me->AttackStop();
         pVictim = nullptr;
@@ -996,6 +1069,14 @@ bool SoloFarmAI::UpdateCombat()
                 if (Unit* pPetAttacker = pPet->GetAttackerForHelper())
                     if (IsValidHostileTarget(pPetAttacker))
                         pVictim = pPetAttacker;
+
+        if (!pVictim && pAlly)
+        {
+            pVictim = pAlly;
+            m_pullGuid = pAlly->GetObjectGuid();
+            m_pullStart = m_now;
+            m_wandering = false;
+        }
 
         if (!pVictim && !m_pullGuid.IsEmpty())
             if (Unit* pPull = me->GetMap()->GetUnit(m_pullGuid))
@@ -1482,7 +1563,8 @@ bool SoloFarmAI::TryAssistPull()
         return false;
     if (pCreature->HasLootRecipient() && !pCreature->IsTappedBy(me))
         return false;
-    if (pCreature->GetVictim() && pCreature->GetVictim() != me && pCreature->GetVictim() != me->GetPet())
+    // A mob already hitting someone outside the party. One hitting a party member is the pull.
+    if (pCreature->GetVictim() && !IsAlly(pCreature->GetVictim()))
         return false;
     if (!IsValidHostileTarget(pCreature) || !me->IsWithinLOSInMap(pCreature))
         return false;
@@ -1579,31 +1661,45 @@ Creature* SoloFarmAI::FindTarget(uint32& adds)
     uint32 const topLevel = me->GetLevel() + 2;
 
     std::vector<std::pair<float, WorldObject*>> picks;
+    std::vector<std::pair<float, WorldObject*>> engaged;
     for (Creature* pCreature : creatures)
     {
         if (pCreature->IsPet() || pCreature->IsTotem() || !pCreature->GetOwnerGuid().IsEmpty())
             continue;
         if (pCreature->GetCreatureInfo()->type == CREATURE_TYPE_CRITTER || pCreature->IsCivilian() ||
-            pCreature->IsGuard() || pCreature->IsElite() || pCreature->IsWorldBoss())
+            pCreature->IsGuard())
             continue;
         // Vendors, quest givers, trainers of the other side: never a grinding target.
         if (pCreature->GetUInt32Value(UNIT_NPC_FLAGS))
             continue;
-        if (pCreature->GetLevel() <= grayLevel || pCreature->GetLevel() > topLevel)
+        // An elite or a gray mob is not a pull. One the party has already started is.
+        bool const ours = FightingAlly(pCreature);
+        if (!ours && (pCreature->IsElite() || pCreature->IsWorldBoss()))
             continue;
-        if (pCreature->IsInEvadeMode() || IsBlacklisted(pCreature->GetObjectGuid()))
+        if (!ours && (pCreature->GetLevel() <= grayLevel || pCreature->GetLevel() > topLevel))
+            continue;
+        if (pCreature->IsInEvadeMode() || (!ours && IsBlacklisted(pCreature->GetObjectGuid())))
             continue;
         if (pCreature->HasLootRecipient() && !pCreature->IsTappedBy(me))
             continue;
-        if (pCreature->GetVictim() && pCreature->GetVictim() != me && pCreature->GetVictim() != me->GetPet())
+        // Someone else's fight. The party's own pull is taken below, adds and all.
+        if (pCreature->GetVictim() && !ours)
             continue;
         if (!IsValidHostileTarget(pCreature))
             continue;
         // Grid search finds mobs behind hills and barns; without LOS the chase path is a guess.
-        if (!me->IsWithinLOSInMap(pCreature))
+        // A fight already going is on the other side of the barn often enough to walk over anyway.
+        if (!ours && !me->IsWithinLOSInMap(pCreature))
             continue;
 
-        picks.emplace_back(me->GetDistance(pCreature), pCreature);
+        (ours ? engaged : picks).emplace_back(me->GetDistance(pCreature), pCreature);
+    }
+
+    if (!engaged.empty())
+    {
+        std::sort(engaged.begin(), engaged.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
+        adds = 0;
+        return static_cast<Creature*>(engaged.front().second);
     }
 
     float const stopShort = GetRole() == ROLE_RANGE_DPS ? RANGED_PULL_DIST : 0.0f;

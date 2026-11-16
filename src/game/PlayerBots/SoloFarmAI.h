@@ -133,6 +133,11 @@ private:
     // The mob the player has targeted, when they are standing still within pull range.
     bool TryAssistPull();
     void UpdateGrind();
+    // Us, our pet, or a party member and their pet. A mob's victim is one of these when the pull is ours.
+    bool IsAlly(Unit const* pUnit) const;
+    bool FightingAlly(Creature const* pCreature) const;
+    // Nearest hostile already hitting a party member or their pet, inside the camp.
+    Unit* SelectAllyAttacker() const;
     // `adds`: the extra mobs the returned pull is expected to bring.
     Creature* FindTarget(uint32& adds);
     void Wander();
