@@ -20641,7 +20641,8 @@ void Player::AutoStoreLoot(Loot& loot, bool broadcast, uint8 bag, uint8 slot)
 
 void Player::SoloAutoLootCreature(Creature* creature)
 {
-    if (m_soloAutoLootOnKill)
+    // Bots never auto-loot kills into their own bags; Unit::Kill redirects to a human.
+    if (m_soloAutoLootOnKill && !IsBot())
         SoloLootCreature(creature);
 }
 

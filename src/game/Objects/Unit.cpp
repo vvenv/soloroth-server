@@ -1222,8 +1222,32 @@ void Unit::Kill(Unit* pVictim, SpellEntry const* spellProto, bool durabilityLoss
 
             // Soloroth: optional kill auto-loot — bags get the items without a corpse click.
             // Leftovers (bags full, master loot) keep the sparkle so the player can still click.
-            if (pPlayerTap && pPlayerTap->IsSoloAutoLootOnKill())
-                pPlayerTap->SoloAutoLootCreature(pCreatureVictim);
+            // Dungeon bots often hold the tap: never dump loot into a bot's bags. Give it to the
+            // human in the group who has auto-loot on (PartyBotAI already clears round-robin so
+            // players can loot by hand; this matches that at kill time).
+            Player* soloLooter = nullptr;
+            if (pPlayerTap && !pPlayerTap->IsBot() && pPlayerTap->IsSoloAutoLootOnKill())
+                soloLooter = pPlayerTap;
+            else if (pGroupTap && (!pPlayerTap || pPlayerTap->IsBot()))
+            {
+                if (Player* leader = ObjectAccessor::FindPlayer(pGroupTap->GetLeaderGuid()))
+                    if (!leader->IsBot() && leader->IsInWorld() && leader->IsSoloAutoLootOnKill())
+                        soloLooter = leader;
+                if (!soloLooter)
+                {
+                    for (GroupReference* itr = pGroupTap->GetFirstMember(); itr != nullptr; itr = itr->next())
+                    {
+                        Player* member = itr->getSource();
+                        if (member && !member->IsBot() && member->IsInWorld() && member->IsSoloAutoLootOnKill())
+                        {
+                            soloLooter = member;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (soloLooter)
+                soloLooter->SoloAutoLootCreature(pCreatureVictim);
 
             if (pPlayerTap && (pCreatureVictim->IsGuard() || pCreatureVictim->HasStaticFlag(CREATURE_STATIC_FLAG_PVP_ENABLING)))
                 pCreatureVictim->SendZoneUnderAttackMessage(pPlayerTap);
