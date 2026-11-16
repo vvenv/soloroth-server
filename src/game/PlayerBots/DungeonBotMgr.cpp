@@ -344,8 +344,15 @@ void DungeonBotMgr::ForgetGoneBots(uint32 leaderLow)
         m_autoBots.erase(itr);
 }
 
-uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why)
+uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, uint32 target, uint32* removedOut)
 {
+    if (target < 2)
+        target = 2;
+    if (target > PARTY_SIZE)
+        target = PARTY_SIZE;
+    if (removedOut)
+        *removedOut = 0;
+
     bool const zh = IsZh(pPlayer->GetSession());
 
     if (pPlayer->IsTaxiFlying() || pPlayer->InBattleGround() || pPlayer->IsBeingTeleported())
@@ -411,6 +418,8 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why)
     }
     else
     {
+        // Same order as a group slot, so guids[i] and roles[i] stay paired.
+        guids.push_back(pPlayer->GetGUIDLow());
         roles.push_back(GetPlayerRole(pPlayer));
         classes.push_back(pPlayer->GetClass());
         names.push_back(pPlayer->GetName());
@@ -429,9 +438,81 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why)
         names.push_back(bot.second.name);
     }
 
-    if (roles.size() >= PARTY_SIZE)
+    // Too many: send bots home until the party is the size asked for. Damage
+    // bots go first, then a healer, then a tank, so a duo or a trio keeps the
+    // roles a fill would have added first. The player is never removed.
+    if (roles.size() > target)
     {
-        why = zh ? "队伍已经满了。" : "The party is already full.";
+        auto dropBot = [&](uint32 botLow)
+        {
+            ObjectGuid const guid(HIGHGUID_PLAYER, botLow);
+            if (Group* pNow = pPlayer->GetGroup())
+                if (pNow->IsMember(guid))
+                    pNow->RemoveMember(guid, 0);
+            // In the world: the bot manager logs them out. Still logging in:
+            // DeleteBot leaves the entry offline so the login does not finish.
+            if (PartyBotAI* pAI = GetPartyBotAI(sObjectAccessor.FindPlayer(guid)))
+            {
+                if (pAI->botEntry)
+                    pAI->botEntry->requestRemoval = true;
+            }
+            else
+                sPlayerBotMgr.DeleteBot(botLow);
+            mine.erase(botLow);
+        };
+
+        std::vector<uint32> gone;
+        uint32 removed = 0;
+        while (roles.size() - gone.size() > target)
+        {
+            int best = -1;
+            int bestScore = 99;
+            for (uint32 i = 0; i < guids.size(); ++i)
+            {
+                if (guids[i] == pPlayer->GetGUIDLow())
+                    continue;
+                if (std::find(gone.begin(), gone.end(), guids[i]) != gone.end())
+                    continue;
+                ObjectGuid const guid(HIGHGUID_PLAYER, guids[i]);
+                bool const bot = mine.find(guids[i]) != mine.end() || IsCompanion(guids[i]) ||
+                                 GetPartyBotAI(sObjectAccessor.FindPlayer(guid)) != nullptr;
+                if (!bot)
+                    continue;
+                int score = 0;
+                if (i < roles.size() && roles[i] == ROLE_HEALER)
+                    score = 1;
+                else if (i < roles.size() && roles[i] == ROLE_TANK)
+                    score = 2;
+                if (best < 0 || score < bestScore || (score == bestScore && int(i) > best))
+                {
+                    best = int(i);
+                    bestScore = score;
+                }
+            }
+            if (best < 0)
+                break;
+            dropBot(guids[best]);
+            gone.push_back(guids[best]);
+            ++removed;
+        }
+        if (removedOut)
+            *removedOut = removed;
+        if (roles.size() - gone.size() > target)
+        {
+            why = zh ? "队伍里还有别人，不能缩到这个人数。" : "The party has other players, so it cannot shrink to that size.";
+            return 0;
+        }
+        return 0;
+    }
+
+    if (roles.size() >= target)
+    {
+        if (target == 2)
+            why = zh ? "已经是两人。" : "Already a duo.";
+        else if (target == 3)
+            why = zh ? "已经是三人。" : "Already a trio.";
+        else
+            why = zh ? "队伍已经满了。" : "The party is already full.";
         return 0;
     }
 
@@ -491,7 +572,7 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why)
         return SelectRandomContainerElement(ofClass);
     };
 
-    uint32 const slots = PARTY_SIZE - uint32(roles.size());
+    uint32 const slots = target - uint32(roles.size());
     uint32 added = 0;
     for (uint32 i = 0; i < slots; ++i)
     {
@@ -700,7 +781,7 @@ void DungeonBotMgr::Update(uint32 diff)
         std::string who, why;
         bool const zh = IsZh(pPlayer->GetSession());
         if (Fill(pPlayer, who, why))
-            ChatHandler(pPlayer).PSendSysMessage(zh ? "队友加入了队伍：%s（你是%s）。输入 /gm 打开队伍面板。" : "Joining your party: %s (you play %s). Type /gm for the party panel.",
+            ChatHandler(pPlayer).PSendSysMessage(zh ? "队友加入了队伍：%s（你是%s）。人数在小地图下的组队按钮里改。" : "Joining your party: %s (you play %s). The party button under the minimap changes the size.",
                 who.c_str(), RoleName(GetPlayerRole(pPlayer), zh));
         else if (!why.empty())
             ChatHandler(pPlayer).SendSysMessage(why.c_str());
@@ -806,15 +887,51 @@ bool ChatHandler::HandleBotsAutoCommand(char* args)
     return HandleBotsStatusCommand(nullptr);
 }
 
-bool ChatHandler::HandleBotsFillCommand(char* /*args*/)
+bool ChatHandler::HandleBotsFillCommand(char* args)
 {
     Player* pPlayer = m_session ? m_session->GetPlayer() : nullptr;
     if (!pPlayer)
         return false;
-    std::string who, why;
-    if (!sDungeonBotMgr.Fill(pPlayer, who, why))
+
+    // No argument still fills a party of five. 2 and 3 are a duo and a trio.
+    // Raid sizes (20 and 40) are refused here: Fill does not join a raid.
+    uint32 target = 5;
+    if (args)
     {
+        while (*args == ' ')
+            ++args;
+        if (*args)
+        {
+            char const digit = args[0];
+            char* rest = args + 1;
+            while (*rest == ' ')
+                ++rest;
+            if ((digit != '2' && digit != '3' && digit != '5') || *rest)
+            {
+                SendSysMessage(BotsZh(this)
+                    ? "用法：.bots fill [2|3|5]。两人、三人或五人。团队副本是 20 人或 40 人，现在不会补机器人。"
+                    : "Usage: .bots fill [2|3|5]. A duo, a trio or five. Raids are 20 or 40 and are not filled.");
+                SetSentErrorMessage(true);
+                return false;
+            }
+            target = uint32(digit - '0');
+        }
+    }
+
+    std::string who, why;
+    uint32 removed = 0;
+    if (!sDungeonBotMgr.Fill(pPlayer, who, why, target, &removed))
+    {
+        if (removed && why.empty())
+        {
+            PSendSysMessage(BotsZh(this) ? "解散了 %u 个机器人，现在是 %u 人。" : "Sent %u bot(s) home. The party is %u.",
+                removed, target);
+            return true;
+        }
         SendSysMessage(why.c_str());
+        // "Already a duo" is the answer, not a failure the client should print in red.
+        if (why.find("已经") != std::string::npos || why.find("lready") != std::string::npos)
+            return true;
         SetSentErrorMessage(true);
         return false;
     }

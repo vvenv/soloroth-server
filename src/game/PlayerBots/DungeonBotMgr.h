@@ -8,8 +8,9 @@
  *
  * Each character keeps two settings in `character_party_bots`: the role the
  * player plays (auto = guessed from class and talents) and whether dungeons
- * fill on their own. `.bots` (open to every account) changes them, fills or
- * dismisses by hand, and the GMBox addon drives it from its Party tab.
+ * fill on their own. `.bots` (open to every account) changes them, fills a
+ * duo, a trio or a party of five, or dismisses by hand. The Bots addon
+ * drives it. Raids are 20 or 40 and are not filled.
  *
  * Each roster member a character calls becomes that character's companion
  * (`character_companions`): a saved character on its own made-up account,
@@ -43,10 +44,12 @@ public:
     bool IsAutoFill(Player* pPlayer);
     void SetAutoFill(Player* pPlayer, bool on);
 
-    // Adds bots for the missing roles up to a party of five, picked from a
-    // fixed roster of companions. Returns how many were added; `who` lists
-    // them, `why` says why none were when it returns 0.
-    uint32 Fill(Player* pPlayer, std::string& who, std::string& why);
+    // Adds bots for the missing roles until the party has `target` members
+    // (2, 3 or 5, counting the player), or sends extras home until it does.
+    // Picked from a fixed roster of companions. Returns how many were added;
+    // `who` lists them, `why` says why none were when it returns 0, and
+    // `removed` counts bots sent home to shrink the party.
+    uint32 Fill(Player* pPlayer, std::string& who, std::string& why, uint32 target = 5, uint32* removed = nullptr);
     // Sends away the bots this player leads: only those filled in a dungeon, or all.
     uint32 Dismiss(Player* pPlayer, bool autoOnly);
 
