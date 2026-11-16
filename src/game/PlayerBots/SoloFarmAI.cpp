@@ -128,7 +128,7 @@ namespace
     template <class F>
     void ForEachBagItem(Player const* pPlayer, F f)
     {
-        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        FOR_BACKPACK_SLOTS(slot)
             if (Item* pItem = pPlayer->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
                 f(pItem);
 
@@ -1498,7 +1498,7 @@ bool SoloFarmAI::LootCorpses()
 uint32 SoloFarmAI::FreeBagSlots() const
 {
     uint32 free = 0;
-    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+    FOR_BACKPACK_SLOTS(slot)
         if (!me->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
             ++free;
 

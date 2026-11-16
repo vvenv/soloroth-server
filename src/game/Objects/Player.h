@@ -513,11 +513,37 @@ enum InventorySlots                                         // 4 slots
     INVENTORY_SLOT_BAG_END      = 23
 };
 
-enum InventoryPackSlots                                     // 16 slots
+enum InventoryPackSlots                                     // 16 slots in the 1.12 pack block
 {
     INVENTORY_SLOT_ITEM_START   = 23,
     INVENTORY_SLOT_ITEM_END     = 39
 };
+
+// Soloroth: the backpack is 32 slots. The pack update block stays 16 guids.
+// The keyring block is 32 guids and only 81-96 are keys, so 97-112 are the
+// other half of the backpack. INV_SLOT_HEAD + slot*2 already addresses them,
+// which keeps every later player field where 1.12 put it.
+enum BackpackExtraSlots
+{
+    BACKPACK_EXTRA_START        = 97,
+    BACKPACK_EXTRA_END          = 113
+};
+
+#define BACKPACK_SLOT_INDEX_COUNT \
+    ((INVENTORY_SLOT_ITEM_END - INVENTORY_SLOT_ITEM_START) + (BACKPACK_EXTRA_END - BACKPACK_EXTRA_START))
+
+inline int BackpackSlotIndex(uint8 slot)
+{
+    if (slot < INVENTORY_SLOT_ITEM_END)
+        return slot - INVENTORY_SLOT_ITEM_START;
+    return (INVENTORY_SLOT_ITEM_END - INVENTORY_SLOT_ITEM_START) + (slot - BACKPACK_EXTRA_START);
+}
+
+// The 16 stock backpack slots, then the 16 extra ones.
+#define FOR_BACKPACK_SLOTS(slot) \
+    for (uint8 slot##_phase = 0, slot = INVENTORY_SLOT_ITEM_START; slot##_phase < 2; \
+         ++slot == (slot##_phase ? (uint8)BACKPACK_EXTRA_END : (uint8)INVENTORY_SLOT_ITEM_END) \
+             ? (void)(slot = (uint8)BACKPACK_EXTRA_START, ++slot##_phase) : (void)0)
 
 enum BankItemSlots                                          // 28 slots
 {

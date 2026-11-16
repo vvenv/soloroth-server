@@ -3983,7 +3983,7 @@ bool ChatHandler::HandleResetItemsCommand(char* args)
             ++count;
         }
     }
-    for (int i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+    FOR_BACKPACK_SLOTS(i)
     {
         if (Item* pItem = pTarget->GetItemByPos(INVENTORY_SLOT_BAG_0, i))
         {

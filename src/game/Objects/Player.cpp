@@ -559,7 +559,7 @@ void Player::AddStartingItems()
     // bags and main-hand weapon must equipped at this moment
     // now second pass for not equipped (offhand weapon/shield if it attempt equipped before main-hand weapon)
     // or ammo not equipped in special bag
-    for (int i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+    FOR_BACKPACK_SLOTS(i)
     {
         if (Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i))
         {
@@ -4851,7 +4851,7 @@ void Player::DurabilityLossAll(double percent, bool inventory)
         // bags not have durability
         // for(int i = INVENTORY_SLOT_BAG_START; i < INVENTORY_SLOT_BAG_END; ++i)
 
-        for (int i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+        FOR_BACKPACK_SLOTS(i)
             if (Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i))
                 DurabilityLoss(pItem, percent);
 
@@ -4895,7 +4895,7 @@ void Player::DurabilityPointsLossAll(int32 points, bool inventory)
         // bags not have durability
         // for(int i = INVENTORY_SLOT_BAG_START; i < INVENTORY_SLOT_BAG_END; ++i)
 
-        for (int i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+        FOR_BACKPACK_SLOTS(i)
             if (Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i))
                 DurabilityPointsLoss(pItem, points);
 
@@ -4951,6 +4951,8 @@ uint32 Player::DurabilityRepairAll(bool cost, float discountMod)
     uint32 totalCost = 0;
     // equipped, backpack, bags itself
     for (int i = EQUIPMENT_SLOT_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+        totalCost += DurabilityRepair(((INVENTORY_SLOT_BAG_0 << 8) | i), cost, discountMod);
+    for (int i = BACKPACK_EXTRA_START; i < BACKPACK_EXTRA_END; ++i)
         totalCost += DurabilityRepair(((INVENTORY_SLOT_BAG_0 << 8) | i), cost, discountMod);
 
     // bank, buyback and keys not repaired
@@ -8396,7 +8398,7 @@ InventoryResult Player::CanUnequipItems(uint32 item, uint32 count) const
                 res = ires;
         }
     }
-    for (int i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+    FOR_BACKPACK_SLOTS(i)
     {
         pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i);
         if (pItem && pItem->GetEntry() == item)
@@ -8447,6 +8449,12 @@ uint32 Player::GetItemCount(uint32 item, bool inBankAlso, Item const* skipItem) 
         if (pItem && pItem != skipItem &&  pItem->GetEntry() == item)
             count += pItem->GetCount();
     }
+    for (int i = BACKPACK_EXTRA_START; i < BACKPACK_EXTRA_END; ++i)
+    {
+        Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i);
+        if (pItem && pItem != skipItem && pItem->GetEntry() == item)
+            count += pItem->GetCount();
+    }
     for (int i = KEYRING_SLOT_START; i < KEYRING_SLOT_END; ++i)
     {
         Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i);
@@ -8482,6 +8490,11 @@ uint32 Player::GetItemCount(uint32 item, bool inBankAlso, Item const* skipItem) 
 Item* Player::GetItemByGuid(ObjectGuid guid) const
 {
     for (int i = EQUIPMENT_SLOT_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+        if (Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i))
+            if (pItem->GetObjectGuid() == guid)
+                return pItem;
+
+    for (int i = BACKPACK_EXTRA_START; i < BACKPACK_EXTRA_END; ++i)
         if (Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i))
             if (pItem->GetObjectGuid() == guid)
                 return pItem;
@@ -8522,7 +8535,9 @@ Item* Player::GetItemByPos(uint16 pos) const
 
 Item* Player::GetItemByPos(uint8 bag, uint8 slot) const
 {
-    if (bag == INVENTORY_SLOT_BAG_0 && (slot < BANK_SLOT_BAG_END || (slot >= KEYRING_SLOT_START && slot < KEYRING_SLOT_END)))
+    if (bag == INVENTORY_SLOT_BAG_0 && (slot < BANK_SLOT_BAG_END
+        || (slot >= KEYRING_SLOT_START && slot < KEYRING_SLOT_END)
+        || (slot >= BACKPACK_EXTRA_START && slot < BACKPACK_EXTRA_END)))
         return m_items[slot];
     else if ((bag >= INVENTORY_SLOT_BAG_START && bag < INVENTORY_SLOT_BAG_END)
              || (bag >= BANK_SLOT_BAG_START && bag < BANK_SLOT_BAG_END))
@@ -8625,6 +8640,8 @@ bool Player::IsInventoryPos(uint8 bag, uint8 slot)
         return true;
     if (bag == INVENTORY_SLOT_BAG_0 && (slot >= INVENTORY_SLOT_ITEM_START && slot < INVENTORY_SLOT_ITEM_END))
         return true;
+    if (bag == INVENTORY_SLOT_BAG_0 && (slot >= BACKPACK_EXTRA_START && slot < BACKPACK_EXTRA_END))
+        return true;
     if (bag >= INVENTORY_SLOT_BAG_START && bag < INVENTORY_SLOT_BAG_END)
         return true;
     if (bag == INVENTORY_SLOT_BAG_0 && (slot >= KEYRING_SLOT_START && slot < KEYRING_SLOT_END))
@@ -8683,8 +8700,9 @@ bool Player::IsValidPos(uint8 bag, uint8 slot, bool explicit_pos) const
         if (slot >= INVENTORY_SLOT_BAG_START && slot < INVENTORY_SLOT_BAG_END)
             return true;
 
-        // backpack slots
-        if (slot >= INVENTORY_SLOT_ITEM_START && slot < INVENTORY_SLOT_ITEM_END)
+        // backpack slots, including the extra half past the keyring
+        if ((slot >= INVENTORY_SLOT_ITEM_START && slot < INVENTORY_SLOT_ITEM_END)
+            || (slot >= BACKPACK_EXTRA_START && slot < BACKPACK_EXTRA_END))
             return true;
 
         // keyring slots
@@ -8726,6 +8744,16 @@ bool Player::HasItemCount(uint32 item, uint32 count, bool inBankAlso) const
 {
     uint32 tempcount = 0;
     for (int i = EQUIPMENT_SLOT_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+    {
+        Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i);
+        if (pItem && pItem->GetEntry() == item && !pItem->IsInTrade())
+        {
+            tempcount += pItem->GetCount();
+            if (tempcount >= count)
+                return true;
+        }
+    }
+    for (int i = BACKPACK_EXTRA_START; i < BACKPACK_EXTRA_END; ++i)
     {
         Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i);
         if (pItem && pItem->GetEntry() == item && !pItem->IsInTrade())
@@ -9073,6 +9101,9 @@ InventoryResult Player::_CanStoreItem_InInventorySlots(uint8 slot_begin, uint8 s
                 return EQUIP_ERR_OK;
         }
     }
+    // The extra backpack half is not contiguous with slots 23-38.
+    if (count && slot_begin == INVENTORY_SLOT_ITEM_START && slot_end == INVENTORY_SLOT_ITEM_END)
+        return _CanStoreItem_InInventorySlots(BACKPACK_EXTRA_START, BACKPACK_EXTRA_END, dest, pProto, count, merge, pSrcItem, skip_bag, skip_slot);
     return EQUIP_ERR_OK;
 }
 
@@ -9469,20 +9500,20 @@ InventoryResult Player::CanStoreItems(Item** pItems, int count) const
     Item* pItem2;
 
     // fill space table
-    int inv_slot_items[INVENTORY_SLOT_ITEM_END - INVENTORY_SLOT_ITEM_START];
+    int inv_slot_items[BACKPACK_SLOT_INDEX_COUNT];
     int inv_bags[INVENTORY_SLOT_BAG_END - INVENTORY_SLOT_BAG_START][MAX_BAG_SIZE];
     int inv_keys[KEYRING_SLOT_END - KEYRING_SLOT_START];
 
-    memset(inv_slot_items, 0, sizeof(int) * (INVENTORY_SLOT_ITEM_END - INVENTORY_SLOT_ITEM_START));
+    memset(inv_slot_items, 0, sizeof(int) * BACKPACK_SLOT_INDEX_COUNT);
     memset(inv_bags, 0, sizeof(int) * (INVENTORY_SLOT_BAG_END - INVENTORY_SLOT_BAG_START)*MAX_BAG_SIZE);
     memset(inv_keys, 0, sizeof(int) * (KEYRING_SLOT_END - KEYRING_SLOT_START));
 
-    for (int i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+    FOR_BACKPACK_SLOTS(i)
     {
         pItem2 = GetItemByPos(INVENTORY_SLOT_BAG_0, i);
 
         if (pItem2 && !pItem2->IsInTrade())
-            inv_slot_items[i - INVENTORY_SLOT_ITEM_START] = pItem2->GetCount();
+            inv_slot_items[BackpackSlotIndex(i)] = pItem2->GetCount();
     }
 
     for (int i = KEYRING_SLOT_START; i < KEYRING_SLOT_END; ++i)
@@ -9561,12 +9592,12 @@ InventoryResult Player::CanStoreItems(Item** pItems, int count) const
             }
             if (b_found) continue;
 
-            for (int t = INVENTORY_SLOT_ITEM_START; t < INVENTORY_SLOT_ITEM_END; ++t)
+            FOR_BACKPACK_SLOTS(t)
             {
                 pItem2 = GetItemByPos(INVENTORY_SLOT_BAG_0, t);
-                if (pItem2 && pItem2->CanBeMergedPartlyWith(pProto) == EQUIP_ERR_OK && inv_slot_items[t - INVENTORY_SLOT_ITEM_START] + pItem->GetCount() <= pProto->GetMaxStackSize())
+                if (pItem2 && pItem2->CanBeMergedPartlyWith(pProto) == EQUIP_ERR_OK && inv_slot_items[BackpackSlotIndex(t)] + pItem->GetCount() <= pProto->GetMaxStackSize())
                 {
-                    inv_slot_items[t - INVENTORY_SLOT_ITEM_START] += pItem->GetCount();
+                    inv_slot_items[BackpackSlotIndex(t)] += pItem->GetCount();
                     b_found = true;
                     break;
                 }
@@ -9641,11 +9672,11 @@ InventoryResult Player::CanStoreItems(Item** pItems, int count) const
 
         // search free slot
         bool b_found = false;
-        for (int t = INVENTORY_SLOT_ITEM_START; t < INVENTORY_SLOT_ITEM_END; ++t)
+        FOR_BACKPACK_SLOTS(t)
         {
-            if (inv_slot_items[t - INVENTORY_SLOT_ITEM_START] == 0)
+            if (inv_slot_items[BackpackSlotIndex(t)] == 0)
             {
-                inv_slot_items[t - INVENTORY_SLOT_ITEM_START] = 1;
+                inv_slot_items[BackpackSlotIndex(t)] = 1;
                 b_found = true;
                 break;
             }
@@ -10725,7 +10756,7 @@ void Player::DestroyItemCount(uint32 item, uint32 count, bool update, bool unequ
     uint32 remcount = 0;
 
     // in inventory
-    for (int i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+    FOR_BACKPACK_SLOTS(i)
     {
         if (Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i))
         {
@@ -10933,7 +10964,7 @@ void Player::DestroyZoneLimitedItem(bool update, uint32 new_zone)
     sLog.Out(LOG_BASIC, LOG_LVL_DEBUG, "STORAGE: DestroyZoneLimitedItem in map %u and area %u", GetMapId(), new_zone);
 
     // in inventory
-    for (int i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+    FOR_BACKPACK_SLOTS(i)
         if (Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i))
             if (pItem->IsLimitedToAnotherMapOrZone(GetMapId(), new_zone))
                 DestroyItem(INVENTORY_SLOT_BAG_0, i, update);
@@ -10964,7 +10995,7 @@ void Player::DestroyConjuredItems(bool update)
     sLog.Out(LOG_BASIC, LOG_LVL_DEBUG, "STORAGE: DestroyConjuredItems");
 
     // in inventory
-    for (int i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+    FOR_BACKPACK_SLOTS(i)
         if (Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i))
             if (pItem->IsConjuredConsumable())
                 DestroyItem(INVENTORY_SLOT_BAG_0, i, update);
@@ -11741,7 +11772,7 @@ void Player::RemoveAllEnchantments(EnchantmentSlot slot)
     // remove enchants from inventory items
     // NOTE: no need to remove these from stats, since these aren't equipped
     // in inventory
-    for (int i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+    FOR_BACKPACK_SLOTS(i)
         if (Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i))
             if (pItem->GetEnchantmentId(slot))
                 pItem->ClearEnchantment(slot);
@@ -12854,7 +12885,7 @@ bool Player::CanRewardQuest(Quest const* pQuest, uint32 reward, bool msg) const
 uint32 Player::CountFreeInventorySlots() const
 {
     uint32 freeSlots = 0;
-    for (int i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+    FOR_BACKPACK_SLOTS(i)
         if (!GetItemByPos(INVENTORY_SLOT_BAG_0, i))
             ++freeSlots;
     for (int i = INVENTORY_SLOT_BAG_START; i < INVENTORY_SLOT_BAG_END; ++i)
