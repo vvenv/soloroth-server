@@ -23,6 +23,7 @@
 #include "Player.h"
 #include "Map.h"
 #include "World.h"
+#include "Opcodes.h"
 #include "MoveSplineInit.h"
 #include "MoveSpline.h"
 #include "Anticheat.h"
@@ -368,8 +369,19 @@ bool ChaseMovementGenerator<T>::Update(T &owner, uint32 const&  time_diff)
         if (interrupted)
             owner.StopMoving();
 
-        if (interrupted || owner.IsPlayer() && !owner.HasInArc(i_target.getTarget(), M_PI_F / 2.0f))
-            owner.SetFacingTo(owner.GetAngle(i_target.getTarget()));
+        // Players (bots): SetFacingTo launches a facing spline with MOVEFLAG_FORWARD,
+        // which Player::SetPosition treats as movement and cancels casts / blocks Auto Shot.
+        // Face without a spline and broadcast so clients see the turn.
+        if (interrupted || (owner.IsPlayer() && !owner.HasInArc(i_target.getTarget(), M_PI_F / 2.0f)))
+        {
+            if (owner.IsPlayer())
+            {
+                owner.SetInFront(i_target.getTarget());
+                owner.SendMovementPacket(MSG_MOVE_SET_FACING, false);
+            }
+            else
+                owner.SetFacingTo(owner.GetAngle(i_target.getTarget()));
+        }
 
         m_spreadTimer.Update(time_diff);
         if (m_spreadTimer.Passed())

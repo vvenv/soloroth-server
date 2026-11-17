@@ -1632,6 +1632,7 @@ void BattleBotAI::UpdateInCombatAI_Hunter()
             if (!me->movespline->Finalized() || me->IsMoving() || !me->IsStopped())
                 me->StopMoving();
             me->SetInFront(pVictim);
+            me->SendMovementPacket(MSG_MOVE_SET_FACING, false);
             switch (me->CastSpell(pVictim, BB_SPELL_AUTO_SHOT, false))
             {
                 case SPELL_FAILED_NEED_AMMO:

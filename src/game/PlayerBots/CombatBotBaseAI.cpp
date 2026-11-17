@@ -3004,11 +3004,15 @@ SpellCastResult CombatBotBaseAI::DoCastSpell(Unit* pTarget, SpellEntry const* pS
     // SPELL_INTERRUPT_FLAG_MOVEMENT (Aimed Shot's 3 s cast in 1.12) and leaves the
     // hunter AI's Auto Shot gate (!IsMoving) stuck shut — the bot stands and poses.
     // SetInFront only changes orientation, same as Spell.cpp does when a cast starts.
+    // Broadcast MSG_MOVE_SET_FACING so nearby clients see the turn (SetInFront alone
+    // is server-side); skip for an own character so we do not fight mouse look.
     if (me != pTarget && (!m_ownCharacter || !me->HasInArc(pTarget, 2.0f * M_PI_F / 3.0f)))
     {
         if (!me->movespline->Finalized() || me->IsMoving() || !me->IsStopped())
             me->StopMoving();
         me->SetInFront(pTarget);
+        if (!m_ownCharacter)
+            me->SendMovementPacket(MSG_MOVE_SET_FACING, false);
     }
 
     if (me->IsMounted())

@@ -1091,6 +1091,15 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         }
         else
         {
+            // SetInFront alone is server-only; without MSG_MOVE_SET_FACING others still see
+            // the bot sideways after chase stops (ranged stand-and-shoot, or a mob that
+            // circled). Same pattern as BattleBotAI.
+            if (!me->HasInArc(pVictim, 2 * M_PI_F / 3))
+            {
+                me->SetInFront(pVictim);
+                me->SendMovementPacket(MSG_MOVE_SET_FACING, false);
+            }
+
             if (!me->HasUnitState(UNIT_STATE_MELEE_ATTACKING) &&
                (GetRole() == ROLE_MELEE_DPS || m_role == ROLE_TANK) &&
                 IsValidHostileTarget(pVictim) &&
@@ -1789,6 +1798,7 @@ void PartyBotAI::UpdateInCombatAI_Hunter()
             if (!me->movespline->Finalized() || me->IsMoving() || !me->IsStopped())
                 me->StopMoving();
             me->SetInFront(pVictim);
+            me->SendMovementPacket(MSG_MOVE_SET_FACING, false);
             switch (me->CastSpell(pVictim, PB_SPELL_AUTO_SHOT, false))
             {
                 case SPELL_FAILED_NEED_AMMO:
