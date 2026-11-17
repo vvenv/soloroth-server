@@ -1637,8 +1637,9 @@ void SoloFarmAI::UpdateGrind()
         uint32 adds = 0;
         if (Creature* pTarget = FindTarget(adds))
         {
-            // Only pulls that bring a friend left: take them rested.
-            if (adds > AllowedAdds())
+            // Outdoors, a second mob waits until we are rested. In a dungeon the
+            // pack is the only way forward: sitting would never make it smaller.
+            if (adds > PackLimit())
             {
                 BeginRest();
                 return;
@@ -1664,7 +1665,7 @@ Creature* SoloFarmAI::FindTarget(uint32& adds)
     Cell::VisitGridObjects(px, py, me->GetMap(), searcher, m_radius);
 
     uint32 const grayLevel = MaNGOS::XP::GetGrayLevel(me->GetLevel());
-    uint32 const topLevel = me->GetLevel() + 2;
+    uint32 const topLevel = me->GetLevel() + (InPartyDungeon() ? 10 : 2);
 
     std::vector<std::pair<float, WorldObject*>> picks;
     std::vector<std::pair<float, WorldObject*>> engaged;
@@ -1678,11 +1679,17 @@ Creature* SoloFarmAI::FindTarget(uint32& adds)
         // Vendors, quest givers, trainers of the other side: never a grinding target.
         if (pCreature->GetUInt32Value(UNIT_NPC_FLAGS))
             continue;
-        // An elite or a gray mob is not a pull. One the party has already started is.
+        // Outdoors an elite or a gray mob is not a pull. Dungeon trash is elite, and
+        // the level spread of one instance is wider than the outdoor +2.
         bool const ours = FightingAlly(pCreature);
-        if (!ours && (pCreature->IsElite() || pCreature->IsWorldBoss()))
+        bool const dungeon = InPartyDungeon();
+        if (!ours && pCreature->IsWorldBoss())
             continue;
-        if (!ours && (pCreature->GetLevel() <= grayLevel || pCreature->GetLevel() > topLevel))
+        if (!ours && pCreature->IsElite() && !dungeon)
+            continue;
+        if (!ours && !dungeon && pCreature->GetLevel() <= grayLevel)
+            continue;
+        if (!ours && pCreature->GetLevel() > topLevel)
             continue;
         if (pCreature->IsInEvadeMode() || (!ours && IsBlacklisted(pCreature->GetObjectGuid())))
             continue;
@@ -1707,7 +1714,8 @@ Creature* SoloFarmAI::FindTarget(uint32& adds)
     }
 
     float const stopShort = GetRole() == ROLE_RANGE_DPS ? RANGED_PULL_DIST : 0.0f;
-    return static_cast<Creature*>(PickApproach(picks, MAX_ADDS, stopShort, true, &adds));
+    uint32 const cap = InPartyDungeon() ? PackLimit() : MAX_ADDS;
+    return static_cast<Creature*>(PickApproach(picks, cap, stopShort, true, &adds));
 }
 
 // Rested, one extra is fine: the class AI sheeps or blinds it. Otherwise only clean pulls.
@@ -1853,6 +1861,18 @@ WorldObject* SoloFarmAI::PickApproach(std::vector<std::pair<float, WorldObject*>
     return pBest;
 }
 
+bool SoloFarmAI::InPartyDungeon() const
+{
+    return me->GetMap()->IsDungeon() && !me->GetMap()->IsRaid();
+}
+
+uint32 SoloFarmAI::PackLimit() const
+{
+    if (!InPartyDungeon())
+        return AllowedAdds();
+    return 3;
+}
+
 float SoloFarmAI::RoamLeg() const
 {
     // LEFT_AREA is m_radius + 60 from the camp set when the leg starts.
@@ -1896,7 +1916,7 @@ WorldObject* SoloFarmAI::FindRoamGoal()
     if (DoesGrind())
     {
         uint32 const grayLevel = MaNGOS::XP::GetGrayLevel(me->GetLevel());
-        uint32 const topLevel = me->GetLevel() + 2;
+        uint32 const topLevel = me->GetLevel() + (InPartyDungeon() ? 10 : 2);
         std::list<Creature*> creatures;
         AliveCreatureCheck check{ px, py, ROAM_LOOK };
         MaNGOS::CreatureListSearcher<AliveCreatureCheck> searcher(creatures, check);
@@ -1911,9 +1931,13 @@ WorldObject* SoloFarmAI::FindRoamGoal()
             if (pCreature->GetCreatureInfo()->type == CREATURE_TYPE_CRITTER || pCreature->IsCivilian() ||
                 pCreature->IsGuard() || pCreature->GetUInt32Value(UNIT_NPC_FLAGS))
                 continue;
-            if (pCreature->IsElite() || pCreature->IsWorldBoss())
+            if (pCreature->IsWorldBoss())
                 continue;
-            if (pCreature->GetLevel() <= grayLevel || pCreature->GetLevel() > topLevel)
+            if (pCreature->IsElite() && !InPartyDungeon())
+                continue;
+            if (!InPartyDungeon() && pCreature->GetLevel() <= grayLevel)
+                continue;
+            if (pCreature->GetLevel() > topLevel)
                 continue;
             if (pCreature->IsInEvadeMode() || IsBlacklisted(pCreature->GetObjectGuid()))
                 continue;
@@ -1968,8 +1992,8 @@ WorldObject* SoloFarmAI::FindRoamGoal()
         }
     }
 
-    // A path across the look range is longer than three times a small farm radius.
-    return PickApproach(picks, AllowedAdds(), 0.0f, true, nullptr, ROAM_LOOK + 40.0f);
+    // A cave path to something we can already see is much longer than the straight line.
+    return PickApproach(picks, PackLimit(), 0.0f, true, nullptr, 300.0f);
 }
 
 bool SoloFarmAI::RandomRoamPoint(float& x, float& y, float& z) const
@@ -2009,6 +2033,32 @@ bool SoloFarmAI::RandomRoamPoint(float& x, float& y, float& z) const
             bestZ = z;
         }
     }
+
+    // A cave bend is a wall at 8 yards. A straight 18-yard ray never leaves the corner.
+    if (bestAdds > allowed)
+    {
+        uint32 const nav = InPartyDungeon() ? (NAV_GROUND | NAV_STEEP_SLOPES) : NAV_GROUND;
+        for (uint32 i = 0; i < WANDER_TRIES && bestAdds; ++i)
+        {
+            x = px;
+            y = py;
+            z = pz;
+            if (!me->GetMap()->GetWalkRandomPosition(nullptr, x, y, z, InPartyDungeon() ? 14.0f : 22.0f, nav))
+                continue;
+            if (Dist2d(x, y, px, py) < 6.0f)
+                continue;
+            if (!PlaceOk(x, y, z))
+                continue;
+            uint32 const adds = CountAdds(threats, x, y, z, nullptr, 0.0f, 80.0f);
+            if (adds < bestAdds)
+            {
+                bestAdds = adds;
+                bestX = x;
+                bestY = y;
+                bestZ = z;
+            }
+        }
+    }
     if (bestAdds > allowed)
         return false;
     x = bestX;
@@ -2019,8 +2069,14 @@ bool SoloFarmAI::RandomRoamPoint(float& x, float& y, float& z) const
 
 void SoloFarmAI::Wander()
 {
+    // A winding tunnel is longer than the leash. Slide the camp while we are on a leg
+    // we chose; a chase still stops if it runs away from where the pull started.
     if (!me->movespline->Finalized())
+    {
+        if (m_wandering)
+            NoteCamp();
         return;
+    }
 
     if (m_wandering)
     {
@@ -2036,27 +2092,15 @@ void SoloFarmAI::Wander()
     bool aimed = false;
     if (WorldObject* pGoal = FindRoamGoal())
     {
-        float const px = me->GetPositionX();
-        float const py = me->GetPositionY();
-        float const pz = me->GetPositionZ();
-        float const dx = pGoal->GetPositionX() - px;
-        float const dy = pGoal->GetPositionY() - py;
-        float const dist = std::sqrt(dx * dx + dy * dy);
-        if (dist > 15.0f)
+        float const dist = me->GetDistance(pGoal);
+        // Pathfinding goes around the bend. A straight ray stops on the first wall.
+        if (dist > 8.0f && dist <= RoamLeg() &&
+            PlaceOk(pGoal->GetPositionX(), pGoal->GetPositionY(), pGoal->GetPositionZ()))
         {
-            float const travel = std::min(dist, RoamLeg());
-            x = px + dx / dist * travel;
-            y = py + dy / dist * travel;
-            z = pz;
-            // Stop at a wall or the water's edge. The next leg goes around it.
-            if (me->GetMap()->GetWalkHitPosition(nullptr, px, py, pz, x, y, z, NAV_GROUND) &&
-                Dist2d(x, y, px, py) >= 15.0f && PlaceOk(x, y, z))
-            {
-                // The camp itself is the point of the run. Other mobs along the straight line are not.
-                uint32 const adds = CountAdds(FindThreats(), x, y, z, pGoal->ToCreature(), 0.0f, RoamLeg() + 30.0f);
-                if (adds <= AllowedAdds())
-                    aimed = true;
-            }
+            x = pGoal->GetPositionX();
+            y = pGoal->GetPositionY();
+            z = pGoal->GetPositionZ();
+            aimed = true;
         }
     }
 
@@ -2076,8 +2120,10 @@ void SoloFarmAI::Wander()
     }
 
     // The leash is from here, so this run does not count as leaving the area.
+    // Cave ramps are flagged steep; excluding them ends the path a few steps in.
     NoteCamp();
-    me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING | MOVE_EXCLUDE_STEEP_SLOPES);
+    uint32 const flags = MOVE_PATHFINDING | (InPartyDungeon() ? 0 : MOVE_EXCLUDE_STEEP_SLOPES);
+    me->GetMotionMaster()->MovePoint(0, x, y, z, flags);
     m_wandering = true;
 }
 

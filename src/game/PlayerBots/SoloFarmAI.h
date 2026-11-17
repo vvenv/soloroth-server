@@ -144,6 +144,10 @@ private:
     Creature* FindTarget(uint32& adds);
     // One run toward the next camp, or a long random leg when the ground ahead is empty.
     void Wander();
+    // A 5-man. Raid trash stays out: those packs are not a solo farm.
+    bool InPartyDungeon() const;
+    // Outdoors, one extra mob and only when rested. A dungeon pack is the tunnel.
+    uint32 PackLimit() const;
     // The leash is this far from where the leg started. A chase that exceeds it still stops.
     float RoamLeg() const;
     void NoteCamp();
