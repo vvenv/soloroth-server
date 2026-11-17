@@ -1035,6 +1035,63 @@ Unit* SoloFarmAI::SelectAllyAttacker() const
     return pBest;
 }
 
+bool SoloFarmAI::TryStepForSight(Unit* pVictim)
+{
+    if (!pVictim || me->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_STUNNED))
+        return false;
+
+    if (m_seekingSight)
+    {
+        if (!me->movespline->Finalized())
+            return true;
+        m_seekingSight = false;
+    }
+    else if (!me->movespline->Finalized())
+        return false;
+
+    float const px = me->GetPositionX();
+    float const py = me->GetPositionY();
+    float const pz = me->GetPositionZ();
+    float const face = me->GetAngle(pVictim);
+    float tx, ty, tz;
+    pVictim->GetLosCheckPosition(tx, ty, tz);
+
+    // Sideways first: that is the step that clears a pillar. Then farther, then straight at it.
+    static float const offsets[] = { 1.0f, -1.0f, 1.8f, -1.8f, 0.45f, -0.45f, 0.0f };
+    static float const steps[] = { 5.0f, 9.0f, 14.0f, 20.0f };
+    uint32 const nav = InPartyDungeon() ? (NAV_GROUND | NAV_STEEP_SLOPES) : NAV_GROUND;
+
+    for (float step : steps)
+    {
+        for (float offset : offsets)
+        {
+            float const ang = face + offset;
+            float x = px + step * std::cos(ang);
+            float y = py + step * std::sin(ang);
+            float z = pz;
+            if (!me->GetMap()->GetWalkHitPosition(nullptr, px, py, pz, x, y, z, nav))
+                continue;
+            if (Dist2d(x, y, px, py) < 3.0f)
+                continue;
+            // targetHeight 0: GetLosCheckPosition already includes the mob's height, same as a cast.
+            if (!me->IsWithinLOSAtPosition(x, y, z, tx, ty, tz, true, 0.0f))
+                continue;
+
+            uint32 const adds = CountAdds(FindThreats(), x, y, z, pVictim->ToCreature(), 0.0f, 40.0f);
+            if (adds == NO_PATH || adds > PackLimit())
+                continue;
+
+            me->GetMotionMaster()->Clear(false, true);
+            uint32 const flags = MOVE_PATHFINDING | (InPartyDungeon() ? 0 : MOVE_EXCLUDE_STEEP_SLOPES);
+            me->GetMotionMaster()->MovePoint(0, x, y, z, flags);
+            m_seekingSight = true;
+            m_wandering = false;
+            return true;
+        }
+    }
+    return false;
+}
+
 bool SoloFarmAI::UpdateCombat()
 {
     Unit* pVictim = me->GetVictim();
@@ -1090,6 +1147,7 @@ bool SoloFarmAI::UpdateCombat()
         if (!pVictim)
         {
             m_pullGuid.Clear();
+            m_seekingSight = false;
             return false;
         }
 
@@ -1214,6 +1272,10 @@ bool SoloFarmAI::UpdateCombat()
     float const manaLine = crowded ? 40.0f : 30.0f;
     if (!ending && me->GetPowerType() == POWER_MANA && me->GetPowerPercent(POWER_MANA) < manaLine &&
         UseConsumable(0, SPELL_EFFECT_ENERGIZE, true))
+        return true;
+
+    // Potions and a self heal do not need the mob in view. A cast at it does.
+    if (!me->IsWithinLOSInMap(pVictim) && TryStepForSight(pVictim))
         return true;
 
     if (StopRunner(pVictim))
@@ -1570,8 +1632,14 @@ bool SoloFarmAI::TryAssistPull()
     // A mob already hitting someone outside the party. One hitting a party member is the pull.
     if (pCreature->GetVictim() && !IsAlly(pCreature->GetVictim()))
         return false;
-    if (!IsValidHostileTarget(pCreature) || !me->IsWithinLOSInMap(pCreature))
+    if (!IsValidHostileTarget(pCreature))
         return false;
+    // Selected, in range, behind a wall: step until the pull can see it.
+    if (!me->IsWithinLOSInMap(pCreature))
+    {
+        TryStepForSight(pCreature);
+        return false;
+    }
     if (me->GetDistance(pCreature) > ASSIST_PULL_DIST)
         return false;
 

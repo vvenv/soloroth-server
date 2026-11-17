@@ -108,6 +108,8 @@ private:
     // After a root (Frost Nova, Entangling Roots): blink or disengage, otherwise walk out.
     bool TryEscapeMelee(Unit* pVictim);
     bool TryBlinkAway(Unit* pEnemy);
+    // A held chase stops on the near side of a wall, then every cast fails the LOS check.
+    bool TryStepForSight(Unit* pVictim);
 
     // An idle mob that attacks on sight, and how close we may pass the middle of its roam.
     struct Threat
@@ -190,6 +192,7 @@ private:
     uint32 m_nextSearch = 0;
     uint32 m_idleUntil = 0;
     bool m_wandering = false;
+    bool m_seekingSight = false;
     // Forward legs left before the next one picks a fully random direction.
     uint32 m_wanderSteps = 0;
 
