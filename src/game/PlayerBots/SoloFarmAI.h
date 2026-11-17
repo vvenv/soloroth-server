@@ -3,11 +3,12 @@
 
 #include "PartyBotAI.h"
 
-// Soloroth: the player's own character farming around where it was started
-// (`.solo grind` / `fish` / `gather` / `all`), or fighting while they steer
-// (`.solo fight`). The server drives the body with splines, as it does for
-// Charge or fear; the class rotations are the party bots'. Fight mode never
-// picks a destination: the player walks, and a spline is only the chase.
+// Soloroth: the player's own character. Grind, gather and the combined mode
+// take a fight or a node within the yards given, and when that ground is
+// empty they run on to the next camp. Fish stays on the water where it
+// started. Fight mode never picks a destination: the player walks, and a
+// spline is only the chase. The server drives the body with splines, as it
+// does for Charge or fear; the class rotations are the party bots'.
 
 enum SoloFarmMode : uint8
 {
@@ -118,13 +119,14 @@ private:
     std::vector<Threat> FindThreats() const;
     // Mobs a walk to (x, y, z) wakes: threats along the path, stopping `stopShort` from the end,
     // plus those that assist pTarget once it is hit. NO_PATH when unreachable or too long.
+    // `maxLength` 0 uses three times the farm yards. A roam leg passes its own budget.
     uint32 CountAdds(std::vector<Threat> const& threats, float x, float y, float z,
-        Creature* pTarget = nullptr, float stopShort = 0.0f) const;
+        Creature* pTarget = nullptr, float stopShort = 0.0f, float maxLength = 0.0f) const;
     static uint32 const NO_PATH = 0xFFFFFFFF;
     uint32 AllowedAdds() const;
     // Nearest first, the fewest adds within `allowed`; `fight` counts the target's assisters.
     WorldObject* PickApproach(std::vector<std::pair<float, WorldObject*>>& picks, uint32 allowed,
-        float stopShort, bool fight, uint32* pAdds = nullptr);
+        float stopShort, bool fight, uint32* pAdds = nullptr, float maxLength = 0.0f);
 
     void UpdateFight();
     // Hand the body back once nothing is being fought, so client movement applies again.
@@ -140,7 +142,15 @@ private:
     Unit* SelectAllyAttacker() const;
     // `adds`: the extra mobs the returned pull is expected to bring.
     Creature* FindTarget(uint32& adds);
+    // One run toward the next camp, or a long random leg when the ground ahead is empty.
     void Wander();
+    // The leash is this far from where the leg started. A chase that exceeds it still stops.
+    float RoamLeg() const;
+    void NoteCamp();
+    // Capitals, and a city of the other faction.
+    bool PlaceOk(float x, float y, float z) const;
+    WorldObject* FindRoamGoal();
+    bool RandomRoamPoint(float& x, float& y, float& z) const;
 
     void UpdateFishing();
     bool EnsurePole();
@@ -176,6 +186,8 @@ private:
     uint32 m_nextSearch = 0;
     uint32 m_idleUntil = 0;
     bool m_wandering = false;
+    // Forward legs left before the next one picks a fully random direction.
+    uint32 m_wanderSteps = 0;
 
     // Fishing.
     uint32 m_fishingSpell = 0;

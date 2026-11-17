@@ -21,6 +21,7 @@
 #include "CreatureGroups.h"
 #include "World.h"
 #include "WorldSession.h"
+#include "DBCEnums.h"
 #include "Utilities/Random.h"
 
 #include <algorithm>
@@ -57,7 +58,9 @@ namespace
     float const OOM_MANA_PCT = 10.0f;
     uint32 const SPELL_SHOOT_WAND = 5019;
     uint32 const PATH_CANDIDATES = 6;
-    uint32 const WANDER_TRIES = 6;
+    uint32 const WANDER_TRIES = 8;
+    // Past the yards around us: how far the next camp may be. Grids beyond this are not loaded.
+    float const ROAM_LOOK = 140.0f;
 
     float EffectRadius(SpellEntry const* pSpell, float fallback)
     {
@@ -217,6 +220,7 @@ SoloFarmAI::SoloFarmAI(Player* pPlayer, SoloFarmMode mode, float radius)
     m_herbSpell = BestKnownSpell(pPlayer, HERB_SPELLS, sizeof(HERB_SPELLS) / sizeof(HERB_SPELLS[0]));
     m_mineSpell = BestKnownSpell(pPlayer, MINE_SPELLS, sizeof(MINE_SPELLS) / sizeof(MINE_SPELLS[0]));
     m_skinSpell = BestKnownSpell(pPlayer, SKIN_SPELLS, sizeof(SKIN_SPELLS) / sizeof(SKIN_SPELLS[0]));
+    m_wanderSteps = urand(2, 5);
 }
 
 char const* SoloFarmAI::ModeWire() const
@@ -299,13 +303,13 @@ bool SoloFarmAI::Start(Player* pPlayer, SoloFarmMode mode, float radius)
                 uint32(radius));
             break;
         case SOLO_FARM_GATHER:
-            chat.PSendSysMessage(zh ? "开始自动采集：在这里 %u 码内采药、挖矿、剥皮（有技能和工具才做）。输入 .solo stop，或在角色站定时按移动键即可停止。"
-                                    : "Auto gathering within %u yards of here: herbs, ore and skinning (only with the skill and tools). Type .solo stop, or press a movement key while standing, to stop.",
+            chat.PSendSysMessage(zh ? "开始自动采集：身边 %u 码内采药、挖矿、剥皮（有技能和工具才做）。这一圈没有点，就朝下一处矿或草药跑；再没有就往前跑，偶尔随机换向。不进主城和敌对城镇。输入 .solo stop，或在角色站定时按移动键即可停止。"
+                                    : "Auto gathering within %u yards: herbs, ore and skinning (only with the skill and tools). When nothing is that close it runs to the next node, or ahead in a random direction. It stays out of capital cities and enemy towns. Type .solo stop, or press a movement key while standing, to stop.",
                 uint32(radius));
             break;
         case SOLO_FARM_ALL:
-            chat.PSendSysMessage(zh ? "开始自动挂机：在这里 %u 码内能打就打、能采就采、能钓就钓（有技能才做）。输入 .solo stop，或在角色站定时按移动键即可停止。"
-                                    : "Auto farming within %u yards of here: fights, gathers and fishes when you can. Type .solo stop, or press a movement key while standing, to stop.",
+            chat.PSendSysMessage(zh ? "开始自动挂机：身边 %u 码内能打就打、能采就采、能钓就钓（有技能才做）。这一圈没有事，就朝下一处怪或采集点跑；再没有就往前跑，偶尔随机换向。不进主城和敌对城镇。输入 .solo stop，或在角色站定时按移动键即可停止。"
+                                    : "Auto farming within %u yards: fights, gathers and fishes when you can. When nothing is that close it runs to the next camp, or ahead in a random direction. It stays out of capital cities and enemy towns. Type .solo stop, or press a movement key while standing, to stop.",
                 uint32(radius));
             break;
         case SOLO_FARM_FIGHT:
@@ -313,8 +317,8 @@ bool SoloFarmAI::Start(Player* pPlayer, SoloFarmMode mode, float radius)
                                    : "Assist on: you walk. It fights anything that attacks you, and a mob you target while standing still within 30 yards: chase and spells. It drinks a potion when health or mana is low; out of mana it wands if equipped, else melees. Standing still with nothing selected, it sits to eat or drink when low. It backs off or blinks after a root, and crowd-controls an extra mob. It does not wander. Walking does not stop it; .solo stop does.");
             break;
         default:
-            chat.PSendSysMessage(zh ? "开始自动打怪：以这里为中心 %u 码内游荡、找怪、战斗、拾取；血蓝低了会坐下吃喝休息。战斗中血量或法力过低会喝药水；法力耗尽时有魔杖就继续射击，否则上去近战；定身后会后撤或闪现；多只怪会控住一只。输入 .solo stop，或在角色站定时按移动键即可停止。"
-                                    : "Auto grinding within %u yards of here: wanders, picks fights, loots, and sits to eat or drink when low. In a fight it drinks a potion when health or mana is low; out of mana it wands if equipped, else melees. It backs off or blinks after a root, and crowd-controls an extra mob. Type .solo stop, or press a movement key while standing, to stop.",
+            chat.PSendSysMessage(zh ? "开始自动打怪：身边 %u 码内找怪、战斗、拾取；血蓝低了会坐下吃喝休息。这一圈没有合适的怪，就朝下一处怪跑；再没有就往前跑，偶尔随机换向。不进主城和敌对城镇。战斗中血量或法力过低会喝药水；法力耗尽时有魔杖就继续射击，否则上去近战；定身后会后撤或闪现；多只怪会控住一只。输入 .solo stop，或在角色站定时按移动键即可停止。"
+                                    : "Auto grinding within %u yards: picks fights, loots, and sits to eat or drink when low. When nothing is that close it runs to the next camp, or ahead in a random direction. It stays out of capital cities and enemy towns. In a fight it drinks a potion when health or mana is low; out of mana it wands if equipped, else melees. It backs off or blinks after a root, and crowd-controls an extra mob. Type .solo stop, or press a movement key while standing, to stop.",
                 uint32(radius));
             break;
     }
@@ -1008,8 +1012,8 @@ Unit* SoloFarmAI::SelectAllyAttacker() const
             if (Creature* pCreature = pAttacker->ToCreature())
                 if (pCreature->IsInEvadeMode())
                     continue;
-            // Followers pull just past the circle the search walks. Farther than that leaves the camp.
-            if (!pAttacker->IsWithinDist2d(m_x, m_y, m_radius + 40.0f))
+            // A party pull beside us. One a long run away is the next camp, not this fight.
+            if (!pAttacker->IsWithinDist(me, m_radius + 40.0f))
                 continue;
             float const distance = me->GetDistance(pAttacker);
             if (!pBest || distance < best)
@@ -1652,10 +1656,12 @@ void SoloFarmAI::UpdateGrind()
 
 Creature* SoloFarmAI::FindTarget(uint32& adds)
 {
+    float const px = me->GetPositionX();
+    float const py = me->GetPositionY();
     std::list<Creature*> creatures;
-    AliveCreatureCheck check{ m_x, m_y, m_radius };
+    AliveCreatureCheck check{ px, py, m_radius };
     MaNGOS::CreatureListSearcher<AliveCreatureCheck> searcher(creatures, check);
-    Cell::VisitGridObjects(m_x, m_y, me->GetMap(), searcher, m_radius);
+    Cell::VisitGridObjects(px, py, me->GetMap(), searcher, m_radius);
 
     uint32 const grayLevel = MaNGOS::XP::GetGrayLevel(me->GetLevel());
     uint32 const topLevel = me->GetLevel() + 2;
@@ -1687,10 +1693,8 @@ Creature* SoloFarmAI::FindTarget(uint32& adds)
             continue;
         if (!IsValidHostileTarget(pCreature))
             continue;
-        // Grid search finds mobs behind hills and barns; without LOS the chase path is a guess.
-        // A fight already going is on the other side of the barn often enough to walk over anyway.
-        if (!ours && !me->IsWithinLOSInMap(pCreature))
-            continue;
+        // No line of sight required: the path check below is what decides we can walk there.
+        // A mob behind a barn is a camp to run to, not a reason to stand.
 
         (ours ? engaged : picks).emplace_back(me->GetDistance(pCreature), pCreature);
     }
@@ -1716,12 +1720,14 @@ uint32 SoloFarmAI::AllowedAdds() const
 
 std::vector<SoloFarmAI::Threat> SoloFarmAI::FindThreats() const
 {
-    // Paths may leave the farm circle a little on their way to its edge.
-    float const range = m_radius + 40.0f;
+    // Wide enough to cover a roam leg, not only the yards we will pull inside.
+    float const range = std::max(m_radius + 40.0f, ROAM_LOOK + 20.0f);
+    float const px = me->GetPositionX();
+    float const py = me->GetPositionY();
     std::list<Creature*> creatures;
-    AliveCreatureCheck check{ m_x, m_y, range };
+    AliveCreatureCheck check{ px, py, range };
     MaNGOS::CreatureListSearcher<AliveCreatureCheck> searcher(creatures, check);
-    Cell::VisitGridObjects(m_x, m_y, me->GetMap(), searcher, range);
+    Cell::VisitGridObjects(px, py, me->GetMap(), searcher, range);
 
     std::vector<Threat> threats;
     for (Creature* pCreature : creatures)
@@ -1750,11 +1756,12 @@ std::vector<SoloFarmAI::Threat> SoloFarmAI::FindThreats() const
 }
 
 uint32 SoloFarmAI::CountAdds(std::vector<Threat> const& threats, float x, float y, float z,
-    Creature* pTarget, float stopShort) const
+    Creature* pTarget, float stopShort, float maxLength) const
 {
     PathInfo path(me);
     path.calculate(x, y, z, false);
-    if (!(path.getPathType() & PATHFIND_NORMAL) || path.Length() > m_radius * 3.0f)
+    float const limit = maxLength > 0.0f ? maxLength : m_radius * 3.0f;
+    if (!(path.getPathType() & PATHFIND_NORMAL) || path.Length() > limit)
         return NO_PATH;
 
     std::set<Creature*> adds;
@@ -1806,7 +1813,7 @@ uint32 SoloFarmAI::CountAdds(std::vector<Threat> const& threats, float x, float 
 }
 
 WorldObject* SoloFarmAI::PickApproach(std::vector<std::pair<float, WorldObject*>>& picks, uint32 allowed,
-    float stopShort, bool fight, uint32* pAdds)
+    float stopShort, bool fight, uint32* pAdds, float maxLength)
 {
     std::sort(picks.begin(), picks.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
 
@@ -1821,7 +1828,7 @@ WorldObject* SoloFarmAI::PickApproach(std::vector<std::pair<float, WorldObject*>
 
         WorldObject* pObject = pick.second;
         uint32 const adds = CountAdds(threats, pObject->GetPositionX(), pObject->GetPositionY(),
-            pObject->GetPositionZ(), fight ? pObject->ToCreature() : nullptr, stopShort);
+            pObject->GetPositionZ(), fight ? pObject->ToCreature() : nullptr, stopShort, maxLength);
         if (adds == NO_PATH)
         {
             Blacklist(pObject->GetObjectGuid(), BLACKLIST_MS);
@@ -1846,19 +1853,133 @@ WorldObject* SoloFarmAI::PickApproach(std::vector<std::pair<float, WorldObject*>
     return pBest;
 }
 
-void SoloFarmAI::Wander()
+float SoloFarmAI::RoamLeg() const
 {
-    if (!me->movespline->Finalized())
-        return;
+    // LEFT_AREA is m_radius + 60 from the camp set when the leg starts.
+    return std::max(36.0f, std::min(80.0f, m_radius + 40.0f));
+}
 
-    if (m_wandering)
+void SoloFarmAI::NoteCamp()
+{
+    m_x = me->GetPositionX();
+    m_y = me->GetPositionY();
+    m_z = me->GetPositionZ();
+}
+
+bool SoloFarmAI::PlaceOk(float x, float y, float z) const
+{
+    TerrainInfo const* pTerrain = me->GetTerrain();
+    if (!pTerrain)
+        return true;
+    AreaEntry const* pArea = AreaEntry::GetById(pTerrain->GetAreaId(x, y, z));
+    if (!pArea)
+        return true;
+    if (pArea->Flags & AREA_FLAG_CAPITAL)
+        return false;
+    if (!(pArea->Flags & AREA_FLAG_CITY))
+        return true;
+    if (pArea->Team == AREATEAM_ALLY && me->GetTeam() == HORDE)
+        return false;
+    if (pArea->Team == AREATEAM_HORDE && me->GetTeam() == ALLIANCE)
+        return false;
+    return true;
+}
+
+WorldObject* SoloFarmAI::FindRoamGoal()
+{
+    float const px = me->GetPositionX();
+    float const py = me->GetPositionY();
+    // Inside the pull radius the local search already decided. Look past it.
+    float const inner = std::max(12.0f, m_radius * 0.85f);
+    std::vector<std::pair<float, WorldObject*>> picks;
+
+    if (DoesGrind())
     {
-        m_wandering = false;
-        m_idleUntil = m_now + urand(1500, 4000);
-        return;
+        uint32 const grayLevel = MaNGOS::XP::GetGrayLevel(me->GetLevel());
+        uint32 const topLevel = me->GetLevel() + 2;
+        std::list<Creature*> creatures;
+        AliveCreatureCheck check{ px, py, ROAM_LOOK };
+        MaNGOS::CreatureListSearcher<AliveCreatureCheck> searcher(creatures, check);
+        Cell::VisitGridObjects(px, py, me->GetMap(), searcher, ROAM_LOOK);
+
+        for (Creature* pCreature : creatures)
+        {
+            if (me->GetDistance(pCreature) < inner)
+                continue;
+            if (pCreature->IsPet() || pCreature->IsTotem() || !pCreature->GetOwnerGuid().IsEmpty())
+                continue;
+            if (pCreature->GetCreatureInfo()->type == CREATURE_TYPE_CRITTER || pCreature->IsCivilian() ||
+                pCreature->IsGuard() || pCreature->GetUInt32Value(UNIT_NPC_FLAGS))
+                continue;
+            if (pCreature->IsElite() || pCreature->IsWorldBoss())
+                continue;
+            if (pCreature->GetLevel() <= grayLevel || pCreature->GetLevel() > topLevel)
+                continue;
+            if (pCreature->IsInEvadeMode() || IsBlacklisted(pCreature->GetObjectGuid()))
+                continue;
+            if (pCreature->HasLootRecipient() && !pCreature->IsTappedBy(me))
+                continue;
+            if (pCreature->GetVictim() && !FightingAlly(pCreature))
+                continue;
+            if (!IsValidHostileTarget(pCreature) || !PlaceOk(pCreature->GetPositionX(), pCreature->GetPositionY(), pCreature->GetPositionZ()))
+                continue;
+            picks.emplace_back(me->GetDistance(pCreature), pCreature);
+        }
     }
-    if (m_now < m_idleUntil)
-        return;
+
+    auto considerGo = [&](GameObject* pGo, bool gather)
+    {
+        if (!pGo || me->GetDistance(pGo) < inner || IsBlacklisted(pGo->GetObjectGuid()))
+            return;
+        if (!PlaceOk(pGo->GetPositionX(), pGo->GetPositionY(), pGo->GetPositionZ()))
+            return;
+        if (gather)
+        {
+            if (!GatherLockType(pGo))
+                return;
+        }
+        else if (!IsQuestInteractGo(pGo) || !pGo->PlayerCanUse(me))
+            return;
+        picks.emplace_back(me->GetDistance(pGo), pGo);
+    };
+
+    if ((DoesGather() && (m_herbSpell || m_mineSpell)) || DoesQuestObjects())
+    {
+        std::list<GameObject*> objects;
+        struct Check
+        {
+            float x, y, range;
+            bool operator()(GameObject* pGo) const
+            {
+                return pGo->isSpawned() && !pGo->HasFlag(GAMEOBJECT_FLAGS, GO_FLAG_IN_USE) &&
+                    (pGo->GetGoType() == GAMEOBJECT_TYPE_CHEST || pGo->GetGoType() == GAMEOBJECT_TYPE_GOOBER) &&
+                    pGo->GetDistance2d(x, y) <= range;
+            }
+        };
+        Check check{ px, py, ROAM_LOOK };
+        MaNGOS::GameObjectListSearcher<Check> searcher(objects, check);
+        Cell::VisitGridObjects(px, py, me->GetMap(), searcher, ROAM_LOOK);
+        for (GameObject* pGo : objects)
+        {
+            if (DoesGather() && (m_herbSpell || m_mineSpell))
+                considerGo(pGo, true);
+            if (DoesQuestObjects())
+                considerGo(pGo, false);
+        }
+    }
+
+    // A path across the look range is longer than three times a small farm radius.
+    return PickApproach(picks, AllowedAdds(), 0.0f, true, nullptr, ROAM_LOOK + 40.0f);
+}
+
+bool SoloFarmAI::RandomRoamPoint(float& x, float& y, float& z) const
+{
+    float const px = me->GetPositionX();
+    float const py = me->GetPositionY();
+    float const pz = me->GetPositionZ();
+    float const leg = RoamLeg();
+    float const facing = me->GetOrientation();
+    bool const anyWay = m_wanderSteps == 0;
 
     std::vector<Threat> const threats = FindThreats();
     uint32 const allowed = AllowedAdds();
@@ -1866,12 +1987,20 @@ void SoloFarmAI::Wander()
     float bestX = 0.0f, bestY = 0.0f, bestZ = 0.0f;
     for (uint32 i = 0; i < WANDER_TRIES && bestAdds; ++i)
     {
-        float x = m_x;
-        float y = m_y;
-        float z = m_z;
-        if (!me->GetMap()->GetWalkRandomPosition(nullptr, x, y, z, m_radius))
+        // Most empty-ground legs keep going. Every few, a real random direction, so it is not a straight line.
+        bool const spin = anyWay || i >= WANDER_TRIES / 2;
+        float const ang = spin ? frand(0.0f, 2.0f * M_PI_F) : facing + frand(-1.1f, 1.1f);
+        float const dist = frand(leg * 0.65f, leg);
+        x = px + dist * std::cos(ang);
+        y = py + dist * std::sin(ang);
+        z = pz;
+        if (!me->GetMap()->GetWalkHitPosition(nullptr, px, py, pz, x, y, z, NAV_GROUND))
             continue;
-        uint32 const adds = CountAdds(threats, x, y, z);
+        if (Dist2d(x, y, px, py) < 18.0f)
+            continue;
+        if (!PlaceOk(x, y, z))
+            continue;
+        uint32 const adds = CountAdds(threats, x, y, z, nullptr, 0.0f, leg + 30.0f);
         if (adds < bestAdds)
         {
             bestAdds = adds;
@@ -1880,15 +2009,75 @@ void SoloFarmAI::Wander()
             bestZ = z;
         }
     }
-
-    // Every way out runs past a mob: wait for it to move, respawn timers, or our health.
     if (bestAdds > allowed)
+        return false;
+    x = bestX;
+    y = bestY;
+    z = bestZ;
+    return true;
+}
+
+void SoloFarmAI::Wander()
+{
+    if (!me->movespline->Finalized())
+        return;
+
+    if (m_wandering)
     {
-        m_idleUntil = m_now + urand(2000, 4000);
+        m_wandering = false;
+        NoteCamp();
+        m_idleUntil = m_now + urand(400, 1000);
+        return;
+    }
+    if (m_now < m_idleUntil)
+        return;
+
+    float x = 0.0f, y = 0.0f, z = 0.0f;
+    bool aimed = false;
+    if (WorldObject* pGoal = FindRoamGoal())
+    {
+        float const px = me->GetPositionX();
+        float const py = me->GetPositionY();
+        float const pz = me->GetPositionZ();
+        float const dx = pGoal->GetPositionX() - px;
+        float const dy = pGoal->GetPositionY() - py;
+        float const dist = std::sqrt(dx * dx + dy * dy);
+        if (dist > 15.0f)
+        {
+            float const travel = std::min(dist, RoamLeg());
+            x = px + dx / dist * travel;
+            y = py + dy / dist * travel;
+            z = pz;
+            // Stop at a wall or the water's edge. The next leg goes around it.
+            if (me->GetMap()->GetWalkHitPosition(nullptr, px, py, pz, x, y, z, NAV_GROUND) &&
+                Dist2d(x, y, px, py) >= 15.0f && PlaceOk(x, y, z))
+            {
+                // The camp itself is the point of the run. Other mobs along the straight line are not.
+                uint32 const adds = CountAdds(FindThreats(), x, y, z, pGoal->ToCreature(), 0.0f, RoamLeg() + 30.0f);
+                if (adds <= AllowedAdds())
+                    aimed = true;
+            }
+        }
+    }
+
+    if (!aimed && !RandomRoamPoint(x, y, z))
+    {
+        m_wanderSteps = 0;
+        m_idleUntil = m_now + urand(700, 1400);
         return;
     }
 
-    me->GetMotionMaster()->MovePoint(0, bestX, bestY, bestZ, MOVE_PATHFINDING | MOVE_EXCLUDE_STEEP_SLOPES);
+    if (!aimed)
+    {
+        if (m_wanderSteps == 0)
+            m_wanderSteps = urand(2, 4);
+        else
+            --m_wanderSteps;
+    }
+
+    // The leash is from here, so this run does not count as leaving the area.
+    NoteCamp();
+    me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING | MOVE_EXCLUDE_STEEP_SLOPES);
     m_wandering = true;
 }
 
@@ -1976,9 +2165,9 @@ Creature* SoloFarmAI::FindSkinnable()
                 me->IsWithinDistInMap(pCreature, range + 5.0f);
         }
     };
-    Check check{ me, m_x, m_y, m_radius };
+    Check check{ me, me->GetPositionX(), me->GetPositionY(), m_radius };
     MaNGOS::CreatureListSearcher<Check> searcher(corpses, check);
-    Cell::VisitGridObjects(m_x, m_y, me->GetMap(), searcher, m_radius);
+    Cell::VisitGridObjects(me, searcher, m_radius);
 
     std::vector<std::pair<float, WorldObject*>> picks;
     for (Creature* pCreature : corpses)
@@ -2079,9 +2268,9 @@ GameObject* SoloFarmAI::FindQuestObject()
                 pGo->GetDistance2d(x, y) <= range;
         }
     };
-    Check check{ m_x, m_y, m_radius };
+    Check check{ me->GetPositionX(), me->GetPositionY(), m_radius };
     MaNGOS::GameObjectListSearcher<Check> searcher(objects, check);
-    Cell::VisitGridObjects(m_x, m_y, me->GetMap(), searcher, m_radius);
+    Cell::VisitGridObjects(me, searcher, m_radius);
 
     std::vector<std::pair<float, WorldObject*>> picks;
     for (GameObject* pGo : objects)
@@ -2205,9 +2394,9 @@ GameObject* SoloFarmAI::FindGatherNode()
                 pGo->GetDistance2d(x, y) <= range;
         }
     };
-    Check check{ m_x, m_y, m_radius };
+    Check check{ me->GetPositionX(), me->GetPositionY(), m_radius };
     MaNGOS::GameObjectListSearcher<Check> searcher(objects, check);
-    Cell::VisitGridObjects(m_x, m_y, me->GetMap(), searcher, m_radius);
+    Cell::VisitGridObjects(me, searcher, m_radius);
 
     std::vector<std::pair<float, WorldObject*>> picks;
     for (GameObject* pGo : objects)
@@ -2545,7 +2734,11 @@ bool SoloFarmAI::FindFishingSpot()
     Map* pMap = me->GetMap();
     TerrainInfo const* pTerrain = me->GetTerrain();
     float const mid = (m_castMin + m_castMax) / 2.0f;
-    float const top = std::max(me->GetPositionZ(), m_z) + 10.0f;
+    // Fish stays on the water where it started. The other modes fish where they have roamed to.
+    bool const pinned = m_mode == SOLO_FARM_FISH;
+    float const cx = pinned ? m_x : me->GetPositionX();
+    float const cy = pinned ? m_y : me->GetPositionY();
+    float const top = std::max(me->GetPositionZ(), pinned ? m_z : me->GetPositionZ()) + 10.0f;
 
     auto isBad = [&](float x, float y)
     {
@@ -2569,9 +2762,9 @@ bool SoloFarmAI::FindFishingSpot()
     // Schools first, from the shore around them, facing them.
     std::list<GameObject*> holes;
 #if SUPPORTED_CLIENT_BUILD > CLIENT_BUILD_1_6_1
-    FishingHoleCheck holeCheck{ m_x, m_y, m_radius + m_castMax };
+    FishingHoleCheck holeCheck{ cx, cy, m_radius + m_castMax };
     MaNGOS::GameObjectListSearcher<FishingHoleCheck> holeSearcher(holes, holeCheck);
-    Cell::VisitGridObjects(m_x, m_y, pMap, holeSearcher, m_radius + m_castMax);
+    Cell::VisitGridObjects(cx, cy, pMap, holeSearcher, m_radius + m_castMax);
 #endif
 
     for (GameObject* pHole : holes)
@@ -2584,7 +2777,7 @@ bool SoloFarmAI::FindFishingSpot()
                 float const x = pHole->GetPositionX() + distance * std::cos(angle);
                 float const y = pHole->GetPositionY() + distance * std::sin(angle);
                 float z;
-                if (Dist2d(x, y, m_x, m_y) > m_radius || isBad(x, y) || !ground(x, y, z))
+                if (Dist2d(x, y, cx, cy) > m_radius || isBad(x, y) || !ground(x, y, z))
                     continue;
 
                 float const o = std::fmod(angle + M_PI_F, 2.0f * M_PI_F);
@@ -2603,8 +2796,8 @@ bool SoloFarmAI::FindFishingSpot()
         {
             if (dx * dx + dy * dy > m_radius * m_radius)
                 continue;
-            float const x = m_x + dx;
-            float const y = m_y + dy;
+            float const x = cx + dx;
+            float const y = cy + dy;
             float z;
             if (isBad(x, y) || !ground(x, y, z))
                 continue;
