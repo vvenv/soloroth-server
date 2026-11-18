@@ -585,6 +585,7 @@ class ChatHandler
 
         bool HandleInstanceListBindsCommand(char* args);
         bool HandleInstanceUnbindCommand(char* args);
+        bool HandleInstanceResetCommand(char* args);
         bool HandleInstanceGroupUnbindCommand(char* args);
         void HandleInstanceUnbindHelper(Player* player, bool got_map, uint32 mapid);
         bool HandleInstanceStatsCommand(char* args);

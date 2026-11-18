@@ -326,6 +326,8 @@ class Group
         void ClearTargetIcon(ObjectGuid targetGuid);
         bool InCombatToInstance(uint32 instanceId);
         void ResetInstances(InstanceResetMethod method, Player* SendMsgTo);
+        // One non-raid map. False when the group has nothing to clear.
+        bool ResetInstance(uint32 mapId, Player* sendTo);
 
         void SendTargetIconList(WorldSession* session);
         void SendUpdate();

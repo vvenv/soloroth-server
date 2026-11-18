@@ -2463,6 +2463,8 @@ class Player final: public Unit
         void SendInstanceResetWarning(uint32 mapId, uint32 resetTime) const;
 
         void ResetInstances(InstanceResetMethod method);
+        // One non-raid map. False when this character has nothing to clear.
+        bool ResetOneInstance(uint32 mapId);
         void ResetPersonalInstanceOnLeaveDungeon(uint32 mapId);
         void SendResetInstanceSuccess(uint32 mapId) const;
         void SendResetInstanceFailed(uint32 reason, uint32 mapId) const;

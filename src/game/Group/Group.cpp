@@ -2238,6 +2238,41 @@ void Group::ResetInstances(InstanceResetMethod method, Player* SendMsgTo)
     }
 }
 
+bool Group::ResetInstance(uint32 mapId, Player* sendTo)
+{
+    if (isBGGroup())
+        return false;
+
+    BoundInstancesMap::iterator itr = m_boundInstances.find(mapId);
+    if (itr == m_boundInstances.end())
+        return false;
+
+    DungeonPersistentState* state = itr->second.state;
+    MapEntry const* entry = sMapStorage.LookupEntry<MapEntry>(mapId);
+    if (!entry || !state || !state->CanReset() || entry->mapType == MAP_RAID)
+        return false;
+
+    bool isEmpty = true;
+    if (Map* map = sMapMgr.FindMap(state->GetMapId(), state->GetInstanceId()))
+        if (map->IsDungeon())
+            isEmpty = ((DungeonMap*)map)->Reset(INSTANCE_RESET_ALL);
+
+    if (sendTo)
+    {
+        if (isEmpty)
+            sendTo->SendResetInstanceSuccess(state->GetMapId());
+        else
+            sendTo->SendResetInstanceFailed(INSTANCERESET_FAIL_GENERAL, state->GetMapId());
+    }
+    if (!isEmpty)
+        return false;
+
+    state->DeleteFromDB();
+    m_boundInstances.erase(itr);
+    state->RemoveGroup(this);
+    return true;
+}
+
 InstanceGroupBind* Group::GetBoundInstance(uint32 mapid)
 {
     MapEntry const* mapEntry = sMapStorage.LookupEntry<MapEntry>(mapid);

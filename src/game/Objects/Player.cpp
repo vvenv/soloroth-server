@@ -17275,6 +17275,24 @@ void Player::ResetInstances(InstanceResetMethod method)
     }
 }
 
+bool Player::ResetOneInstance(uint32 mapId)
+{
+    std::lock_guard<std::mutex> guard(m_boundInstancesMutex);
+    BoundInstancesMap::iterator itr = m_boundInstances.find(mapId);
+    if (itr == m_boundInstances.end())
+        return false;
+
+    DungeonPersistentState* state = itr->second.state;
+    MapEntry const* entry = sMapStorage.LookupEntry<MapEntry>(mapId);
+    if (!entry || !state || !state->CanReset() || entry->mapType == MAP_RAID)
+        return false;
+    if (IsInWorld() && mapId == GetMapId())
+        return false;
+
+    ResetInstance(INSTANCE_RESET_ALL, itr);
+    return true;
+}
+
 void Player::ResetInstance(InstanceResetMethod method, BoundInstancesMap::iterator& itr)
 {
     DungeonPersistentState* state = itr->second.state;

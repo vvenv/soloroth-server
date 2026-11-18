@@ -665,6 +665,10 @@ void World::LoadConfigSettings(bool reload)
 
     setConfig(CONFIG_BOOL_INSTANCE_IGNORE_LEVEL, "Instance.IgnoreLevel", false);
     setConfig(CONFIG_BOOL_INSTANCE_IGNORE_RAID,  "Instance.IgnoreRaid", false);
+    // When false, dungeon and raid saves never expire on a timer; only a
+    // player (or GM) instance reset clears them. Solo realms leave progress
+    // until the player chooses 「重置副本」.
+    setConfig(CONFIG_BOOL_INSTANCE_AUTO_RESET,   "Instance.AutoReset", true);
     setConfig(CONFIG_UINT32_INSTANCE_RESET_TIME_HOUR, "Instance.ResetTimeHour", 4);
     setConfig(CONFIG_UINT32_INSTANCE_UNLOAD_DELAY,    "Instance.UnloadDelay", 30 * MINUTE * IN_MILLISECONDS);
     setConfig(CONFIG_UINT32_INSTANCE_PER_HOUR_LIMIT, "Instance.PerHourLimit", MAX_INSTANCE_PER_ACCOUNT_PER_HOUR);

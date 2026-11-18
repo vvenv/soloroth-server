@@ -958,9 +958,24 @@ void PartyBotAI::UpdateAI(uint32 const diff)
                 me->InterruptSpell(CURRENT_AUTOREPEAT_SPELL, true);
             else
                 UpdateInCombatAI_Hunter();
+            return;
         }
-
-        return;
+        else if (me->GetClass() == CLASS_PRIEST && GetRole() == ROLE_HEALER)
+        {
+            // Wand is autorepeat: drop it when someone needs a heal/shield so that
+            // UpdateInCombatAI_Priest can act. Otherwise keep shooting.
+            bool const needCare =
+                (m_spells.priest.pPowerWordShield && CanTryToCastSpell(me, m_spells.priest.pPowerWordShield)) ||
+                SelectShieldTarget() ||
+                SelectHealTarget(60.0f, 80.0f) ||
+                SelectPeriodicHealTarget(80.0f, 90.0f);
+            if (needCare)
+                me->InterruptSpell(CURRENT_AUTOREPEAT_SPELL, true);
+            else
+                return;
+        }
+        else
+            return;
     }
 
     if (Spell* pCurrentSpell = me->GetCurrentSpell(CURRENT_GENERIC_SPELL))
@@ -1037,7 +1052,9 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
     Unit* pVictim = me->GetVictim();
 
-    if (GetRole() != ROLE_HEALER)
+    // Priests (including healers) assist so they can wand when nothing needs a heal.
+    // Other healers stay on heal-only targeting.
+    if (GetRole() != ROLE_HEALER || me->GetClass() == CLASS_PRIEST)
     {
         if (!pVictim || !IsValidHostileTarget(pVictim))
         {
@@ -2239,6 +2256,44 @@ void PartyBotAI::UpdateOutOfCombatAI_Priest()
         UpdateInCombatAI_Priest();
 }
 
+bool PartyBotAI::HasUsableWand() const
+{
+    if (!me->HasSpell(PB_SPELL_SHOOT_WAND))
+        return false;
+
+    Item* pRanged = me->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+    return pRanged && pRanged->GetProto()->SubClass == ITEM_SUBCLASS_WEAPON_WAND;
+}
+
+bool PartyBotAI::TryShootWand(Unit* pVictim)
+{
+    if (!pVictim || !HasUsableWand() || me->IsMoving())
+        return false;
+
+    if (me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
+        return true;
+
+    if (me->GetCombatDistance(pVictim) > 30.0f)
+        return false;
+
+    // Chase / melee swings cancel Shoot; stand still and wand.
+    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
+    {
+        me->GetMotionMaster()->Clear(false, true);
+        me->GetMotionMaster()->MoveIdle();
+    }
+    if (me->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+    {
+        me->ClearUnitState(UNIT_STATE_MELEE_ATTACKING);
+        me->SendMeleeAttackStop(pVictim);
+    }
+    if (me->GetVictim() != pVictim)
+        me->Attack(pVictim, false);
+
+    me->CastSpell(pVictim, PB_SPELL_SHOOT_WAND, false);
+    return true;
+}
+
 void PartyBotAI::UpdateInCombatAI_Priest()
 {
     if (m_spells.priest.pPowerWordShield &&
@@ -2305,8 +2360,17 @@ void PartyBotAI::UpdateInCombatAI_Priest()
 
         if (GetRole() == ROLE_HEALER && FindAndPreHealTarget())
             return;
+
+        // Healer with nothing to heal: fall through and wand the kill target.
+        if (GetRole() != ROLE_HEALER)
+            return;
     }
-    else if (Unit* pVictim = me->GetVictim())
+
+    Unit* pVictim = me->GetVictim();
+    if (!pVictim)
+        return;
+
+    if (GetRole() != ROLE_HEALER)
     {
         if (m_spells.priest.pShadowform &&
             CanTryToCastSpell(me, m_spells.priest.pShadowform))
@@ -2398,13 +2462,15 @@ void PartyBotAI::UpdateInCombatAI_Priest()
                     return;
             }
         }
-
-        if (me->HasSpell(PB_SPELL_SHOOT_WAND) &&
-           !me->IsMoving() &&
-           (me->GetPowerPercent(POWER_MANA) < 10.0f) &&
-           !me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
-            me->CastSpell(pVictim, PB_SPELL_SHOOT_WAND, false);
     }
+
+    // Healer idle filler (saves mana); DPS last resort when spells did not fire.
+    if (GetRole() == ROLE_HEALER &&
+        me->GetCombatDistance(pVictim) > 30.0f &&
+        me->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE)
+        BeginChasing(pVictim);
+
+    TryShootWand(pVictim);
 }
 
 void PartyBotAI::UpdateOutOfCombatAI_Warlock()

@@ -515,6 +515,7 @@ ChatCommand * ChatHandler::getCommandTable()
         { "setdata",        SEC_GAMEMASTER,     false, &ChatHandler::HandleInstanceSetDataCommand,     "", nullptr },
         { "listbinds",      SEC_GAMEMASTER,     false, &ChatHandler::HandleInstanceListBindsCommand,   "", nullptr },
         { "unbind",         SEC_GAMEMASTER,     false, &ChatHandler::HandleInstanceUnbindCommand,      "", nullptr },
+        { "reset",          SEC_GAMEMASTER,     false, &ChatHandler::HandleInstanceResetCommand,      "", nullptr },
         { "groupunbind",    SEC_BASIC_ADMIN,    false, &ChatHandler::HandleInstanceGroupUnbindCommand, "", nullptr },
         { "stats",          SEC_BASIC_ADMIN,    true,  &ChatHandler::HandleInstanceStatsCommand,       "", nullptr },
         { "savedata",       SEC_BASIC_ADMIN,    false, &ChatHandler::HandleInstanceSaveDataCommand,    "", nullptr },

@@ -785,6 +785,40 @@ void ChatHandler::HandleInstanceUnbindHelper(Player* player, bool got_map, uint3
     player->PSendSysMessage("instances unbound: %d", counter);
 }
 
+bool ChatHandler::HandleInstanceResetCommand(char* args)
+{
+    if (!*args || !isNumeric(args[0]))
+        return false;
+
+    Player* player = m_session ? m_session->GetPlayer() : nullptr;
+    if (!player)
+        return false;
+
+    uint32 mapId = atoi(args);
+    MapEntry const* entry = sMapStorage.LookupEntry<MapEntry>(mapId);
+    if (!entry || !entry->IsDungeon() || entry->mapType == MAP_RAID)
+    {
+        SendSysMessage("That map is not a resettable dungeon.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    // Same rule as 「重置副本」: the copy you are standing in stays.
+    if (player->IsInWorld() && player->GetMapId() == mapId)
+    {
+        player->SendResetFailedNotify();
+        return true;
+    }
+
+    bool cleared = player->ResetOneInstance(mapId);
+    if (Group* group = player->GetGroup())
+        cleared = group->ResetInstance(mapId, player) || cleared;
+
+    if (!cleared)
+        PSendSysMessage("No instance bind for map %u.", mapId);
+    return true;
+}
+
 bool ChatHandler::HandleInstanceUnbindCommand(char* args)
 {
     if (!*args)

@@ -447,6 +447,9 @@ void DungeonResetScheduler::LoadResetTimes()
 
 void DungeonResetScheduler::ScheduleAllDungeonResets()
 {
+    if (!sWorld.getConfig(CONFIG_BOOL_INSTANCE_AUTO_RESET))
+        return;
+
     ResetTimeMapType InstResetTime;
 
     time_t now = time(nullptr);
@@ -533,6 +536,12 @@ void DungeonResetScheduler::ScheduleReset(bool add, time_t time, DungeonResetEve
     // ScheduleAllDungeonResets() runs before LoadCreatureRespawnTimes() creates the states, and
     // AddPersistentState() schedules the reset before inserting the new state into the map.
 
+    // Solo: Instance.AutoReset = 0 means never arm a timer; only a manual
+    // reset (CMSG_RESET_INSTANCES / GM unbind) clears progress. Cancels still
+    // run so a leftover event from an earlier config is dropped.
+    if (add && !sWorld.getConfig(CONFIG_BOOL_INSTANCE_AUTO_RESET))
+        return;
+
     if (add)
         m_resetTimeQueue.insert(std::pair<time_t, DungeonResetEvent>(time, event));
     else
@@ -569,6 +578,12 @@ void DungeonResetScheduler::ScheduleReset(bool add, time_t time, DungeonResetEve
 
 void DungeonResetScheduler::Update()
 {
+    if (!sWorld.getConfig(CONFIG_BOOL_INSTANCE_AUTO_RESET))
+    {
+        m_resetTimeQueue.clear();
+        return;
+    }
+
     time_t now = time(nullptr), t;
     while (!m_resetTimeQueue.empty() && (t = m_resetTimeQueue.begin()->first) < now)
     {
@@ -1076,6 +1091,10 @@ void MapPersistentStateManager::GetStatistics(uint32& numStates, uint32& numBoun
 
 void MapPersistentStateManager::_CleanupExpiredInstancesAtTime(time_t t)
 {
+    // Without auto-reset, a past reset_time is stale bookkeeping, not a wipe.
+    if (!sWorld.getConfig(CONFIG_BOOL_INSTANCE_AUTO_RESET))
+        return;
+
     _DelHelper(CharacterDatabase, "id, instance.map", "instance", "LEFT JOIN instance_reset ON instance_reset.map = instance.map WHERE (instance.reset_time < '" UI64FMTD "' AND instance.reset_time > '0') OR (NOT instance_reset.reset_time IS NULL AND instance_reset.reset_time < '" UI64FMTD "')", (uint64)t, (uint64)t);
 }
 
