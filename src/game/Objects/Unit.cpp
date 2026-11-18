@@ -60,6 +60,7 @@
 #include "Errors.h"
 #include "Utilities/Random.h"
 #include "AchievementMgr.h"
+#include "DungeonProgress.h"
 
 #include <limits>
 
@@ -1099,6 +1100,7 @@ void Unit::Kill(Unit* pVictim, SpellEntry const* spellProto, bool durabilityLoss
 
         if (pCreatureVictim)
             sAchievementMgr.OnCreatureKilled(pCreatureVictim, pPlayerTap, pGroupTap);
+            sDungeonProgress.OnCreatureKilled(pCreatureVictim, pPlayerTap, pGroupTap);
     }
     if (pPlayerVictim)
         pPlayerVictim->RewardHonorOnDeath();

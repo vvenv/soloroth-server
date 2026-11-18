@@ -92,6 +92,9 @@ public:
 
     AchievementEntry const* GetAchievement(uint32 id) const;
     void GetSummary(Player* pPlayer, uint32& earned, uint32& total, uint32& points, uint32& totalPoints);
+    // True if this character already has a saved kill of `entry` (the boss
+    // criteria achievements keep). Used to seed dungeon clear counts.
+    bool HasKillCredit(Player* pPlayer, uint32 entry);
 
 private:
     struct CharacterData

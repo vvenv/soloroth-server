@@ -67,6 +67,7 @@
 #include "LFGMgr.h"
 #include "AutoBroadCastMgr.h"
 #include "AchievementMgr.h"
+#include "DungeonProgress.h"
 #include "NoQuest.h"
 #include "AuctionHouseBotMgr.h"
 #include "Transports/TransportMgr.h"
@@ -1850,6 +1851,9 @@ void World::SetInitialWorldSettings()
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Loading achievements");
     sAchievementMgr.Load();
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Loading dungeon progress");
+    sDungeonProgress.Load();
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Indexing quests done by killing (no-quest mode)");
     NoQuest::LoadQuests();

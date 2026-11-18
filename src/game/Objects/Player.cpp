@@ -78,6 +78,7 @@
 #include "DungeonBotMgr.h"
 #include "AccountMgr.h"
 #include "AchievementMgr.h"
+#include "DungeonProgress.h"
 #include "Anticheat.h"
 #include "MovementBroadcaster.h"
 #include "PlayerBroadcaster.h"
@@ -4522,6 +4523,7 @@ void Player::DeleteFromDB(ObjectGuid playerGuid, uint32 accountId, bool updateRe
             CharacterDatabase.PExecute("DELETE FROM `character_pet` WHERE `owner_guid` = '%u'", lowGuid);
             CharacterDatabase.PExecute("DELETE FROM `guild_eventlog` WHERE `player_guid1` = '%u' OR `player_guid2` = '%u'", lowGuid, lowGuid);
             AchievementMgr::DeleteCharacter(lowGuid);
+            DungeonProgress::DeleteCharacter(lowGuid);
             CharacterDatabase.PExecute("DELETE FROM `character_xp_rate` WHERE `guid` = '%u'", lowGuid);
             CharacterDatabase.PExecute("DELETE FROM `character_noquest_kills` WHERE `guid` = '%u'", lowGuid);
             CharacterDatabase.PExecute("DELETE FROM `character_companions` WHERE `bot_guid` = '%u'", lowGuid);

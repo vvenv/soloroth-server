@@ -315,6 +315,7 @@ class ChatHandler
         bool HandleAchievementAddCommand(char* args);
         bool HandleAchievementRemoveCommand(char* args);
         bool HandleAchievementResetCommand(char* args);
+        bool HandleDungeonProgressCommand(char* args);
         bool HandleBattleBotAddCommand(char* args, uint8 bg);
         bool HandleBattleBotAddAlteracCommand(char* args);
         bool HandleBattleBotAddArathiCommand(char* args);

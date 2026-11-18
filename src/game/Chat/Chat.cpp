@@ -139,6 +139,13 @@ ChatCommand * ChatHandler::getCommandTable()
         { nullptr,      0,                      false, nullptr,                                        "", nullptr },
     };
 
+    static ChatCommand dungeonCommandTable[] =
+    {
+        { "progress",   SEC_PLAYER,             false, &ChatHandler::HandleDungeonProgressCommand,     "", nullptr },
+        { "",           SEC_PLAYER,             false, &ChatHandler::HandleDungeonProgressCommand,     "", nullptr },
+        { nullptr,      0,                      false, nullptr,                                        "", nullptr },
+    };
+
     static ChatCommand achievementCommandTable[] =
     {
         { "sync",       SEC_PLAYER,             false, &ChatHandler::HandleAchievementSyncCommand,     "", nullptr },
@@ -1258,6 +1265,7 @@ ChatCommand * ChatHandler::getCommandTable()
         { "bots",           SEC_PLAYER,         false, nullptr,                       "Bot party members: role, auto fill in dungeons", botsCommandTable },
         { "solo",           SEC_PLAYER,         false, nullptr,                       "Soloroth solo options: autoloot, grind, fish, gather, all", soloCommandTable },
         { "achievement",    SEC_PLAYER,         false, nullptr,                       "Achievements: summary, sync for the addon", achievementCommandTable },
+        { "dungeon",        SEC_PLAYER,         false, nullptr,                       "Dungeon progress for the addon", dungeonCommandTable },
         { "xprate",         SEC_PLAYER,         false, &ChatHandler::HandleModifyXpRateCommand,  "Your own experience rate: on, off or 0..1 of the server's", nullptr },
         { "battlebot",      SEC_ADMINISTRATOR,  true, nullptr,                      "Manage battle bots", battleBotCommandTable},
         { "world",          SEC_ADMINISTRATOR,  false, nullptr,                                        "", worldCommandTable    },

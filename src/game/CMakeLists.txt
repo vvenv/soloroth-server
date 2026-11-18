@@ -18,6 +18,7 @@
 set (game_SRCS
     AccountMgr.cpp
     AchievementMgr.cpp
+    DungeonProgress.cpp
     NoQuest.cpp
     AuraRemovalMgr.cpp
     AutoBroadCastMgr.cpp
@@ -255,6 +256,7 @@ set (game_SRCS
     AccountData.h
     AccountMgr.h
     AchievementMgr.h
+    DungeonProgress.h
     AuraRemovalMgr.h
     AutoBroadCastMgr.h
     Camera.h

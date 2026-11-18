@@ -135,6 +135,31 @@ AchievementEntry const* AchievementMgr::GetAchievement(uint32 id) const
     return itr != m_achievements.end() ? &itr->second : nullptr;
 }
 
+bool AchievementMgr::HasKillCredit(Player* pPlayer, uint32 entry)
+{
+    if (!pPlayer || !pPlayer->GetSession() || pPlayer->IsBot())
+        return false;
+    std::lock_guard<std::recursive_mutex> guard(m_lock);
+    CharacterData& data = GetData(pPlayer);
+    auto range = m_byKill.equal_range(entry);
+    for (auto itr = range.first; itr != range.second; ++itr)
+    {
+        AchievementCriteriaEntry const* pCriteria = itr->second;
+        auto pit = data.progress.find(pCriteria->id);
+        if (pit != data.progress.end() && pit->second >= pCriteria->value)
+            return true;
+        // Earned achievements stop updating progress. requiredCount 0 means
+        // every criteria, including this kill, was completed.
+        if (IsEarned(data, pCriteria->achievement))
+        {
+            AchievementEntry const* pAchievement = GetAchievement(pCriteria->achievement);
+            if (pAchievement && pAchievement->requiredCount == 0)
+                return true;
+        }
+    }
+    return false;
+}
+
 // --------------------------------------------------------------- character --
 
 AchievementMgr::CharacterData& AchievementMgr::GetData(Player* pPlayer)
