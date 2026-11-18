@@ -77,6 +77,21 @@ private:
     // Returns the stored count. `exists` is false when the row is absent.
     uint32 LoadClears(uint32 guid, Wing const* pWing, bool& exists) const;
     void SaveClears(uint32 guid, Wing const* pWing, uint32 clears);
+    // PExecute does not commit before it returns. The snapshot is taken from
+    // this, which is updated before the async write, so a kill shows up in
+    // the same push instead of on the next query.
+    struct Run
+    {
+        uint32 instanceId = 0;
+        bool downLoaded = false;
+        std::unordered_set<uint32> down;
+        std::unordered_map<uint32, uint32> clears; // (map << 8) | wing
+        std::unordered_set<uint32> clearsKnown;    // loaded or saved
+        std::unordered_set<uint32> clearsStored;   // a row exists
+    };
+
+    Run& Touch(uint32 guid, uint32 instanceId);
+    uint32 ClearsOf(uint32 guid, Wing const* pWing, Run& run, bool& stored);
     void NoteKill(Player* pPlayer, Boss const* pBoss, uint32 instanceId);
     void Push(Player* pPlayer, bool backfill);
 
@@ -89,6 +104,7 @@ private:
     std::vector<Wing> m_wings;
     std::unordered_map<uint32, Boss const*> m_byEntry;
     std::unordered_map<uint32, std::vector<uint32>> m_spawns; // entry -> creature guid
+    std::unordered_map<uint32, Run> m_runs;                   // by character guid
     std::mutex m_lock;
 };
 

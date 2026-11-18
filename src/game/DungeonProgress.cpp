@@ -560,12 +560,40 @@ void DungeonProgress::SendAddon(Player* pPlayer, std::string const& text)
     pPlayer->GetSession()->SendPacket(&data);
 }
 
+DungeonProgress::Run& DungeonProgress::Touch(uint32 guid, uint32 instanceId)
+{
+    Run& run = m_runs[guid];
+    // A reset binds a new instance. The clear count stays; the boss list does not.
+    if (!run.downLoaded || run.instanceId != instanceId)
+    {
+        run.instanceId = instanceId;
+        run.down = LoadDown(guid, instanceId);
+        run.downLoaded = true;
+    }
+    return run;
+}
+
+uint32 DungeonProgress::ClearsOf(uint32 guid, Wing const* pWing, Run& run, bool& stored)
+{
+    uint32 const key = (pWing->map << 8) | pWing->wing;
+    if (run.clearsKnown.find(key) == run.clearsKnown.end())
+    {
+        bool row = false;
+        run.clears[key] = LoadClears(guid, pWing, row);
+        run.clearsKnown.insert(key);
+        if (row)
+            run.clearsStored.insert(key);
+    }
+    stored = run.clearsStored.find(key) != run.clearsStored.end();
+    return run.clears[key];
+}
+
 void DungeonProgress::NoteKill(Player* pPlayer, Boss const* pBoss, uint32 instanceId)
 {
     uint32 const guid = pPlayer->GetGUIDLow();
     std::lock_guard<std::mutex> guard(m_lock);
-    std::unordered_set<uint32> down = LoadDown(guid, instanceId);
-    if (down.find(pBoss->entry) != down.end())
+    Run& run = Touch(guid, instanceId);
+    if (!run.down.insert(pBoss->entry).second)
         return;
     Remember(guid, instanceId, pBoss->entry);
     if (!pBoss->finalBoss)
@@ -576,12 +604,16 @@ void DungeonProgress::NoteKill(Player* pPlayer, Boss const* pBoss, uint32 instan
             pWing = &wing;
     if (!pWing)
         return;
-    bool exists = false;
-    uint32 clears = LoadClears(guid, pWing, exists);
-    SaveClears(guid, pWing, clears + 1);
+    bool stored = false;
+    uint32 const clears = ClearsOf(guid, pWing, run, stored) + 1;
+    uint32 const key = (pWing->map << 8) | pWing->wing;
+    run.clears[key] = clears;
+    run.clearsKnown.insert(key);
+    run.clearsStored.insert(key);
+    SaveClears(guid, pWing, clears);
 }
 
-void DungeonProgress::OnCreatureKilled(Creature* pVictim, Player* pTapper, Group* pGroupTap)
+void DungeonProgress::OnCreatureKilled(Creature* pVictim, Player* /*pTapper*/, Group* /*pGroupTap*/)
 {
     if (!pVictim)
         return;
@@ -592,24 +624,19 @@ void DungeonProgress::OnCreatureKilled(Creature* pVictim, Player* pTapper, Group
     if (!pMap || !pMap->IsDungeon())
         return;
 
-    std::vector<Player*> players;
-    if (pGroupTap)
-    {
-        for (GroupReference* itr = pGroupTap->GetFirstMember(); itr; itr = itr->next())
-        {
-            Player* pMember = itr->getSource();
-            if (pMember && pMember->IsInWorld() && pMember->IsInMap(pVictim))
-                players.push_back(pMember);
-        }
-    }
-    else if (pTapper && pTapper->IsInMap(pVictim))
-        players.push_back(pTapper);
-
+    // The tap is often a bot. Every real player on this map gets the kill,
+    // then a snapshot from memory so the panel moves before the async write.
     uint32 const instanceId = pMap->GetInstanceId();
+    std::vector<Player*> players;
+    for (auto const& itr : pMap->GetPlayers())
+    {
+        Player* pPlayer = itr.getSource();
+        if (!pPlayer || !pPlayer->IsInWorld() || !pPlayer->GetSession() || pPlayer->IsBot())
+            continue;
+        players.push_back(pPlayer);
+    }
     for (Player* pPlayer : players)
     {
-        if (!pPlayer->GetSession() || pPlayer->IsBot())
-            continue;
         NoteKill(pPlayer, found->second, instanceId);
         Push(pPlayer, false);
     }
@@ -638,10 +665,10 @@ void DungeonProgress::Push(Player* pPlayer, bool backfill)
 
     {
         std::lock_guard<std::mutex> guard(m_lock);
-        std::unordered_set<uint32> down = LoadDown(guid, instanceId);
+        Run& run = Touch(guid, instanceId);
         for (Boss const* boss : pWing->bosses)
         {
-            if (down.find(boss->entry) != down.end())
+            if (run.down.find(boss->entry) != run.down.end())
                 continue;
             auto spawns = m_spawns.find(boss->entry);
             if (spawns == m_spawns.end())
@@ -651,27 +678,31 @@ void DungeonProgress::Push(Player* pPlayer, bool backfill)
                 if (!SpawnDown(pMap, lowguid))
                     continue;
                 Remember(guid, instanceId, boss->entry);
-                down.insert(boss->entry);
+                run.down.insert(boss->entry);
                 break;
             }
         }
 
-        bool exists = false;
-        clears = LoadClears(guid, pWing, exists);
-        if (backfill && !exists)
+        bool stored = false;
+        clears = ClearsOf(guid, pWing, run, stored);
+        if (backfill && !stored)
         {
-            bool lastDown = pWing->finalBoss && down.find(pWing->finalBoss->entry) != down.end();
+            bool lastDown = pWing->finalBoss && run.down.find(pWing->finalBoss->entry) != run.down.end();
             bool credited = pWing->finalBoss && sAchievementMgr.HasKillCredit(pPlayer, pWing->finalBoss->entry);
             if (lastDown || credited)
             {
                 clears = 1;
+                uint32 const key = (pWing->map << 8) | pWing->wing;
+                run.clears[key] = clears;
+                run.clearsKnown.insert(key);
+                run.clearsStored.insert(key);
                 SaveClears(guid, pWing, clears);
             }
         }
 
         rows.reserve(pWing->bosses.size());
         for (Boss const* boss : pWing->bosses)
-            rows.push_back(std::make_pair(down.find(boss->entry) != down.end(), BossName(boss->entry, loc)));
+            rows.push_back(std::make_pair(run.down.find(boss->entry) != run.down.end(), BossName(boss->entry, loc)));
     }
 
     std::string const header = "H " + std::to_string(clears) + "\t" + WingName(pWing, loc);
