@@ -20,8 +20,11 @@
  * Each roster member a character calls becomes that character's companion
  * (`character_companions`): a saved character on its own made-up account,
  * in the leader's guild, that comes back with its level, talents and gear,
- * and levels up with its leader. The first character to call a roster
- * member gets its roster name; later ones get a generated name.
+ * and levels up with its leader. The roster covers every 1.12-legal
+ * race × class × talent tree. A fill picks slots at random (preferring
+ * classes and races the party lacks); calling a slot again reuses that
+ * companion. The first character to claim a roster name keeps it; later
+ * ones get a generated name.
  */
 
 #ifndef MANGOS_DUNGEON_BOT_MGR_H
@@ -51,7 +54,7 @@ public:
 
     // Adds bots for the missing roles until the party has `target` members
     // (2, 3 or 5, counting the player), or sends extras home until it does.
-    // Picked from a fixed roster of companions. Returns how many were added;
+    // Picked at random from the fixed roster. Returns how many were added;
     // `who` lists them, `why` says why none were when it returns 0, and
     // `removed` counts bots sent home to shrink the party.
     uint32 Fill(Player* pPlayer, std::string& who, std::string& why, uint32 target = 5, uint32* removed = nullptr);
@@ -96,6 +99,7 @@ private:
     {
         CombatBotRoles role = ROLE_INVALID;
         uint8 botClass = 0;
+        uint8 race = 0;
         std::string name;           // roster name, or empty
         uint32 lastSeen = 0;        // world ms: spawned, or last found in the world
         bool dungeon = false;       // filled in a dungeon: goes home when the leader leaves it

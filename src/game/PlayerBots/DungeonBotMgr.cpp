@@ -26,8 +26,10 @@
 
 namespace
 {
-    // The companions: one per class and talent tree on each side, always with
-    // the same name, race, gender and face, so the same people come back.
+    // Every 1.12-legal race × class × talent tree on each side. Names are
+    // short Chinese, flavoured by race. Slots 0–47 stay the original
+    // indices; the rest are the missing races for each tree. A fill picks
+    // at random; calling the same slot again brings that companion back.
     struct RosterBot
     {
         char const* name;
@@ -43,55 +45,133 @@ namespace
 
     RosterBot const ROSTER[] =
     {
-        { "Aldric",    ALLIANCE, CLASS_WARRIOR, RACE_HUMAN,    GENDER_MALE,   ROLE_MELEE_DPS, "Arms Warrior",           "武器战士",     "arms" },
-        { "Brannoc",   ALLIANCE, CLASS_WARRIOR, RACE_DWARF,    GENDER_MALE,   ROLE_MELEE_DPS, "Fury Warrior",           "狂怒战士",     "fury" },
-        { "Durgan",    ALLIANCE, CLASS_WARRIOR, RACE_DWARF,    GENDER_MALE,   ROLE_TANK,      "Protection Warrior",     "防护战士",     "protection" },
-        { "Elenya",    ALLIANCE, CLASS_PALADIN, RACE_HUMAN,    GENDER_FEMALE, ROLE_HEALER,    "Holy Paladin",           "神圣骑士",     "holy" },
-        { "Hamrik",    ALLIANCE, CLASS_PALADIN, RACE_DWARF,    GENDER_MALE,   ROLE_TANK,      "Protection Paladin",     "防护骑士",     "prot" },
-        { "Cedric",    ALLIANCE, CLASS_PALADIN, RACE_HUMAN,    GENDER_MALE,   ROLE_MELEE_DPS, "Retribution Paladin",    "惩戒骑士",     "retribution" },
-        { "Sylvaine",  ALLIANCE, CLASS_HUNTER,  RACE_NIGHTELF, GENDER_FEMALE, ROLE_RANGE_DPS, "Beast Mastery Hunter",   "野兽控制猎人", "" },
-        { "Gundrik",   ALLIANCE, CLASS_HUNTER,  RACE_DWARF,    GENDER_MALE,   ROLE_RANGE_DPS, "Marksmanship Hunter",    "射击猎人",     "mm" },
-        { "Faelan",    ALLIANCE, CLASS_HUNTER,  RACE_NIGHTELF, GENDER_MALE,   ROLE_RANGE_DPS, "Survival Hunter",        "生存猎人",     "sv" },
-        { "Vesper",    ALLIANCE, CLASS_ROGUE,   RACE_HUMAN,    GENDER_FEMALE, ROLE_MELEE_DPS, "Assassination Rogue",    "刺杀盗贼",     "assa" },
-        { "Fizzwick",  ALLIANCE, CLASS_ROGUE,   RACE_GNOME,    GENDER_MALE,   ROLE_MELEE_DPS, "Combat Rogue",           "战斗盗贼",     "combat" },
-        { "Nyssa",     ALLIANCE, CLASS_ROGUE,   RACE_NIGHTELF, GENDER_FEMALE, ROLE_MELEE_DPS, "Subtlety Rogue",         "敏锐盗贼",     "" },
-        { "Brenna",    ALLIANCE, CLASS_PRIEST,  RACE_DWARF,    GENDER_FEMALE, ROLE_HEALER,    "Discipline Priest",      "戒律牧师",     "holy" },
-        { "Lucienne",  ALLIANCE, CLASS_PRIEST,  RACE_HUMAN,    GENDER_FEMALE, ROLE_HEALER,    "Holy Priest",            "神圣牧师",     "holy" },
-        { "Mordecai",  ALLIANCE, CLASS_PRIEST,  RACE_HUMAN,    GENDER_MALE,   ROLE_RANGE_DPS, "Shadow Priest",          "暗影牧师",     "shadow" },
-        { "Tinkara",   ALLIANCE, CLASS_MAGE,    RACE_GNOME,    GENDER_FEMALE, ROLE_RANGE_DPS, "Arcane Mage",            "奥术法师",     "arcane" },
-        { "Corvin",    ALLIANCE, CLASS_MAGE,    RACE_HUMAN,    GENDER_MALE,   ROLE_RANGE_DPS, "Fire Mage",              "火焰法师",     "fire" },
-        { "Isolde",    ALLIANCE, CLASS_MAGE,    RACE_HUMAN,    GENDER_FEMALE, ROLE_RANGE_DPS, "Frost Mage",             "冰霜法师",     "frost" },
-        { "Malachar",  ALLIANCE, CLASS_WARLOCK, RACE_HUMAN,    GENDER_MALE,   ROLE_RANGE_DPS, "Affliction Warlock",     "痛苦术士",     "affli" },
-        { "Nixwick",   ALLIANCE, CLASS_WARLOCK, RACE_GNOME,    GENDER_MALE,   ROLE_RANGE_DPS, "Demonology Warlock",     "恶魔学识术士", "demo" },
-        { "Seraphine", ALLIANCE, CLASS_WARLOCK, RACE_HUMAN,    GENDER_FEMALE, ROLE_RANGE_DPS, "Destruction Warlock",    "毁灭术士",     "ruin" },
-        { "Aerwynn",   ALLIANCE, CLASS_DRUID,   RACE_NIGHTELF, GENDER_FEMALE, ROLE_RANGE_DPS, "Balance Druid",          "平衡德鲁伊",   "balance" },
-        { "Thalor",    ALLIANCE, CLASS_DRUID,   RACE_NIGHTELF, GENDER_MALE,   ROLE_MELEE_DPS, "Feral Druid",            "野性德鲁伊",   "feral" },
-        { "Nerwen",    ALLIANCE, CLASS_DRUID,   RACE_NIGHTELF, GENDER_FEMALE, ROLE_HEALER,    "Restoration Druid",      "恢复德鲁伊",   "resto" },
+        // ---- original Alliance (slots 0–23) ----
+        { "奥德",    ALLIANCE, CLASS_WARRIOR, RACE_HUMAN,    GENDER_MALE,   ROLE_MELEE_DPS, "Arms Warrior",           "武器战士",     "arms" },
+        { "布兰",   ALLIANCE, CLASS_WARRIOR, RACE_DWARF,    GENDER_MALE,   ROLE_MELEE_DPS, "Fury Warrior",           "狂怒战士",     "fury" },
+        { "杜根",    ALLIANCE, CLASS_WARRIOR, RACE_DWARF,    GENDER_MALE,   ROLE_TANK,      "Protection Warrior",     "防护战士",     "protection" },
+        { "艾莲",    ALLIANCE, CLASS_PALADIN, RACE_HUMAN,    GENDER_FEMALE, ROLE_HEALER,    "Holy Paladin",           "神圣骑士",     "holy" },
+        { "哈姆",    ALLIANCE, CLASS_PALADIN, RACE_DWARF,    GENDER_MALE,   ROLE_TANK,      "Protection Paladin",     "防护骑士",     "prot" },
+        { "塞德",    ALLIANCE, CLASS_PALADIN, RACE_HUMAN,    GENDER_MALE,   ROLE_MELEE_DPS, "Retribution Paladin",    "惩戒骑士",     "retribution" },
+        { "希薇",  ALLIANCE, CLASS_HUNTER,  RACE_NIGHTELF, GENDER_FEMALE, ROLE_RANGE_DPS, "Beast Mastery Hunter",   "野兽控制猎人", "" },
+        { "冈德",   ALLIANCE, CLASS_HUNTER,  RACE_DWARF,    GENDER_MALE,   ROLE_RANGE_DPS, "Marksmanship Hunter",    "射击猎人",     "mm" },
+        { "费兰",    ALLIANCE, CLASS_HUNTER,  RACE_NIGHTELF, GENDER_MALE,   ROLE_RANGE_DPS, "Survival Hunter",        "生存猎人",     "sv" },
+        { "薇珀",    ALLIANCE, CLASS_ROGUE,   RACE_HUMAN,    GENDER_FEMALE, ROLE_MELEE_DPS, "Assassination Rogue",    "刺杀盗贼",     "assa" },
+        { "菲兹",  ALLIANCE, CLASS_ROGUE,   RACE_GNOME,    GENDER_MALE,   ROLE_MELEE_DPS, "Combat Rogue",           "战斗盗贼",     "combat" },
+        { "妮莎",     ALLIANCE, CLASS_ROGUE,   RACE_NIGHTELF, GENDER_FEMALE, ROLE_MELEE_DPS, "Subtlety Rogue",         "敏锐盗贼",     "" },
+        { "布伦",    ALLIANCE, CLASS_PRIEST,  RACE_DWARF,    GENDER_FEMALE, ROLE_HEALER,    "Discipline Priest",      "戒律牧师",     "holy" },
+        { "露茜",  ALLIANCE, CLASS_PRIEST,  RACE_HUMAN,    GENDER_FEMALE, ROLE_HEALER,    "Holy Priest",            "神圣牧师",     "holy" },
+        { "莫德",  ALLIANCE, CLASS_PRIEST,  RACE_HUMAN,    GENDER_MALE,   ROLE_RANGE_DPS, "Shadow Priest",          "暗影牧师",     "shadow" },
+        { "汀卡",   ALLIANCE, CLASS_MAGE,    RACE_GNOME,    GENDER_FEMALE, ROLE_RANGE_DPS, "Arcane Mage",            "奥术法师",     "arcane" },
+        { "柯文",    ALLIANCE, CLASS_MAGE,    RACE_HUMAN,    GENDER_MALE,   ROLE_RANGE_DPS, "Fire Mage",              "火焰法师",     "fire" },
+        { "伊索",    ALLIANCE, CLASS_MAGE,    RACE_HUMAN,    GENDER_FEMALE, ROLE_RANGE_DPS, "Frost Mage",             "冰霜法师",     "frost" },
+        { "玛拉",  ALLIANCE, CLASS_WARLOCK, RACE_HUMAN,    GENDER_MALE,   ROLE_RANGE_DPS, "Affliction Warlock",     "痛苦术士",     "affli" },
+        { "尼可",   ALLIANCE, CLASS_WARLOCK, RACE_GNOME,    GENDER_MALE,   ROLE_RANGE_DPS, "Demonology Warlock",     "恶魔学识术士", "demo" },
+        { "瑟拉", ALLIANCE, CLASS_WARLOCK, RACE_HUMAN,    GENDER_FEMALE, ROLE_RANGE_DPS, "Destruction Warlock",    "毁灭术士",     "ruin" },
+        { "艾雯",   ALLIANCE, CLASS_DRUID,   RACE_NIGHTELF, GENDER_FEMALE, ROLE_RANGE_DPS, "Balance Druid",          "平衡德鲁伊",   "balance" },
+        { "萨洛",    ALLIANCE, CLASS_DRUID,   RACE_NIGHTELF, GENDER_MALE,   ROLE_MELEE_DPS, "Feral Druid",            "野性德鲁伊",   "feral" },
+        { "奈雯",    ALLIANCE, CLASS_DRUID,   RACE_NIGHTELF, GENDER_FEMALE, ROLE_HEALER,    "Restoration Druid",      "恢复德鲁伊",   "resto" },
 
-        { "Grukash",   HORDE,    CLASS_WARRIOR, RACE_ORC,      GENDER_MALE,   ROLE_MELEE_DPS, "Arms Warrior",           "武器战士",     "arms" },
-        { "Rakzan",    HORDE,    CLASS_WARRIOR, RACE_TROLL,    GENDER_MALE,   ROLE_MELEE_DPS, "Fury Warrior",           "狂怒战士",     "fury" },
-        { "Tahomak",   HORDE,    CLASS_WARRIOR, RACE_TAUREN,   GENDER_MALE,   ROLE_TANK,      "Protection Warrior",     "防护战士",     "protection" },
-        { "Shakara",   HORDE,    CLASS_SHAMAN,  RACE_ORC,      GENDER_FEMALE, ROLE_RANGE_DPS, "Elemental Shaman",       "元素萨满",     "ele" },
-        { "Durgash",   HORDE,    CLASS_SHAMAN,  RACE_ORC,      GENDER_MALE,   ROLE_MELEE_DPS, "Enhancement Shaman",     "增强萨满",     "enha" },
-        { "Halona",    HORDE,    CLASS_SHAMAN,  RACE_TAUREN,   GENDER_FEMALE, ROLE_HEALER,    "Restoration Shaman",     "恢复萨满",     "resto" },
-        { "Grashnak",  HORDE,    CLASS_HUNTER,  RACE_ORC,      GENDER_MALE,   ROLE_RANGE_DPS, "Beast Mastery Hunter",   "野兽控制猎人", "" },
-        { "Zanjira",   HORDE,    CLASS_HUNTER,  RACE_TROLL,    GENDER_FEMALE, ROLE_RANGE_DPS, "Marksmanship Hunter",    "射击猎人",     "mm" },
-        { "Kotori",    HORDE,    CLASS_HUNTER,  RACE_TAUREN,   GENDER_MALE,   ROLE_RANGE_DPS, "Survival Hunter",        "生存猎人",     "sv" },
-        { "Morwenna",  HORDE,    CLASS_ROGUE,   RACE_UNDEAD,   GENDER_FEMALE, ROLE_MELEE_DPS, "Assassination Rogue",    "刺杀盗贼",     "assa" },
-        { "Skarn",     HORDE,    CLASS_ROGUE,   RACE_ORC,      GENDER_MALE,   ROLE_MELEE_DPS, "Combat Rogue",           "战斗盗贼",     "combat" },
-        { "Vexjin",    HORDE,    CLASS_ROGUE,   RACE_TROLL,    GENDER_MALE,   ROLE_MELEE_DPS, "Subtlety Rogue",         "敏锐盗贼",     "" },
-        { "Zalaya",    HORDE,    CLASS_PRIEST,  RACE_TROLL,    GENDER_FEMALE, ROLE_HEALER,    "Discipline Priest",      "戒律牧师",     "holy" },
-        { "Elspeth",   HORDE,    CLASS_PRIEST,  RACE_UNDEAD,   GENDER_FEMALE, ROLE_HEALER,    "Holy Priest",            "神圣牧师",     "holy" },
-        { "Vorlath",   HORDE,    CLASS_PRIEST,  RACE_UNDEAD,   GENDER_MALE,   ROLE_RANGE_DPS, "Shadow Priest",          "暗影牧师",     "shadow" },
-        { "Ashveld",   HORDE,    CLASS_MAGE,    RACE_UNDEAD,   GENDER_MALE,   ROLE_RANGE_DPS, "Arcane Mage",            "奥术法师",     "arcane" },
-        { "Yenjala",   HORDE,    CLASS_MAGE,    RACE_TROLL,    GENDER_FEMALE, ROLE_RANGE_DPS, "Fire Mage",              "火焰法师",     "fire" },
-        { "Halvrik",   HORDE,    CLASS_MAGE,    RACE_UNDEAD,   GENDER_MALE,   ROLE_RANGE_DPS, "Frost Mage",             "冰霜法师",     "frost" },
-        { "Morthis",   HORDE,    CLASS_WARLOCK, RACE_UNDEAD,   GENDER_MALE,   ROLE_RANGE_DPS, "Affliction Warlock",     "痛苦术士",     "affli" },
-        { "Grishna",   HORDE,    CLASS_WARLOCK, RACE_ORC,      GENDER_FEMALE, ROLE_RANGE_DPS, "Demonology Warlock",     "恶魔学识术士", "demo" },
-        { "Cindrel",   HORDE,    CLASS_WARLOCK, RACE_UNDEAD,   GENDER_FEMALE, ROLE_RANGE_DPS, "Destruction Warlock",    "毁灭术士",     "ruin" },
-        { "Aponi",     HORDE,    CLASS_DRUID,   RACE_TAUREN,   GENDER_FEMALE, ROLE_RANGE_DPS, "Balance Druid",          "平衡德鲁伊",   "balance" },
-        { "Hoketah",   HORDE,    CLASS_DRUID,   RACE_TAUREN,   GENDER_MALE,   ROLE_MELEE_DPS, "Feral Druid",            "野性德鲁伊",   "feral" },
-        { "Mahala",    HORDE,    CLASS_DRUID,   RACE_TAUREN,   GENDER_FEMALE, ROLE_HEALER,    "Restoration Druid",      "恢复德鲁伊",   "resto" },
+        // ---- original Horde (slots 24–47) ----
+        { "格鲁",   HORDE,    CLASS_WARRIOR, RACE_ORC,      GENDER_MALE,   ROLE_MELEE_DPS, "Arms Warrior",           "武器战士",     "arms" },
+        { "拉克",    HORDE,    CLASS_WARRIOR, RACE_TROLL,    GENDER_MALE,   ROLE_MELEE_DPS, "Fury Warrior",           "狂怒战士",     "fury" },
+        { "塔霍",   HORDE,    CLASS_WARRIOR, RACE_TAUREN,   GENDER_MALE,   ROLE_TANK,      "Protection Warrior",     "防护战士",     "protection" },
+        { "莎卡",   HORDE,    CLASS_SHAMAN,  RACE_ORC,      GENDER_FEMALE, ROLE_RANGE_DPS, "Elemental Shaman",       "元素萨满",     "ele" },
+        { "杜加",   HORDE,    CLASS_SHAMAN,  RACE_ORC,      GENDER_MALE,   ROLE_MELEE_DPS, "Enhancement Shaman",     "增强萨满",     "enha" },
+        { "哈洛",    HORDE,    CLASS_SHAMAN,  RACE_TAUREN,   GENDER_FEMALE, ROLE_HEALER,    "Restoration Shaman",     "恢复萨满",     "resto" },
+        { "格拉",  HORDE,    CLASS_HUNTER,  RACE_ORC,      GENDER_MALE,   ROLE_RANGE_DPS, "Beast Mastery Hunter",   "野兽控制猎人", "" },
+        { "赞吉",   HORDE,    CLASS_HUNTER,  RACE_TROLL,    GENDER_FEMALE, ROLE_RANGE_DPS, "Marksmanship Hunter",    "射击猎人",     "mm" },
+        { "科托",    HORDE,    CLASS_HUNTER,  RACE_TAUREN,   GENDER_MALE,   ROLE_RANGE_DPS, "Survival Hunter",        "生存猎人",     "sv" },
+        { "茉雯",  HORDE,    CLASS_ROGUE,   RACE_UNDEAD,   GENDER_FEMALE, ROLE_MELEE_DPS, "Assassination Rogue",    "刺杀盗贼",     "assa" },
+        { "斯卡",     HORDE,    CLASS_ROGUE,   RACE_ORC,      GENDER_MALE,   ROLE_MELEE_DPS, "Combat Rogue",           "战斗盗贼",     "combat" },
+        { "维金",    HORDE,    CLASS_ROGUE,   RACE_TROLL,    GENDER_MALE,   ROLE_MELEE_DPS, "Subtlety Rogue",         "敏锐盗贼",     "" },
+        { "扎拉",    HORDE,    CLASS_PRIEST,  RACE_TROLL,    GENDER_FEMALE, ROLE_HEALER,    "Discipline Priest",      "戒律牧师",     "holy" },
+        { "埃丝",   HORDE,    CLASS_PRIEST,  RACE_UNDEAD,   GENDER_FEMALE, ROLE_HEALER,    "Holy Priest",            "神圣牧师",     "holy" },
+        { "沃拉",   HORDE,    CLASS_PRIEST,  RACE_UNDEAD,   GENDER_MALE,   ROLE_RANGE_DPS, "Shadow Priest",          "暗影牧师",     "shadow" },
+        { "阿什",   HORDE,    CLASS_MAGE,    RACE_UNDEAD,   GENDER_MALE,   ROLE_RANGE_DPS, "Arcane Mage",            "奥术法师",     "arcane" },
+        { "叶娜",   HORDE,    CLASS_MAGE,    RACE_TROLL,    GENDER_FEMALE, ROLE_RANGE_DPS, "Fire Mage",              "火焰法师",     "fire" },
+        { "哈尔",   HORDE,    CLASS_MAGE,    RACE_UNDEAD,   GENDER_MALE,   ROLE_RANGE_DPS, "Frost Mage",             "冰霜法师",     "frost" },
+        { "莫斯",   HORDE,    CLASS_WARLOCK, RACE_UNDEAD,   GENDER_MALE,   ROLE_RANGE_DPS, "Affliction Warlock",     "痛苦术士",     "affli" },
+        { "格莉",   HORDE,    CLASS_WARLOCK, RACE_ORC,      GENDER_FEMALE, ROLE_RANGE_DPS, "Demonology Warlock",     "恶魔学识术士", "demo" },
+        { "辛德",   HORDE,    CLASS_WARLOCK, RACE_UNDEAD,   GENDER_FEMALE, ROLE_RANGE_DPS, "Destruction Warlock",    "毁灭术士",     "ruin" },
+        { "阿波",     HORDE,    CLASS_DRUID,   RACE_TAUREN,   GENDER_FEMALE, ROLE_RANGE_DPS, "Balance Druid",          "平衡德鲁伊",   "balance" },
+        { "霍克",   HORDE,    CLASS_DRUID,   RACE_TAUREN,   GENDER_MALE,   ROLE_MELEE_DPS, "Feral Druid",            "野性德鲁伊",   "feral" },
+        { "玛哈",    HORDE,    CLASS_DRUID,   RACE_TAUREN,   GENDER_FEMALE, ROLE_HEALER,    "Restoration Druid",      "恢复德鲁伊",   "resto" },
+
+        // ---- Alliance race fills (1.12-legal races missing above) ----
+        { "托瓦",   ALLIANCE, CLASS_WARRIOR, RACE_DWARF,    GENDER_MALE,   ROLE_MELEE_DPS, "Arms Warrior",           "武器战士",     "arms" },
+        { "凯蒙",   ALLIANCE, CLASS_WARRIOR, RACE_NIGHTELF, GENDER_MALE,   ROLE_MELEE_DPS, "Arms Warrior",           "武器战士",     "arms" },
+        { "比克",    ALLIANCE, CLASS_WARRIOR, RACE_GNOME,    GENDER_MALE,   ROLE_MELEE_DPS, "Arms Warrior",           "武器战士",     "arms" },
+        { "萝薇",    ALLIANCE, CLASS_WARRIOR, RACE_HUMAN,    GENDER_FEMALE, ROLE_MELEE_DPS, "Fury Warrior",           "狂怒战士",     "fury" },
+        { "莉蕾",    ALLIANCE, CLASS_WARRIOR, RACE_NIGHTELF, GENDER_FEMALE, ROLE_MELEE_DPS, "Fury Warrior",           "狂怒战士",     "fury" },
+        { "金布",    ALLIANCE, CLASS_WARRIOR, RACE_GNOME,    GENDER_MALE,   ROLE_MELEE_DPS, "Fury Warrior",           "狂怒战士",     "fury" },
+        { "奥斯",     ALLIANCE, CLASS_WARRIOR, RACE_HUMAN,    GENDER_MALE,   ROLE_TANK,      "Protection Warrior",     "防护战士",     "protection" },
+        { "瑟伦",    ALLIANCE, CLASS_WARRIOR, RACE_NIGHTELF, GENDER_MALE,   ROLE_TANK,      "Protection Warrior",     "防护战士",     "protection" },
+        { "齿轮",   ALLIANCE, CLASS_WARRIOR, RACE_GNOME,    GENDER_MALE,   ROLE_TANK,      "Protection Warrior",     "防护战士",     "protection" },
+        { "英格",    ALLIANCE, CLASS_PALADIN, RACE_DWARF,    GENDER_FEMALE, ROLE_HEALER,    "Holy Paladin",           "神圣骑士",     "holy" },
+        { "戈德",    ALLIANCE, CLASS_PALADIN, RACE_HUMAN,    GENDER_MALE,   ROLE_TANK,      "Protection Paladin",     "防护骑士",     "prot" },
+        { "布洛",    ALLIANCE, CLASS_PALADIN, RACE_DWARF,    GENDER_MALE,   ROLE_MELEE_DPS, "Retribution Paladin",    "惩戒骑士",     "retribution" },
+        { "玛格",     ALLIANCE, CLASS_HUNTER,  RACE_DWARF,    GENDER_FEMALE, ROLE_RANGE_DPS, "Beast Mastery Hunter",   "野兽控制猎人", "" },
+        { "西尔",  ALLIANCE, CLASS_HUNTER,  RACE_NIGHTELF, GENDER_MALE,   ROLE_RANGE_DPS, "Marksmanship Hunter",    "射击猎人",     "mm" },
+        { "博林",     ALLIANCE, CLASS_HUNTER,  RACE_DWARF,    GENDER_MALE,   ROLE_RANGE_DPS, "Survival Hunter",        "生存猎人",     "sv" },
+        { "格蕾",    ALLIANCE, CLASS_ROGUE,   RACE_DWARF,    GENDER_FEMALE, ROLE_MELEE_DPS, "Assassination Rogue",    "刺杀盗贼",     "assa" },
+        { "塞琳",   ALLIANCE, CLASS_ROGUE,   RACE_NIGHTELF, GENDER_FEMALE, ROLE_MELEE_DPS, "Assassination Rogue",    "刺杀盗贼",     "assa" },
+        { "翠克",    ALLIANCE, CLASS_ROGUE,   RACE_GNOME,    GENDER_FEMALE, ROLE_MELEE_DPS, "Assassination Rogue",    "刺杀盗贼",     "assa" },
+        { "达里",    ALLIANCE, CLASS_ROGUE,   RACE_HUMAN,    GENDER_MALE,   ROLE_MELEE_DPS, "Combat Rogue",           "战斗盗贼",     "combat" },
+        { "柯古",    ALLIANCE, CLASS_ROGUE,   RACE_DWARF,    GENDER_MALE,   ROLE_MELEE_DPS, "Combat Rogue",           "战斗盗贼",     "combat" },
+        { "芬里",    ALLIANCE, CLASS_ROGUE,   RACE_NIGHTELF, GENDER_MALE,   ROLE_MELEE_DPS, "Combat Rogue",           "战斗盗贼",     "combat" },
+        { "玛丽",   ALLIANCE, CLASS_ROGUE,   RACE_HUMAN,    GENDER_FEMALE, ROLE_MELEE_DPS, "Subtlety Rogue",         "敏锐盗贼",     "" },
+        { "奥拉",      ALLIANCE, CLASS_ROGUE,   RACE_DWARF,    GENDER_FEMALE, ROLE_MELEE_DPS, "Subtlety Rogue",         "敏锐盗贼",     "" },
+        { "纳克",    ALLIANCE, CLASS_ROGUE,   RACE_GNOME,    GENDER_MALE,   ROLE_MELEE_DPS, "Subtlety Rogue",         "敏锐盗贼",     "" },
+        { "奥黛",    ALLIANCE, CLASS_PRIEST,  RACE_HUMAN,    GENDER_FEMALE, ROLE_HEALER,    "Discipline Priest",      "戒律牧师",     "holy" },
+        { "伊莉",    ALLIANCE, CLASS_PRIEST,  RACE_NIGHTELF, GENDER_FEMALE, ROLE_HEALER,    "Discipline Priest",      "戒律牧师",     "holy" },
+        { "阿斯",    ALLIANCE, CLASS_PRIEST,  RACE_DWARF,    GENDER_FEMALE, ROLE_HEALER,    "Holy Priest",            "神圣牧师",     "holy" },
+        { "艾洛",    ALLIANCE, CLASS_PRIEST,  RACE_NIGHTELF, GENDER_FEMALE, ROLE_HEALER,    "Holy Priest",            "神圣牧师",     "holy" },
+        { "格里",   ALLIANCE, CLASS_PRIEST,  RACE_DWARF,    GENDER_MALE,   ROLE_RANGE_DPS, "Shadow Priest",          "暗影牧师",     "shadow" },
+        { "瓦伦",    ALLIANCE, CLASS_PRIEST,  RACE_NIGHTELF, GENDER_MALE,   ROLE_RANGE_DPS, "Shadow Priest",          "暗影牧师",     "shadow" },
+        { "珀西",  ALLIANCE, CLASS_MAGE,    RACE_HUMAN,    GENDER_MALE,   ROLE_RANGE_DPS, "Arcane Mage",            "奥术法师",     "arcane" },
+        { "火花",   ALLIANCE, CLASS_MAGE,    RACE_GNOME,    GENDER_FEMALE, ROLE_RANGE_DPS, "Fire Mage",              "火焰法师",     "fire" },
+        { "寒芯", ALLIANCE, CLASS_MAGE,    RACE_GNOME,    GENDER_MALE,   ROLE_RANGE_DPS, "Frost Mage",             "冰霜法师",     "frost" },
+        { "赫克",    ALLIANCE, CLASS_WARLOCK, RACE_GNOME,    GENDER_MALE,   ROLE_RANGE_DPS, "Affliction Warlock",     "痛苦术士",     "affli" },
+        { "莫丹",   ALLIANCE, CLASS_WARLOCK, RACE_HUMAN,    GENDER_MALE,   ROLE_RANGE_DPS, "Demonology Warlock",     "恶魔学识术士", "demo" },
+        { "墨羽",     ALLIANCE, CLASS_WARLOCK, RACE_GNOME,    GENDER_FEMALE, ROLE_RANGE_DPS, "Destruction Warlock",    "毁灭术士",     "ruin" },
+
+        // ---- Horde race fills ----
+        { "髓刃",      HORDE, CLASS_WARRIOR, RACE_UNDEAD, GENDER_MALE,   ROLE_MELEE_DPS, "Arms Warrior",         "武器战士",     "arms" },
+        { "石蹄",   HORDE, CLASS_WARRIOR, RACE_TAUREN, GENDER_MALE,   ROLE_MELEE_DPS, "Arms Warrior",         "武器战士",     "arms" },
+        { "卡祖",      HORDE, CLASS_WARRIOR, RACE_TROLL,  GENDER_MALE,   ROLE_MELEE_DPS, "Arms Warrior",         "武器战士",     "arms" },
+        { "血牙",   HORDE, CLASS_WARRIOR, RACE_ORC,    GENDER_MALE,   ROLE_MELEE_DPS, "Fury Warrior",         "狂怒战士",     "fury" },
+        { "坟冢",      HORDE, CLASS_WARRIOR, RACE_UNDEAD, GENDER_MALE,   ROLE_MELEE_DPS, "Fury Warrior",         "狂怒战士",     "fury" },
+        { "雷角", HORDE, CLASS_WARRIOR, RACE_TAUREN, GENDER_MALE,   ROLE_MELEE_DPS, "Fury Warrior",         "狂怒战士",     "fury" },
+        { "铁颚",     HORDE, CLASS_WARRIOR, RACE_ORC,    GENDER_MALE,   ROLE_TANK,      "Protection Warrior",   "防护战士",     "protection" },
+        { "墓卫",   HORDE, CLASS_WARRIOR, RACE_UNDEAD, GENDER_MALE,   ROLE_TANK,      "Protection Warrior",   "防护战士",     "protection" },
+        { "咒牙",      HORDE, CLASS_WARRIOR, RACE_TROLL,  GENDER_MALE,   ROLE_TANK,      "Protection Warrior",   "防护战士",     "protection" },
+        { "地歌",   HORDE, CLASS_SHAMAN,  RACE_TAUREN, GENDER_FEMALE, ROLE_RANGE_DPS, "Elemental Shaman",     "元素萨满",     "ele" },
+        { "金扎",     HORDE, CLASS_SHAMAN,  RACE_TROLL,  GENDER_FEMALE, ROLE_RANGE_DPS, "Elemental Shaman",     "元素萨满",     "ele" },
+        { "雷图",  HORDE, CLASS_SHAMAN,  RACE_TAUREN, GENDER_MALE,   ROLE_MELEE_DPS, "Enhancement Shaman",   "增强萨满",     "enha" },
+        { "拉金",      HORDE, CLASS_SHAMAN,  RACE_TROLL,  GENDER_MALE,   ROLE_MELEE_DPS, "Enhancement Shaman",   "增强萨满",     "enha" },
+        { "火舌",  HORDE, CLASS_SHAMAN,  RACE_ORC,    GENDER_FEMALE, ROLE_HEALER,    "Restoration Shaman",   "恢复萨满",     "resto" },
+        { "扎塔",     HORDE, CLASS_SHAMAN,  RACE_TROLL,  GENDER_FEMALE, ROLE_HEALER,    "Restoration Shaman",   "恢复萨满",     "resto" },
+        { "远蹄",  HORDE, CLASS_HUNTER,  RACE_TAUREN, GENDER_MALE,   ROLE_RANGE_DPS, "Beast Mastery Hunter", "野兽控制猎人", "" },
+        { "赫卡",      HORDE, CLASS_HUNTER,  RACE_TROLL,  GENDER_MALE,   ROLE_RANGE_DPS, "Beast Mastery Hunter", "野兽控制猎人", "" },
+        { "黑弓",    HORDE, CLASS_HUNTER,  RACE_ORC,    GENDER_FEMALE, ROLE_RANGE_DPS, "Marksmanship Hunter",  "射击猎人",     "mm" },
+        { "风视",    HORDE, CLASS_HUNTER,  RACE_TAUREN, GENDER_FEMALE, ROLE_RANGE_DPS, "Marksmanship Hunter",  "射击猎人",     "mm" },
+        { "赤斧",      HORDE, CLASS_HUNTER,  RACE_ORC,    GENDER_MALE,   ROLE_RANGE_DPS, "Survival Hunter",      "生存猎人",     "sv" },
+        { "贾萨",      HORDE, CLASS_HUNTER,  RACE_TROLL,  GENDER_FEMALE, ROLE_RANGE_DPS, "Survival Hunter",      "生存猎人",     "sv" },
+        { "裂爪",     HORDE, CLASS_ROGUE,   RACE_ORC,    GENDER_MALE,   ROLE_MELEE_DPS, "Assassination Rogue",  "刺杀盗贼",     "assa" },
+        { "维尼",       HORDE, CLASS_ROGUE,   RACE_TROLL,  GENDER_FEMALE, ROLE_MELEE_DPS, "Assassination Rogue",  "刺杀盗贼",     "assa" },
+        { "暮刃",   HORDE, CLASS_ROGUE,   RACE_UNDEAD, GENDER_MALE,   ROLE_MELEE_DPS, "Combat Rogue",         "战斗盗贼",     "combat" },
+        { "希芙",      HORDE, CLASS_ROGUE,   RACE_TROLL,  GENDER_FEMALE, ROLE_MELEE_DPS, "Combat Rogue",         "战斗盗贼",     "combat" },
+        { "夜痕",   HORDE, CLASS_ROGUE,   RACE_ORC,    GENDER_FEMALE, ROLE_MELEE_DPS, "Subtlety Rogue",       "敏锐盗贼",     "" },
+        { "幽语",     HORDE, CLASS_ROGUE,   RACE_UNDEAD, GENDER_FEMALE, ROLE_MELEE_DPS, "Subtlety Rogue",       "敏锐盗贼",     "" },
+        { "塞璃",      HORDE, CLASS_PRIEST,  RACE_UNDEAD, GENDER_FEMALE, ROLE_HEALER,    "Discipline Priest",    "戒律牧师",     "holy" },
+        { "佐拉",      HORDE, CLASS_PRIEST,  RACE_TROLL,  GENDER_FEMALE, ROLE_HEALER,    "Holy Priest",          "神圣牧师",     "holy" },
+        { "玛凯",     HORDE, CLASS_PRIEST,  RACE_TROLL,  GENDER_MALE,   ROLE_RANGE_DPS, "Shadow Priest",        "暗影牧师",     "shadow" },
+        { "沃佳",     HORDE, CLASS_MAGE,    RACE_TROLL,  GENDER_FEMALE, ROLE_RANGE_DPS, "Arcane Mage",          "奥术法师",     "arcane" },
+        { "灰烬",     HORDE, CLASS_MAGE,    RACE_UNDEAD, GENDER_MALE,   ROLE_RANGE_DPS, "Fire Mage",            "火焰法师",     "fire" },
+        { "霜牙",   HORDE, CLASS_MAGE,    RACE_TROLL,  GENDER_MALE,   ROLE_RANGE_DPS, "Frost Mage",           "冰霜法师",     "frost" },
+        { "灾笑",    HORDE, CLASS_WARLOCK, RACE_ORC,    GENDER_MALE,   ROLE_RANGE_DPS, "Affliction Warlock",   "痛苦术士",     "affli" },
+        { "邪影",    HORDE, CLASS_WARLOCK, RACE_UNDEAD, GENDER_FEMALE, ROLE_RANGE_DPS, "Demonology Warlock",   "恶魔学识术士", "demo" },
+        { "颅火",   HORDE, CLASS_WARLOCK, RACE_ORC,    GENDER_FEMALE, ROLE_RANGE_DPS, "Destruction Warlock",  "毁灭术士",     "ruin" },
     };
 
     uint32 LookSeed(char const* name)
@@ -115,7 +195,6 @@ namespace
     float const SAFE_SEARCH_RANGE = 40.0f;
     uint32 const SPELL_HONORLESS_TARGET = 2479;
     uint32 const PARTY_SIZE = 5;
-    uint8 const NO_PREFERENCE = 0;  // no class
 
 
     enum : uint32
@@ -394,6 +473,7 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
     // Who is in the party already, and as what.
     std::vector<CombatBotRoles> roles;
     std::vector<uint8> classes;
+    std::vector<uint8> races;
     std::vector<std::string> names;
     std::vector<uint32> guids;
     Group* pGroup = pPlayer->GetGroup();
@@ -419,6 +499,7 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
                 continue;
             }
             classes.push_back(pMember->GetClass());
+            races.push_back(pMember->GetRace());
             names.push_back(pMember->GetName());
             if (PartyBotAI* pAI = GetPartyBotAI(pMember))
                 roles.push_back(pAI->GetRole());
@@ -432,6 +513,7 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
         guids.push_back(pPlayer->GetGUIDLow());
         roles.push_back(GetPlayerRole(pPlayer));
         classes.push_back(pPlayer->GetClass());
+        races.push_back(pPlayer->GetRace());
         names.push_back(pPlayer->GetName());
     }
 
@@ -445,6 +527,8 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
         guids.push_back(bot.first);
         roles.push_back(bot.second.role);
         classes.push_back(bot.second.botClass);
+        if (bot.second.race)
+            races.push_back(bot.second.race);
         names.push_back(bot.second.name);
     }
 
@@ -542,32 +626,25 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
         return std::find(guids.begin(), guids.end(), botLow) != guids.end() ||
                ObjectAccessor::FindPlayerNotInWorld(ObjectGuid(HIGHGUID_PLAYER, botLow)) != nullptr;
     };
-    // A roster member for one of `wanted` roles, this character's companions
-    // first: one of `preferClass` if any is free, else one whose class the
-    // party lacks, else any. Each class gets the same chance however many of
-    // its trees fit.
-    auto pick = [&](std::vector<CombatBotRoles> const& wanted, uint8 preferClass) -> RosterBot const*
+    // A free roster member for one of `wanted` roles. Prefer a class the
+    // party lacks, then a race it lacks, else any. Each class gets the same
+    // chance however many races or trees fit; within a class, each race the
+    // same chance however many trees fit.
+    auto pick = [&](std::vector<CombatBotRoles> const& wanted) -> RosterBot const*
     {
-        bool known = false;
-        for (RosterBot const& r : ROSTER)
-            if (r.team == team && std::find(wanted.begin(), wanted.end(), r.role) != wanted.end() && !present(r) &&
-                GetCompanion(ownerLow, slotOf(r)))
-                known = true;
-
-        std::vector<RosterBot const*> fit, fresh, preferred;
+        std::vector<RosterBot const*> fit, freshClass, freshRace;
         for (RosterBot const& r : ROSTER)
         {
             if (r.team != team || std::find(wanted.begin(), wanted.end(), r.role) == wanted.end() || present(r))
                 continue;
-            if (known && !GetCompanion(ownerLow, slotOf(r)))
-                continue;
             fit.push_back(&r);
             if (std::find(classes.begin(), classes.end(), r.botClass) == classes.end())
-                fresh.push_back(&r);
-            if (r.botClass == preferClass)
-                preferred.push_back(&r);
+                freshClass.push_back(&r);
+            if (std::find(races.begin(), races.end(), r.race) == races.end())
+                freshRace.push_back(&r);
         }
-        std::vector<RosterBot const*> const& pool = !preferred.empty() ? preferred : !fresh.empty() ? fresh : fit;
+        std::vector<RosterBot const*> const& pool =
+            !freshClass.empty() ? freshClass : !freshRace.empty() ? freshRace : fit;
         if (pool.empty())
             return nullptr;
         std::vector<uint8> poolClasses;
@@ -579,7 +656,16 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
         for (RosterBot const* r : pool)
             if (r->botClass == botClass)
                 ofClass.push_back(r);
-        return SelectRandomContainerElement(ofClass);
+        std::vector<uint8> poolRaces;
+        for (RosterBot const* r : ofClass)
+            if (std::find(poolRaces.begin(), poolRaces.end(), r->race) == poolRaces.end())
+                poolRaces.push_back(r->race);
+        uint8 const botRace = SelectRandomContainerElement(poolRaces);
+        std::vector<RosterBot const*> ofRace;
+        for (RosterBot const* r : ofClass)
+            if (r->race == botRace)
+                ofRace.push_back(r);
+        return SelectRandomContainerElement(ofRace);
     };
 
     uint32 const slots = target - uint32(roles.size());
@@ -589,21 +675,18 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
         RosterBot const* r;
         if (needTank)
         {
-            // Warriors tank best; the protection paladin only stands in.
-            r = pick({ ROLE_TANK }, CLASS_WARRIOR);
+            r = pick({ ROLE_TANK });
             needTank = false;
         }
         else if (needHealer)
         {
-            // Priests heal best; take one when the party has none yet.
-            bool const hasPriest = std::find(classes.begin(), classes.end(), CLASS_PRIEST) != classes.end();
-            r = pick({ ROLE_HEALER }, hasPriest ? NO_PREFERENCE : CLASS_PRIEST);
+            r = pick({ ROLE_HEALER });
             needHealer = false;
         }
         else
         {
             // At most two melee, so the tank is not crowded and cleaves hit fewer.
-            r = melee >= 2 ? pick({ ROLE_RANGE_DPS }, NO_PREFERENCE) : pick({ ROLE_MELEE_DPS, ROLE_RANGE_DPS }, NO_PREFERENCE);
+            r = melee >= 2 ? pick({ ROLE_RANGE_DPS }) : pick({ ROLE_MELEE_DPS, ROLE_RANGE_DPS });
         }
         if (!r)
             continue;
@@ -657,10 +740,12 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
         AutoBot& bot = mine[botLow];
         bot.role = r->role;
         bot.botClass = r->botClass;
+        bot.race = r->race;
         bot.name = name;
         bot.lastSeen = m_now;
         bot.dungeon = pMap->IsNonRaidDungeon();
         classes.push_back(r->botClass);
+        races.push_back(r->race);
         names.push_back(name);
         guids.push_back(botLow);
         if (!who.empty())
