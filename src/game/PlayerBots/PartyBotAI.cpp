@@ -16,6 +16,7 @@
 
 #include "PartyBotAI.h"
 #include "Player.h"
+#include "Creature.h"
 #include "CreatureAI.h"
 #include "MotionMaster.h"
 #include "ObjectMgr.h"
@@ -30,6 +31,7 @@
 #include "MoveSpline.h"
 #include "Utilities/Random.h"
 
+#include <algorithm>
 #include <random>
 
 enum PartyBotSpells
@@ -124,6 +126,7 @@ void PartyBotAI::LevelUpTo(uint32 level)
     if (me->GetClass() == CLASS_HUNTER)
         EnsureHunterRangedWeapon();
     AddAllSpellReagents();
+    EnsureCombatPotions();
     m_resetSpellData = true;
     me->SetHealthPercent(100.0f);
     me->SetPowerPercent(me->GetPowerType(), 100.0f);
@@ -913,6 +916,13 @@ Unit* PartyBotAI::SelectAttackTarget(Player* pLeader) const
             if (IsValidHostileTarget(pVictim))
                 return pVictim;
         }
+
+        // Already in a multi-pull with no mark/leader target: finish the weakest.
+        if (me->IsInCombat())
+        {
+            if (Unit* pFocus = SelectFocusFireTarget())
+                return pFocus;
+        }
     }
 
     // Who is attacking me.
@@ -942,6 +952,10 @@ Unit* PartyBotAI::SelectAttackTarget(Player* pLeader) const
 
 Unit* PartyBotAI::SelectPartyAttackTarget() const
 {
+    // Prefer the weakest engaged mob so the party finishes one before opening another.
+    if (Unit* pFocus = SelectFocusFireTarget())
+        return pFocus;
+
     Group* pGroup = me->GetGroup();
     if (!pGroup)
         return nullptr;
@@ -963,6 +977,50 @@ Unit* PartyBotAI::SelectPartyAttackTarget() const
     }
 
     return nullptr;
+}
+
+Unit* PartyBotAI::SelectFocusFireTarget() const
+{
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return nullptr;
+
+    Unit* pBest = nullptr;
+    float bestHp = 101.0f;
+    auto consider = [&](Unit* pAttacker)
+    {
+        if (!pAttacker || !IsValidHostileTarget(pAttacker) || !me->IsWithinDist(pAttacker, 50.0f))
+            return;
+        if (pAttacker->HasBreakableByDamageCrowdControlAura())
+            return;
+        float const hp = pAttacker->GetHealthPercent();
+        // Prefer nearly dead, then the lowest. Elites get a slight bias so the boss dies first
+        // once trash is under 35% — avoids a shredder wipe while finishing a woodcarver.
+        float score = hp;
+        if (pAttacker->IsCreature() && static_cast<Creature*>(pAttacker)->IsElite() && hp > 35.0f)
+            score -= 5.0f;
+        if (!pBest || score < bestHp)
+        {
+            pBest = pAttacker;
+            bestHp = score;
+        }
+    };
+
+    for (Unit* pAttacker : me->GetAttackers())
+        consider(pAttacker);
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember)
+            continue;
+        for (Unit* pAttacker : pMember->GetAttackers())
+            consider(pAttacker);
+        if (Unit* pVictim = pMember->GetVictim())
+            if (pVictim->IsInCombat())
+                consider(pVictim);
+    }
+    return pBest;
 }
 
 Unit* PartyBotAI::SelectPartyPeelTarget() const
@@ -1292,6 +1350,7 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         ResetSpellData();
         PopulateSpellData();
         AddAllSpellReagents();
+        EnsureCombatPotions();
         if (me->GetClass() == CLASS_HUNTER)
             AddHunterAmmo();
         me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_SPAWNING);
@@ -1775,12 +1834,39 @@ void PartyBotAI::UpdateInCombatAI()
             return;
     }
 
+    // Survive first: potion / stone before the next swing or cast.
+    {
+        bool const crowded = me->GetAttackers().size() >= 2;
+        float const hpLine = crowded ? 55.0f : 40.0f;
+        if (me->GetHealthPercent() < hpLine && UseCombatConsumable(SPELL_EFFECT_HEAL))
+            return;
+
+        Unit* pVictim = me->GetVictim();
+        bool const ending = !crowded && pVictim && pVictim->GetHealthPercent() < 15.0f &&
+            me->GetHealthPercent() >= hpLine;
+        float const manaLine = crowded ? 40.0f : 30.0f;
+        if (!ending && me->GetPowerType() == POWER_MANA &&
+            me->GetPowerPercent(POWER_MANA) < manaLine &&
+            UseCombatConsumable(SPELL_EFFECT_ENERGIZE))
+            return;
+    }
+
+    // Fear Ward / racial damage CD before the rotation spends the GCD.
+    if (TryFearWard())
+        return;
+    if (TryRacialCombatAbility(me->GetVictim()))
+        return;
+
     // Before rotation / healing: stop enemy heals and other casts (own target or an add).
     if (TryInterruptEnemyCast())
         return;
 
     // Ranged / caster packs: Silence when we have it, even between their casts.
     if (TrySilenceRangedEnemy())
+        return;
+
+    // Multi-pull: park one add so healers and tanks are not flooded.
+    if (m_role != ROLE_TANK && TryCrowdControlExtra())
         return;
 
     if (CheckForDispelTargets())
@@ -1819,6 +1905,130 @@ void PartyBotAI::UpdateInCombatAI()
 
     if (me->GetVictim())
         UseTrinketEffects();
+}
+
+Player* PartyBotAI::SelectFearWardTarget() const
+{
+    if (!m_spells.priest.pFearWard)
+        return nullptr;
+
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return (me->IsAlive() && CanTryToCastSpell(me, m_spells.priest.pFearWard)) ? me : nullptr;
+
+    Player* pTank = nullptr;
+    Player* pLeader = GetPartyLeader();
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || !pMember->IsAlive() || pMember->GetMap() != me->GetMap())
+            continue;
+        if (pMember->GetDistance(me) > 30.0f)
+            continue;
+        if (PartyBotAI const* pAI = dynamic_cast<PartyBotAI const*>(pMember->AI()))
+        {
+            if (pAI->m_role == ROLE_TANK)
+            {
+                pTank = pMember;
+                break;
+            }
+        }
+    }
+
+    Player* pPick = pTank ? pTank : pLeader;
+    if (!pPick)
+        pPick = me;
+    if (!pPick->IsAlive())
+        return nullptr;
+    // Already warded.
+    if (pPick->HasAura(m_spells.priest.pFearWard->Id))
+        return nullptr;
+    return pPick;
+}
+
+bool PartyBotAI::TryFearWard()
+{
+    if (me->GetClass() != CLASS_PRIEST || !m_spells.priest.pFearWard)
+        return false;
+    if (me->GetShapeshiftForm() != FORM_NONE)
+        return false;
+
+    Player* pTarget = SelectFearWardTarget();
+    if (!pTarget || !CanTryToCastSpell(pTarget, m_spells.priest.pFearWard))
+        return false;
+    return DoCastSpell(pTarget, m_spells.priest.pFearWard) == SPELL_CAST_OK;
+}
+
+bool PartyBotAI::TryCrowdControlExtra()
+{
+    if (IsInDuel())
+        return false;
+
+    SpellEntry const* pCC = GetCrowdControlSpell();
+    if (!pCC)
+        return false;
+
+    Unit* pVictim = me->GetVictim();
+    if (!pVictim)
+        return false;
+
+    // Need a real multi-pull before parking an add.
+    uint32 hostiles = me->GetAttackers().size();
+    if (Group* pGroup = me->GetGroup())
+    {
+        for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            if (Player* pMember = itr->getSource())
+                hostiles = std::max<uint32>(hostiles, pMember->GetAttackers().size());
+        }
+    }
+    if (hostiles < 2)
+        return false;
+
+    Unit* pBest = nullptr;
+    float bestHp = 0.0f;
+    auto consider = [&](Unit* pUnit)
+    {
+        if (!pUnit || pUnit == pVictim || !IsValidHostileTarget(pUnit))
+            return;
+        if (pUnit->HasBreakableByDamageCrowdControlAura() || pUnit->GetHealthPercent() <= 20.0f)
+            return;
+        if (pCC->TargetCreatureType && !(pCC->TargetCreatureType & pUnit->GetCreatureTypeMask()))
+            return;
+        if (pCC->GetMechanic() && pUnit->IsImmuneToMechanic(Mechanics(pCC->GetMechanic())))
+            return;
+        if (!CanTryToCastSpell(pUnit, pCC) || !CanUseCrowdControl(pCC, pUnit))
+            return;
+        // Prefer the healthiest spare so the kill target stays the focus fire.
+        if (!pBest || pUnit->GetHealthPercent() > bestHp)
+        {
+            pBest = pUnit;
+            bestHp = pUnit->GetHealthPercent();
+        }
+    };
+
+    for (Unit* pAttacker : me->GetAttackers())
+        consider(pAttacker);
+    if (Group* pGroup = me->GetGroup())
+    {
+        for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* pMember = itr->getSource();
+            if (!pMember || pMember == me)
+                continue;
+            for (Unit* pAttacker : pMember->GetAttackers())
+                consider(pAttacker);
+        }
+    }
+
+    if (!pBest)
+        return false;
+    if (DoCastSpell(pBest, pCC) == SPELL_CAST_OK)
+    {
+        me->ClearUnitState(UNIT_STATE_MELEE_ATTACKING);
+        return true;
+    }
+    return false;
 }
 
 bool PartyBotAI::CheckForDispelTargets()
@@ -1896,6 +2106,14 @@ bool PartyBotAI::CheckForDispelTargets()
                         if (DoCastSpell(pFriend, m_spells.priest.pDispelMagic) == SPELL_CAST_OK)
                             return true;
                     }
+                }
+                // Offensive: strip a magic buff off the kill target (Power Word: Shield, etc.).
+                if (Unit* pVictim = me->GetVictim())
+                {
+                    if (IsValidDispelTarget(pVictim, m_spells.priest.pDispelMagic) &&
+                        CanTryToCastSpell(pVictim, m_spells.priest.pDispelMagic) &&
+                        DoCastSpell(pVictim, m_spells.priest.pDispelMagic) == SPELL_CAST_OK)
+                        return true;
                 }
             }
             if (m_spells.priest.pAbolishDisease)
@@ -2790,6 +3008,10 @@ void PartyBotAI::UpdateOutOfCombatAI_Priest()
             return;
         }
     }
+
+    // Pre-pull Fear Ward on the tank — same habit as a dungeon priest.
+    if (TryFearWard())
+        return;
 
     if (m_isBuffing &&
        (!m_spells.priest.pPowerWordFortitude ||

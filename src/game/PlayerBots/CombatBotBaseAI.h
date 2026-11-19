@@ -136,11 +136,19 @@ public:
     void EquipOrUseNewItem();
     void AddItemToInventory(uint32 itemId, uint32 count = 1);
     void AddHunterAmmo();
+    // Level-appropriate health / mana potions (and keep a few in the bags).
+    void EnsureCombatPotions();
+    // Instant heal / mana from a potion or healthstone / mana gem. Prefer stones.
+    bool UseCombatConsumable(uint32 effect);
+    // Blood Fury / Berserking / War Stomp when an elite or packed fight needs it.
+    bool TryRacialCombatAbility(Unit* pVictim);
     uint8 GetHighestHonorRankFromEquippedItems() const;
     void UpdateVisualHonorRankBasedOnItems();
     void BeginChasing(Unit* pVictim) const;
     virtual bool ChaseFromBehind(Unit* /*pVictim*/) const { return m_role == ROLE_MELEE_DPS; }
     bool SummonShamanTotems();
+    // True when a party member is feared / charmed / asleep — drop Tremor.
+    bool PartyNeedsTremorTotem() const;
     SpellCastResult CastWeaponBuff(SpellEntry const* pSpellEntry, EquipmentSlots slot);
     bool UseTrinketEffects(bool onlyToBreakCC = false);
     bool UseItemEffect(Item* pItem, bool onlyToBreakCC = false);
@@ -338,6 +346,8 @@ public:
             SpellEntry const* pWaterTotem;
             SpellEntry const* pManaTideTotem;
             SpellEntry const* pWeaponBuff;
+            // Dropped on demand when the party is feared (overrides the earth pick).
+            SpellEntry const* pTremorTotem;
         } shaman;
         struct
         {
@@ -412,6 +422,8 @@ public:
             SpellEntry const* pFade;
             SpellEntry const* pShackleUndead;
             SpellEntry const* pSmite;
+            // Pre-fight on the tank; renews when it falls off.
+            SpellEntry const* pFearWard;
         } priest;
         struct
         {

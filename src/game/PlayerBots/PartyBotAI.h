@@ -103,6 +103,13 @@ public:
     bool EnterStealthIfNeeded(SpellEntry const* pStealthSpell);
 
     bool CheckForDispelTargets();
+    // Priest: Fear Ward the tank (or the player) before and during scary pulls.
+    Player* SelectFearWardTarget() const;
+    bool TryFearWard();
+    // Sheep / blind / hibernate a spare add once the kill target is locked.
+    bool TryCrowdControlExtra();
+    // Lowest-HP engaged add: finish one before opening the next.
+    Unit* SelectFocusFireTarget() const;
     void UpdateInCombatAI() final;
     void UpdateOutOfCombatAI() final;
     void UpdateInCombatAI_Paladin() final;

@@ -2,6 +2,9 @@
 #include "CombatBotBaseAI.h"
 #include "ObjectMgr.h"
 #include "Player.h"
+#include "Creature.h"
+#include "Totem.h"
+#include "Bag.h"
 #include "Group.h"
 #include "PlayerBotMgr.h"
 #include "Opcodes.h"
@@ -13,7 +16,9 @@
 #include "MoveSpline.h"
 #include "Utilities/Random.h"
 
+#include <algorithm>
 #include <random>
+#include <vector>
 
 enum CombatBotSpells
 {
@@ -930,6 +935,11 @@ void CombatBotBaseAI::PopulateSpellData()
                     if (IsHigherRankSpell(m_spells.priest.pSmite))
                         m_spells.priest.pSmite = pSpellEntry;
                 }
+                else if (pSpellEntry->SpellName[0].find("Fear Ward") != std::string::npos)
+                {
+                    if (IsHigherRankSpell(m_spells.priest.pFearWard))
+                        m_spells.priest.pFearWard = pSpellEntry;
+                }
                 break;
             }
             case CLASS_WARLOCK:
@@ -1688,61 +1698,53 @@ void CombatBotBaseAI::PopulateSpellData()
         }
         case CLASS_SHAMAN:
         {
-            std::vector<SpellEntry const*> airTotems;
-            if (pGraceOfAirTotem)
-                airTotems.push_back(pGraceOfAirTotem);
-            if (pNatureResistanceTotem)
-                airTotems.push_back(pNatureResistanceTotem);
-            if (pWindfuryTotem)
-                airTotems.push_back(pWindfuryTotem);
-            if (pWindwallTotem)
-                airTotems.push_back(pWindwallTotem);
-            if (pTranquilAirTotem)
-                airTotems.push_back(pTranquilAirTotem);
-            if (!airTotems.empty())
-                m_spells.shaman.pAirTotem = SelectRandomContainerElement(airTotems);
+            // Prefer the totems a dungeon group actually wants, not a random roll.
+            m_spells.shaman.pTremorTotem = pTremorTotem;
+            if (pWindfuryTotem && (m_role == ROLE_MELEE_DPS || m_role == ROLE_TANK))
+                m_spells.shaman.pAirTotem = pWindfuryTotem;
+            else if (pGraceOfAirTotem)
+                m_spells.shaman.pAirTotem = pGraceOfAirTotem;
+            else if (pWindfuryTotem)
+                m_spells.shaman.pAirTotem = pWindfuryTotem;
+            else if (pTranquilAirTotem)
+                m_spells.shaman.pAirTotem = pTranquilAirTotem;
+            else if (pWindwallTotem)
+                m_spells.shaman.pAirTotem = pWindwallTotem;
+            else
+                m_spells.shaman.pAirTotem = pNatureResistanceTotem;
 
-            std::vector<SpellEntry const*> earthTotems;
-            if (pEarthbindTotem)
-                earthTotems.push_back(pEarthbindTotem);
-            if (pStoneclawtotem)
-                earthTotems.push_back(pStoneclawtotem);
-            if (pStoneskinTotem)
-                earthTotems.push_back(pStoneskinTotem);
             if (pStrengthOfEarthTotem)
-                earthTotems.push_back(pStrengthOfEarthTotem);
-            if (pTremorTotem)
-                earthTotems.push_back(pTremorTotem);
-            if (!earthTotems.empty())
-                m_spells.shaman.pEarthTotem = SelectRandomContainerElement(earthTotems);
+                m_spells.shaman.pEarthTotem = pStrengthOfEarthTotem;
+            else if (pStoneskinTotem)
+                m_spells.shaman.pEarthTotem = pStoneskinTotem;
+            else if (pTremorTotem)
+                m_spells.shaman.pEarthTotem = pTremorTotem;
+            else if (pStoneclawtotem)
+                m_spells.shaman.pEarthTotem = pStoneclawtotem;
+            else
+                m_spells.shaman.pEarthTotem = pEarthbindTotem;
 
-            std::vector<SpellEntry const*> fireTotems;
-            if (pFireNovaTotem)
-                fireTotems.push_back(pFireNovaTotem);
-            if (pMagmaTotem)
-                fireTotems.push_back(pMagmaTotem);
             if (pSearingTotem)
-                fireTotems.push_back(pSearingTotem);
-            if (pFlametongueTotem)
-                fireTotems.push_back(pFlametongueTotem);
-            if (pFrostResistanceTotem)
-                fireTotems.push_back(pFrostResistanceTotem);
-            if (!fireTotems.empty())
-                m_spells.shaman.pFireTotem = SelectRandomContainerElement(fireTotems);
+                m_spells.shaman.pFireTotem = pSearingTotem;
+            else if (pMagmaTotem)
+                m_spells.shaman.pFireTotem = pMagmaTotem;
+            else if (pFlametongueTotem)
+                m_spells.shaman.pFireTotem = pFlametongueTotem;
+            else if (pFireNovaTotem)
+                m_spells.shaman.pFireTotem = pFireNovaTotem;
+            else
+                m_spells.shaman.pFireTotem = pFrostResistanceTotem;
 
-            std::vector<SpellEntry const*> waterTotems;
-            if (pFireResistanceTotem)
-                waterTotems.push_back(pFireResistanceTotem);
-            if (pDiseaseCleansingTotem)
-                waterTotems.push_back(pDiseaseCleansingTotem);
-            if (pHealingStreamTotem)
-                waterTotems.push_back(pHealingStreamTotem);
             if (pManaSpringTotem)
-                waterTotems.push_back(pManaSpringTotem);
-            if (pPoisonCleansingTotem)
-                waterTotems.push_back(pPoisonCleansingTotem);
-            if (!waterTotems.empty())
-                m_spells.shaman.pWaterTotem = SelectRandomContainerElement(waterTotems);
+                m_spells.shaman.pWaterTotem = pManaSpringTotem;
+            else if (pHealingStreamTotem)
+                m_spells.shaman.pWaterTotem = pHealingStreamTotem;
+            else if (pPoisonCleansingTotem)
+                m_spells.shaman.pWaterTotem = pPoisonCleansingTotem;
+            else if (pDiseaseCleansingTotem)
+                m_spells.shaman.pWaterTotem = pDiseaseCleansingTotem;
+            else
+                m_spells.shaman.pWaterTotem = pFireResistanceTotem;
 
             if (pWindfuryWeapon && m_role == ROLE_MELEE_DPS)
                 m_spells.shaman.pWeaponBuff = pWindfuryWeapon;
@@ -3056,6 +3058,169 @@ void CombatBotBaseAI::AddItemToInventory(uint32 itemId, uint32 count)
     }
 }
 
+void CombatBotBaseAI::EnsureCombatPotions()
+{
+    if (m_ownCharacter)
+        return;
+
+    // Highest tier the bot can use (RequiredLevel on the item).
+    struct PotionTier { uint8 reqLevel; uint32 healId; uint32 manaId; };
+    static PotionTier const tiers[] = {
+        { 45, 13446, 13444 }, // Major
+        { 41, 3928,  13443 }, // Superior heal / Superior mana (41)
+        { 35, 3928,  6149  }, // Superior heal / Greater mana
+        { 31, 1710,  6149  },
+        { 22, 1710,  3827  },
+        { 21, 1710,  3385  },
+        { 14, 929,   3385  },
+        { 12, 929,   2455  },
+        { 5,  858,   2455  },
+        { 1,  118,   2455  },
+    };
+
+    uint8 const level = me->GetLevel();
+    uint32 healId = 118;
+    uint32 manaId = 2455;
+    for (PotionTier const& tier : tiers)
+    {
+        if (level >= tier.reqLevel)
+        {
+            healId = tier.healId;
+            manaId = tier.manaId;
+            break;
+        }
+    }
+
+    uint32 const keep = 5;
+    if (me->GetItemCount(healId) < keep)
+        AddItemToInventory(healId, keep - me->GetItemCount(healId));
+    if (me->GetPowerType() == POWER_MANA && me->GetItemCount(manaId) < keep)
+        AddItemToInventory(manaId, keep - me->GetItemCount(manaId));
+}
+
+bool CombatBotBaseAI::UseCombatConsumable(uint32 effect)
+{
+    if (!effect || me->IsNonMeleeSpellCasted(false, false, true))
+        return false;
+
+    struct Candidate
+    {
+        Item* item;
+        int32 power;
+        bool conjured;
+        uint32 itemLevel;
+    };
+    std::vector<Candidate> picks;
+
+    auto consider = [&](Item* pItem)
+    {
+        ItemPrototype const* pProto = pItem->GetProto();
+        if (!pProto || pProto->Class != ITEM_CLASS_CONSUMABLE || me->CanUseItem(pProto) != EQUIP_ERR_OK)
+            return;
+
+        for (auto const& itemSpell : pProto->Spells)
+        {
+            if (!itemSpell.SpellId || itemSpell.SpellTrigger != ITEM_SPELLTRIGGER_ON_USE)
+                continue;
+            SpellEntry const* pSpell = sSpellMgr.GetSpellEntry(itemSpell.SpellId);
+            if (!pSpell || !me->IsSpellReady(pSpell, pProto))
+                continue;
+            // Bandages / food: cast time or peaceful-only — not in combat.
+            if (pSpell->HasAttribute(SPELL_ATTR_NOT_IN_COMBAT_ONLY_PEACEFUL) || pSpell->GetCastTime(me) > 0)
+                continue;
+
+            int32 power = 0;
+            bool match = false;
+            for (uint32 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            {
+                bool const direct = pSpell->Effect[i] == effect &&
+                    (effect != SPELL_EFFECT_ENERGIZE || pSpell->EffectMiscValue[i] == POWER_MANA);
+                if (!direct)
+                    continue;
+                match = true;
+                power = std::max(power, pSpell->CalculateSimpleValue(SpellEffectIndex(i)));
+            }
+            if (!match)
+                continue;
+
+            picks.push_back({ pItem, power, pProto->IsConjuredConsumable(), pProto->ItemLevel });
+            break;
+        }
+    };
+
+    FOR_BACKPACK_SLOTS(slot)
+        if (Item* pItem = me->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            consider(pItem);
+
+    for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+    {
+        Item* pBagItem = me->GetItemByPos(INVENTORY_SLOT_BAG_0, bag);
+        if (!pBagItem || !pBagItem->IsBag())
+            continue;
+        Bag* pBag = static_cast<Bag*>(pBagItem);
+        for (uint32 slot = 0; slot < pBag->GetBagSize(); ++slot)
+            if (Item* pItem = pBag->GetItemByPos(uint8(slot)))
+                consider(pItem);
+    }
+
+    if (picks.empty())
+        return false;
+
+    // Healthstone / mana gem first (own cooldown), then strongest potion.
+    std::sort(picks.begin(), picks.end(), [](Candidate const& a, Candidate const& b)
+    {
+        if (a.conjured != b.conjured)
+            return a.conjured && !b.conjured;
+        if (a.power != b.power)
+            return a.power > b.power;
+        return a.itemLevel > b.itemLevel;
+    });
+
+    for (Candidate const& pick : picks)
+        if (UseItemEffect(pick.item))
+            return true;
+    return false;
+}
+
+bool CombatBotBaseAI::TryRacialCombatAbility(Unit* pVictim)
+{
+    if (!pVictim || !IsValidHostileTarget(pVictim))
+        return false;
+
+    bool const elite = pVictim->IsCreature() && static_cast<Creature*>(pVictim)->IsElite();
+    bool const hardFight = elite || me->GetAttackers().size() >= 2 ||
+        pVictim->GetHealthPercent() > 60.0f;
+    if (!hardFight && me->GetHealthPercent() > 50.0f)
+        return false;
+
+    // Offensive / utility racials used the way a veteran would.
+    struct Racial { uint32 id; bool needsTarget; };
+    static Racial const racials[] = {
+        { 20572, false }, // Blood Fury
+        { 20554, false }, // Berserking
+        { 20549, false }, // War Stomp
+        { 20600, false }, // Perception (rarely useful mid-fight; skip if no stealth nearby)
+    };
+
+    for (Racial const& racial : racials)
+    {
+        if (!me->HasSpell(racial.id))
+            continue;
+        // Perception is for detecting stealth — not a damage CD.
+        if (racial.id == 20600)
+            continue;
+        SpellEntry const* pSpell = sSpellMgr.GetSpellEntry(racial.id);
+        if (!pSpell || !me->IsSpellReady(pSpell))
+            continue;
+        Unit* pTarget = racial.needsTarget ? pVictim : me;
+        if (!CanTryToCastSpell(pTarget, pSpell))
+            continue;
+        if (DoCastSpell(pTarget, pSpell) == SPELL_CAST_OK)
+            return true;
+    }
+    return false;
+}
+
 void CombatBotBaseAI::AddHunterAmmo()
 {
     // It frees the first backpack slot by destroying what is there.
@@ -3192,8 +3357,47 @@ void CombatBotBaseAI::BeginChasing(Unit* pVictim) const
     me->GetMotionMaster()->MoveChase(pVictim, 1.0f, ChaseFromBehind(pVictim) ? M_PI_F : 0.0f);
 }
 
+bool CombatBotBaseAI::PartyNeedsTremorTotem() const
+{
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+    {
+        return me->HasAuraType(SPELL_AURA_MOD_FEAR) ||
+            me->HasAuraType(SPELL_AURA_MOD_CHARM) ||
+            me->HasAuraType(SPELL_AURA_MOD_CONFUSE);
+    }
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || !pMember->IsAlive() || pMember->GetMap() != me->GetMap())
+            continue;
+        if (pMember->GetDistance(me) > 30.0f)
+            continue;
+        if (pMember->HasAuraType(SPELL_AURA_MOD_FEAR) ||
+            pMember->HasAuraType(SPELL_AURA_MOD_CHARM) ||
+            pMember->HasAuraType(SPELL_AURA_MOD_CONFUSE))
+            return true;
+    }
+    return false;
+}
+
 bool CombatBotBaseAI::SummonShamanTotems()
 {
+    // Fear / charm on the party: replace the earth totem with Tremor immediately.
+    if (m_spells.shaman.pTremorTotem && PartyNeedsTremorTotem())
+    {
+        Totem const* pEarth = me->GetTotem(TOTEM_SLOT_EARTH);
+        bool const hasTremor = pEarth &&
+            pEarth->GetUInt32Value(UNIT_CREATED_BY_SPELL) == m_spells.shaman.pTremorTotem->Id;
+        if (!hasTremor && CanTryToCastSpell(me, m_spells.shaman.pTremorTotem))
+        {
+            // Replaces whatever earth totem is up; Tremor's pulse clears fear/charm/sleep.
+            if (DoCastSpell(me, m_spells.shaman.pTremorTotem) == SPELL_CAST_OK)
+                return true;
+        }
+    }
+
     if (m_spells.shaman.pAirTotem &&
         !me->GetTotem(TOTEM_SLOT_AIR) &&
         CanTryToCastSpell(me, m_spells.shaman.pAirTotem))
@@ -3285,8 +3489,38 @@ void CombatBotBaseAI::BreakCrowdControlEffects()
     if (UseTrinketEffects(true))
         return;
 
+    // Racials that purge fear / root / bleed before class cooldowns.
+    static uint32 const RACIAL_CC_BREAK[] = {
+        7744,  // Will of the Forsaken
+        20589, // Escape Artist
+        20594, // Stoneform
+    };
+    for (uint32 spellId : RACIAL_CC_BREAK)
+    {
+        if (!me->HasSpell(spellId))
+            continue;
+        if (SpellEntry const* pRacial = sSpellMgr.GetSpellEntry(spellId))
+        {
+            if (me->IsSpellReady(pRacial) && CanTryToCastSpell(me, pRacial) &&
+                DoCastSpell(me, pRacial) == SPELL_CAST_OK)
+                return;
+        }
+    }
+
     switch (me->GetClass())
     {
+        case CLASS_WARRIOR:
+        {
+            // Berserker Rage breaks Fear / Intimidating Shout while in combat.
+            if (m_spells.warrior.pBerserkerRage &&
+                (me->HasAuraType(SPELL_AURA_MOD_FEAR) || me->HasAuraType(SPELL_AURA_MOD_CONFUSE)) &&
+                CanTryToCastSpell(me, m_spells.warrior.pBerserkerRage))
+            {
+                if (DoCastSpell(me, m_spells.warrior.pBerserkerRage) == SPELL_CAST_OK)
+                    return;
+            }
+            break;
+        }
         case CLASS_PALADIN:
         {
             if (m_spells.paladin.pDivineShield &&
