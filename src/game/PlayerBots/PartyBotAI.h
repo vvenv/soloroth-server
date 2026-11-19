@@ -53,6 +53,15 @@ public:
     bool CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const override;
     Player* GetPartyLeader() const;
     bool AttackStart(Unit* pVictim);
+    // .partybot pull: score for who should open from range (hunter / mage / throw).
+    int GetRangedPullScore(Unit const* pTarget) const;
+    bool HasThrowableWeapon() const;
+    bool EnsureThrowableWeapon();
+    bool TryThrowPull(Unit* pTarget);
+    // Tank waits until the mob is nearly at the ranged puller, then engages.
+    void BeginRangedPullHold(ObjectGuid targetGuid, ObjectGuid pullerGuid, uint32 durationMs);
+    void ClearRangedPullHold();
+    bool UpdateRangedPullHold();
     Unit* SelectAttackTarget(Player* pLeader) const;
     Unit* SelectPartyAttackTarget() const;
     Player* SelectResurrectionTarget() const;
@@ -73,6 +82,10 @@ public:
     Unit* FindBreakableCrowdControlNear(float radius) const;
     bool PullFightAwayFromCrowdControl();
     bool CrowdControlMarkedTargets();
+    // Kick / Shield Bash / Counterspell / Earth Shock / … — heals first, then any cast.
+    int GetEnemyCastInterruptScore(Unit const* pEnemy) const;
+    Unit* FindEnemyCastToInterrupt() const;
+    bool TryInterruptEnemyCast();
     bool EnterCombatDruidForm();
     bool ShouldEnterStealth() const;
     bool EnterStealthIfNeeded(SpellEntry const* pStealthSpell);
@@ -117,6 +130,10 @@ public:
     bool m_companion = false;   // a saved character that levels with its leader (DungeonBotMgr)
     ObjectGuid m_rezTargetGuid;
     uint32 m_corpseSeconds = 0;
+    // Active while a commanded ranged pull is in flight (tank only).
+    ObjectGuid m_pullHoldTargetGuid;
+    ObjectGuid m_pullHoldPullerGuid;
+    uint32 m_pullHoldDeadline = 0;
 };
 
 #endif

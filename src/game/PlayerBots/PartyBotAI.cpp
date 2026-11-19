@@ -37,6 +37,7 @@ enum PartyBotSpells
     PB_SPELL_DRINK = 1137,
     PB_SPELL_AUTO_SHOT = 75,
     PB_SPELL_SHOOT_WAND = 5019,
+    PB_SPELL_THROW = 2764,
     PB_SPELL_HONORLESS_TARGET = 2479,
 };
 
@@ -45,6 +46,10 @@ enum PartyBotSpells
 #define PB_MAX_FOLLOW_DIST 6.0f
 #define PB_MIN_FOLLOW_ANGLE 0.0f
 #define PB_MAX_FOLLOW_ANGLE 6.0f
+// Mob is "nearly at" the puller: tank steps in and taunts.
+#define PB_PULL_PICKUP_DIST 10.0f
+// Do not open a pull from farther than Auto Shot / Throw can reach.
+#define PB_PULL_MAX_DIST 40.0f
 
 bool PartyBotAI::OnSessionLoaded(PlayerBotEntry* entry, WorldSession* sess)
 {
@@ -392,6 +397,133 @@ Unit* PartyBotAI::FindBreakableCrowdControlNear(float radius) const
     return nullptr;
 }
 
+int PartyBotAI::GetEnemyCastInterruptScore(Unit const* pEnemy) const
+{
+    if (!pEnemy || !pEnemy->IsNonMeleeSpellCasted(false, false, true))
+        return -1;
+
+    Spell const* pSpell = pEnemy->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+    if (!pSpell)
+        pSpell = pEnemy->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+    if (!pSpell || !pSpell->m_spellInfo)
+        return 10;
+
+    // Healing casts (mob "Heal" / Renew / …) are the main reason to interrupt.
+    if (pSpell->m_spellInfo->IsHealSpell())
+        return 100;
+
+    return 10;
+}
+
+Unit* PartyBotAI::FindEnemyCastToInterrupt() const
+{
+    Unit* best = nullptr;
+    int bestScore = -1;
+
+    auto consider = [&](Unit* pEnemy)
+    {
+        if (!pEnemy || !IsValidHostileTarget(pEnemy))
+            return;
+        // Counterspell / Earth Shock reach; melee interrupts fail their own range check.
+        if (!me->IsWithinDist(pEnemy, 30.0f))
+            return;
+
+        int const score = GetEnemyCastInterruptScore(pEnemy);
+        if (score > bestScore)
+        {
+            bestScore = score;
+            best = pEnemy;
+        }
+        else if (score == bestScore && best && score >= 0)
+        {
+            // Same priority: prefer the closer caster.
+            if (me->GetDistance(pEnemy) < me->GetDistance(best))
+                best = pEnemy;
+        }
+    };
+
+    consider(me->GetVictim());
+    for (Unit* pAttacker : me->GetAttackers())
+        consider(pAttacker);
+
+    if (Group* pGroup = me->GetGroup())
+    {
+        for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* pMember = itr->getSource();
+            if (!pMember || pMember == me)
+                continue;
+
+            consider(pMember->GetVictim());
+            for (Unit* pAttacker : pMember->GetAttackers())
+                consider(pAttacker);
+        }
+    }
+
+    return best;
+}
+
+bool PartyBotAI::TryInterruptEnemyCast()
+{
+    if (IsInDuel())
+        return false;
+
+    Unit* pTarget = FindEnemyCastToInterrupt();
+    if (!pTarget)
+        return false;
+
+    auto trySpell = [&](SpellEntry const* pSpell) -> bool
+    {
+        if (!pSpell || !CanTryToCastSpell(pTarget, pSpell))
+            return false;
+        return DoCastSpell(pTarget, pSpell) == SPELL_CAST_OK;
+    };
+
+    switch (me->GetClass())
+    {
+        case CLASS_ROGUE:
+            // Kick first; Gouge also stops the cast but wastes the lockout window.
+            if (trySpell(m_spells.rogue.pKick))
+                return true;
+            if (trySpell(m_spells.rogue.pGouge))
+                return true;
+            break;
+        case CLASS_WARRIOR:
+            // Defensive tanks: Shield Bash. DPS in Berserker: Pummel.
+            if (trySpell(m_spells.warrior.pShieldBash))
+                return true;
+            if (trySpell(m_spells.warrior.pPummel))
+                return true;
+            if (trySpell(m_spells.warrior.pConcussionBlow))
+                return true;
+            break;
+        case CLASS_MAGE:
+            if (trySpell(m_spells.mage.pCounterspell))
+                return true;
+            break;
+        case CLASS_SHAMAN:
+            if (trySpell(m_spells.shaman.pEarthShock))
+                return true;
+            break;
+        case CLASS_PRIEST:
+            if (trySpell(m_spells.priest.pSilence))
+                return true;
+            break;
+        case CLASS_PALADIN:
+            if (trySpell(m_spells.paladin.pHammerOfJustice))
+                return true;
+            break;
+        case CLASS_DRUID:
+            if (trySpell(m_spells.druid.pBash))
+                return true;
+            break;
+        default:
+            break;
+    }
+
+    return false;
+}
+
 bool PartyBotAI::PullFightAwayFromCrowdControl()
 {
     if (m_role != ROLE_TANK || IsInDuel())
@@ -437,6 +569,173 @@ bool PartyBotAI::AttackStart(Unit* pVictim)
     }
 
     return false;
+}
+
+int PartyBotAI::GetRangedPullScore(Unit const* pTarget) const
+{
+    if (!pTarget || !me->IsValidAttackTarget(pTarget))
+        return -1;
+
+    float const dist = me->GetDistance(pTarget);
+    if (dist > PB_PULL_MAX_DIST)
+        return -1;
+
+    int base = 0;
+    switch (me->GetClass())
+    {
+        case CLASS_HUNTER:
+            if (m_role == ROLE_RANGE_DPS)
+                base = 100;
+            break;
+        case CLASS_MAGE:
+            if (m_role == ROLE_RANGE_DPS)
+                base = 90;
+            break;
+        case CLASS_WARLOCK:
+            if (m_role == ROLE_RANGE_DPS)
+                base = 80;
+            break;
+        case CLASS_PRIEST:
+        case CLASS_SHAMAN:
+        case CLASS_DRUID:
+            if (m_role == ROLE_RANGE_DPS)
+                base = 70;
+            break;
+        case CLASS_ROGUE:
+            // Throw pull: melee role, but only if we can equip a thrown weapon.
+            if (m_role == ROLE_MELEE_DPS && me->HasSpell(PB_SPELL_THROW))
+                base = 60;
+            break;
+        default:
+            break;
+    }
+
+    if (!base)
+        return -1;
+
+    // Prefer the closer puller among the same class tier.
+    return base * 1000 - static_cast<int>(dist);
+}
+
+bool PartyBotAI::HasThrowableWeapon() const
+{
+    Item* pRanged = me->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+    return pRanged && pRanged->GetProto()->SubClass == ITEM_SUBCLASS_WEAPON_THROWN;
+}
+
+bool PartyBotAI::EnsureThrowableWeapon()
+{
+    if (!me->HasSpell(PB_SPELL_THROW))
+        return false;
+
+    if (HasThrowableWeapon())
+        return true;
+
+    ItemPrototype const* best = nullptr;
+    for (auto const& itr : sObjectMgr.GetItemPrototypeMap())
+    {
+        ItemPrototype const* pProto = &itr.second;
+        if (pProto->Class != ITEM_CLASS_WEAPON || pProto->SubClass != ITEM_SUBCLASS_WEAPON_THROWN)
+            continue;
+        if (!pProto->Discovered || pProto->HasExtraFlag(ITEM_EXTRA_NOT_OBTAINABLE))
+            continue;
+        if (pProto->RequiredLevel > me->GetLevel())
+            continue;
+        if (me->CanUseItem(pProto) != EQUIP_ERR_OK)
+            continue;
+        if (!best || best->ItemLevel < pProto->ItemLevel)
+            best = pProto;
+    }
+
+    if (!best)
+        best = sObjectMgr.GetItemPrototype(2947); // Small Throwing Knife
+
+    if (!best)
+        return false;
+
+    uint32 const maxStack = best->GetMaxStackSize();
+    uint32 const count = maxStack > 1 ? (maxStack < 100u ? maxStack : 100u) : 1u;
+    me->SatisfyItemRequirements(best);
+    me->StoreNewItemInBestSlots(best->ItemId, count);
+    return HasThrowableWeapon();
+}
+
+bool PartyBotAI::TryThrowPull(Unit* pTarget)
+{
+    if (!pTarget || !EnsureThrowableWeapon())
+        return false;
+
+    if (me->IsMounted())
+        me->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
+
+    me->StopMoving();
+    me->GetMotionMaster()->Clear(false, true);
+    me->GetMotionMaster()->MoveIdle();
+    me->SetInFront(pTarget);
+    me->SendMovementPacket(MSG_MOVE_SET_FACING, false);
+    // Ranged open: no melee swings, stay put after the throw.
+    me->Attack(pTarget, false);
+    return me->CastSpell(pTarget, PB_SPELL_THROW, false) == SPELL_CAST_OK;
+}
+
+void PartyBotAI::BeginRangedPullHold(ObjectGuid targetGuid, ObjectGuid pullerGuid, uint32 durationMs)
+{
+    m_pullHoldTargetGuid = targetGuid;
+    m_pullHoldPullerGuid = pullerGuid;
+    m_pullHoldDeadline = WorldTimer::getMSTime() + durationMs;
+}
+
+void PartyBotAI::ClearRangedPullHold()
+{
+    m_pullHoldTargetGuid.Clear();
+    m_pullHoldPullerGuid.Clear();
+    m_pullHoldDeadline = 0;
+}
+
+bool PartyBotAI::UpdateRangedPullHold()
+{
+    if (m_pullHoldTargetGuid.IsEmpty())
+        return false;
+
+    Unit* pTarget = me->GetMap() ? me->GetMap()->GetUnit(m_pullHoldTargetGuid) : nullptr;
+    if (!pTarget || !pTarget->IsAlive() || !IsValidHostileTarget(pTarget))
+    {
+        ClearRangedPullHold();
+        return false;
+    }
+
+    uint32 const now = WorldTimer::getMSTime();
+    if (now >= m_pullHoldDeadline)
+    {
+        ClearRangedPullHold();
+        AttackStart(pTarget);
+        return false;
+    }
+
+    Unit* pPuller = me->GetMap()->GetUnit(m_pullHoldPullerGuid);
+    float const distToPuller = pPuller ? pTarget->GetDistance(pPuller) : me->GetDistance(pTarget);
+    float const distToMe = me->GetDistance(pTarget);
+
+    // Pull connected (mob running or hitting someone) and nearly at the puller / tank.
+    bool const pullLive = pTarget->IsInCombat() || pTarget->GetVictim() != nullptr;
+    if (pullLive && (distToPuller <= PB_PULL_PICKUP_DIST || distToMe <= PB_PULL_PICKUP_DIST))
+    {
+        ClearRangedPullHold();
+        AttackStart(pTarget);
+        return false;
+    }
+
+    // Stay with the party; do not Charge into the pack.
+    if (me->GetVictim())
+        me->AttackStop(true);
+    if (!me->IsStopped())
+        me->StopMoving();
+    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
+    {
+        me->GetMotionMaster()->Clear(false, true);
+        me->GetMotionMaster()->MoveIdle();
+    }
+    return true;
 }
 
 Unit* PartyBotAI::GetMarkedTarget(RaidTargetIcon mark) const
@@ -1068,6 +1367,16 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     if (me->GetSheath() == SHEATH_STATE_UNARMED && !me->IsMounted())
         me->SetSheath(SHEATH_STATE_MELEE);
 
+    // Ranged pull in progress: tank holds until the mob is nearly at the puller.
+    if (UpdateRangedPullHold())
+    {
+        if (!me->IsMoving() &&
+            me->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
+            me->GetMotionMaster()->MoveFollow(pLeader, urand(PB_MIN_FOLLOW_DIST, PB_MAX_FOLLOW_DIST),
+                frand(PB_MIN_FOLLOW_ANGLE, PB_MAX_FOLLOW_ANGLE));
+        return;
+    }
+
     if (!me->IsInCombat() && !me->IsMounted())
     {
         UpdateOutOfCombatAI();
@@ -1261,6 +1570,10 @@ void PartyBotAI::UpdateInCombatAI()
         else if (CrowdControlMarkedTargets())
             return;
     }
+
+    // Before rotation / healing: stop enemy heals and other casts (own target or an add).
+    if (TryInterruptEnemyCast())
+        return;
 
     if (CheckForDispelTargets())
         return;
@@ -3188,17 +3501,17 @@ void PartyBotAI::UpdateInCombatAI_Rogue()
 
         if (pVictim->IsNonMeleeSpellCasted())
         {
-            if (m_spells.rogue.pGouge &&
-                CanTryToCastSpell(pVictim, m_spells.rogue.pGouge))
-            {
-                if (DoCastSpell(pVictim, m_spells.rogue.pGouge) == SPELL_CAST_OK)
-                    return;
-            }
-
             if (m_spells.rogue.pKick &&
                 CanTryToCastSpell(pVictim, m_spells.rogue.pKick))
             {
                 if (DoCastSpell(pVictim, m_spells.rogue.pKick) == SPELL_CAST_OK)
+                    return;
+            }
+
+            if (m_spells.rogue.pGouge &&
+                CanTryToCastSpell(pVictim, m_spells.rogue.pGouge))
+            {
+                if (DoCastSpell(pVictim, m_spells.rogue.pGouge) == SPELL_CAST_OK)
                     return;
             }
         }

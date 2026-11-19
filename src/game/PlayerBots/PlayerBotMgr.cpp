@@ -1136,6 +1136,7 @@ bool ChatHandler::HandlePartyBotAttackStartCommand(char* args)
 
 void StopPartyBotAttackHelper(PartyBotAI* pAI, Player* pBot)
 {
+    pAI->ClearRangedPullHold();
     pBot->AttackStop(true);
     pBot->InterruptNonMeleeSpells(false);
     if (!pBot->IsStopped())
@@ -1769,6 +1770,47 @@ bool ChatHandler::HandlePartyBotPullCommand(char* args)
     if (!ExtractUInt32(&args, duration))
         duration = 10 * IN_MILLISECONDS;
 
+    // Prefer a ranged opener (hunter / mage / warlock / …) or a rogue with Throw.
+    // The tank holds until the mob is nearly at that puller, then taunts.
+    PartyBotAI* pPullerAI = nullptr;
+    Player* pPuller = nullptr;
+    int bestScore = -1;
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        if (Player* pMember = itr->getSource())
+        {
+            if (pMember == pPlayer || !pMember->AI())
+                continue;
+
+            if (PartyBotAI* pAI = dynamic_cast<PartyBotAI*>(pMember->AI()))
+            {
+                int const score = pAI->GetRangedPullScore(pTarget);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    pPullerAI = pAI;
+                    pPuller = pMember;
+                }
+            }
+        }
+    }
+
+    bool rangedPull = pPuller && pPullerAI && bestScore >= 0;
+    if (rangedPull)
+    {
+        bool opened = false;
+        if (pPuller->GetClass() == CLASS_ROGUE)
+            opened = pPullerAI->TryThrowPull(pTarget);
+        else if (pPuller->IsValidAttackTarget(pTarget))
+            opened = pPullerAI->AttackStart(pTarget);
+
+        if (!opened)
+            rangedPull = false;
+        else if (pPuller->GetClass() == CLASS_ROGUE)
+            // Stay put after the throw so the tank can pick up at the party.
+            HandlePartyBotPauseApplyHelper(pPuller, std::min(duration, 4u * IN_MILLISECONDS));
+    }
+
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         if (Player* pMember = itr->getSource())
@@ -1780,14 +1822,21 @@ bool ChatHandler::HandlePartyBotPullCommand(char* args)
             {
                 if (PartyBotAI* pAI = dynamic_cast<PartyBotAI*>(pMember->AI()))
                 {
+                    if (rangedPull && pMember == pPuller)
+                        continue;
+
                     if (pAI->m_role == ROLE_MELEE_DPS || pAI->m_role == ROLE_RANGE_DPS)
                     {
                         HandlePartyBotPauseApplyHelper(pMember, duration);
                         continue;
                     }
-                    else if (pAI->m_role == ROLE_TANK)
+
+                    if (pAI->m_role == ROLE_TANK && pMember->IsValidAttackTarget(pTarget))
                     {
-                        if (pMember->IsValidAttackTarget(pTarget))
+                        if (rangedPull)
+                            pAI->BeginRangedPullHold(pTarget->GetObjectGuid(),
+                                pPuller->GetObjectGuid(), duration);
+                        else
                             pAI->AttackStart(pTarget);
                     }
                 }
@@ -1795,7 +1844,12 @@ bool ChatHandler::HandlePartyBotPullCommand(char* args)
         }
     }
 
-    PSendSysMessage("Tank party bots are pulling %s, DPS party bots are paused for %d seconds.", pTarget->GetName(), (duration / IN_MILLISECONDS));
+    if (rangedPull)
+        PSendSysMessage("%s is pulling %s from range; tank waits until the mob is close. DPS paused %d s.",
+            pPuller->GetName(), pTarget->GetName(), (duration / IN_MILLISECONDS));
+    else
+        PSendSysMessage("Tank party bots are pulling %s, DPS party bots are paused for %d seconds.",
+            pTarget->GetName(), (duration / IN_MILLISECONDS));
     return true;
 }
 
