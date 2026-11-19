@@ -20,6 +20,7 @@
 #include "MotionMaster.h"
 #include "ObjectMgr.h"
 #include "PlayerBotMgr.h"
+#include "DungeonBotMgr.h"
 #include "Opcodes.h"
 #include "World.h"
 #include "WorldPacket.h"
@@ -47,7 +48,9 @@ enum PartyBotSpells
 #define PB_MIN_FOLLOW_ANGLE 0.0f
 #define PB_MAX_FOLLOW_ANGLE 6.0f
 // Mob is "nearly at" the puller: tank steps in and taunts.
-#define PB_PULL_PICKUP_DIST 10.0f
+#define PB_PULL_PICKUP_DIST 8.0f
+// Calm engage: wait until the pack is this close to the party (leader).
+#define PB_CALM_ENGAGE_DIST 8.0f
 // Do not open a pull from farther than Auto Shot / Throw can reach.
 #define PB_PULL_MAX_DIST 40.0f
 
@@ -524,6 +527,87 @@ bool PartyBotAI::TryInterruptEnemyCast()
     return false;
 }
 
+bool PartyBotAI::IsRangedEnemy(Unit const* pEnemy) const
+{
+    if (!pEnemy)
+        return false;
+
+    // Mage / priest / warlock / … class on the creature, or mid-cast.
+    if (pEnemy->IsCaster())
+        return true;
+
+    // Standing off and shooting / casting at someone in the fight.
+    if (Unit const* pVictim = pEnemy->GetVictim())
+    {
+        if (!pEnemy->CanReachWithMeleeAutoAttack(pVictim) &&
+            pEnemy->GetCombatDistance(pVictim) > 8.0f)
+            return true;
+    }
+
+    return false;
+}
+
+Unit* PartyBotAI::FindRangedEnemyToSilence() const
+{
+    Unit* best = nullptr;
+    float bestDist = 0.0f;
+
+    auto consider = [&](Unit* pEnemy)
+    {
+        if (!pEnemy || !IsValidHostileTarget(pEnemy) || !IsRangedEnemy(pEnemy))
+            return;
+        if (!me->IsWithinDist(pEnemy, 30.0f))
+            return;
+        if (pEnemy->HasAuraType(SPELL_AURA_MOD_SILENCE) ||
+            pEnemy->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_SILENCED))
+            return;
+
+        float const dist = me->GetDistance(pEnemy);
+        if (!best || dist < bestDist)
+        {
+            best = pEnemy;
+            bestDist = dist;
+        }
+    };
+
+    consider(me->GetVictim());
+    for (Unit* pAttacker : me->GetAttackers())
+        consider(pAttacker);
+
+    if (Group* pGroup = me->GetGroup())
+    {
+        for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* pMember = itr->getSource();
+            if (!pMember || pMember == me)
+                continue;
+
+            consider(pMember->GetVictim());
+            for (Unit* pAttacker : pMember->GetAttackers())
+                consider(pAttacker);
+        }
+    }
+
+    return best;
+}
+
+bool PartyBotAI::TrySilenceRangedEnemy()
+{
+    if (IsInDuel())
+        return false;
+
+    // 1.12 player Silence is the priest talent. Counterspell only works mid-cast
+    // (handled by TryInterruptEnemyCast).
+    if (!m_spells.priest.pSilence)
+        return false;
+
+    Unit* pTarget = FindRangedEnemyToSilence();
+    if (!pTarget || !CanTryToCastSpell(pTarget, m_spells.priest.pSilence))
+        return false;
+
+    return DoCastSpell(pTarget, m_spells.priest.pSilence) == SPELL_CAST_OK;
+}
+
 bool PartyBotAI::PullFightAwayFromCrowdControl()
 {
     if (m_role != ROLE_TANK || IsInDuel())
@@ -569,6 +653,57 @@ bool PartyBotAI::AttackStart(Unit* pVictim)
     }
 
     return false;
+}
+
+bool PartyBotAI::IsEngageAggressive() const
+{
+    if (Player* pLeader = GetPartyLeader())
+        return sDungeonBotMgr.GetEngageStyle(pLeader) == PARTYBOT_ENGAGE_AGGRESSIVE;
+    return false;
+}
+
+bool PartyBotAI::IsInCalmEngageRange(Unit const* pTarget) const
+{
+    if (!pTarget)
+        return false;
+
+    // Anchor on the leader so the party does not run ahead of the pull spot.
+    if (Player const* pLeader = GetPartyLeader())
+        return pLeader->GetDistance(pTarget) <= PB_CALM_ENGAGE_DIST;
+
+    return me->GetDistance(pTarget) <= PB_CALM_ENGAGE_DIST;
+}
+
+void PartyBotAI::AllowForcedEngage(ObjectGuid targetGuid, uint32 durationMs)
+{
+    m_forceEngageGuid = targetGuid;
+    m_forceEngageUntil = WorldTimer::getMSTime() + durationMs;
+}
+
+bool PartyBotAI::CanEngageTarget(Unit const* pTarget) const
+{
+    if (!pTarget)
+        return false;
+
+    if (IsEngageAggressive())
+        return true;
+
+    // Already on us, or we are already committed to this fight.
+    if (pTarget->GetVictim() == me)
+        return true;
+    for (Unit* pAttacker : me->GetAttackers())
+        if (pAttacker == pTarget)
+            return true;
+    if (me->GetVictim() == pTarget && me->IsInCombat())
+        return true;
+
+    // Commanded pull / attackstart may open from any range for a short window.
+    if (!m_forceEngageGuid.IsEmpty() &&
+        pTarget->GetObjectGuid() == m_forceEngageGuid &&
+        WorldTimer::getMSTime() < m_forceEngageUntil)
+        return true;
+
+    return IsInCalmEngageRange(pTarget);
 }
 
 int PartyBotAI::GetRangedPullScore(Unit const* pTarget) const
@@ -824,6 +959,49 @@ Unit* PartyBotAI::SelectPartyAttackTarget() const
                     me->IsWithinDist(pAttacker, 50.0f))
                     return pAttacker;
             }
+        }
+    }
+
+    return nullptr;
+}
+
+Unit* PartyBotAI::SelectPartyPeelTarget() const
+{
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return nullptr;
+
+    Unit const* pCurrent = me->GetVictim();
+    Player const* pLeader = GetPartyLeader();
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == me)
+            continue;
+
+        // Only peel off the healer or the player. Chasing every DPS add is why
+        // the tank runs laps in a multi-pull.
+        bool priority = (pMember == pLeader);
+        if (!priority)
+        {
+            if (PartyBotAI const* pAI = dynamic_cast<PartyBotAI const*>(pMember->AI()))
+                priority = (pAI->m_role == ROLE_HEALER);
+        }
+        if (!priority)
+            continue;
+
+        for (Unit* pAttacker : pMember->GetAttackers())
+        {
+            if (pAttacker == pCurrent)
+                continue;
+            if (!IsValidHostileTarget(pAttacker) || !me->IsWithinDist(pAttacker, 50.0f))
+                continue;
+            // Already on us — Thunder Clap / cleave handles it; do not re-chase.
+            if (pAttacker->GetVictim() == me)
+                continue;
+
+            return pAttacker;
         }
     }
 
@@ -1390,6 +1568,20 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
     Unit* pVictim = me->GetVictim();
 
+    // Calm mode: do not run at a far pack — release and wait by the leader.
+    if (pVictim && IsValidHostileTarget(pVictim) && !CanEngageTarget(pVictim))
+    {
+        me->AttackStop(true);
+        if (!me->IsStopped())
+            me->StopMoving();
+        if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
+        {
+            me->GetMotionMaster()->Clear(false, true);
+            me->GetMotionMaster()->MoveIdle();
+        }
+        pVictim = nullptr;
+    }
+
     // Priests (including healers) assist so they can wand when nothing needs a heal.
     // Other healers stay on heal-only targeting.
     if (GetRole() != ROLE_HEALER || me->GetClass() == CLASS_PRIEST)
@@ -1399,10 +1591,10 @@ void PartyBotAI::UpdateAI(uint32 const diff)
             if (pVictim)
                 me->AttackStop();
 
-            if (Unit* pVictim = SelectAttackTarget(pLeader))
+            if (Unit* pNew = SelectAttackTarget(pLeader))
             {
-                AttackStart(pVictim);
-                return;
+                if (CanEngageTarget(pNew) && AttackStart(pNew))
+                    return;
             }
         }
     }
@@ -1437,6 +1629,7 @@ void PartyBotAI::UpdateAI(uint32 const diff)
             me->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
     }
 
+    pVictim = me->GetVictim();
     if (!me->IsMoving())
     {
         if (!pVictim)
@@ -1444,7 +1637,7 @@ void PartyBotAI::UpdateAI(uint32 const diff)
             if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
                 me->GetMotionMaster()->MoveFollow(pLeader, urand(PB_MIN_FOLLOW_DIST, PB_MAX_FOLLOW_DIST), frand(PB_MIN_FOLLOW_ANGLE, PB_MAX_FOLLOW_ANGLE));
         }
-        else
+        else if (CanEngageTarget(pVictim))
         {
             // SetInFront alone is server-only; without MSG_MOVE_SET_FACING others still see
             // the bot sideways after chase stops (ranged stand-and-shoot, or a mob that
@@ -1537,13 +1730,24 @@ void PartyBotAI::UpdateInCombatAI()
         {
             Unit* pVictim = me->GetVictim();
 
-            // Defend party members.
-            if (!pVictim || pVictim->GetVictim() == me)
+            // Defend party members — but stick to the current target. The old
+            // "always SelectPartyAttackTarget while tanking" swapped every tick
+            // in a multi-pull and the warrior ran between every add.
+            if (!pVictim)
             {
-                if (pVictim = SelectPartyAttackTarget())
+                if (Unit* pLoose = SelectPartyAttackTarget())
+                    if (CanEngageTarget(pLoose))
+                        AttackStart(pLoose);
+            }
+            else if (pVictim->GetVictim() == me)
+            {
+                if (Unit* pPeel = SelectPartyPeelTarget())
                 {
-                    me->AttackStop(true);
-                    AttackStart(pVictim);
+                    if (CanEngageTarget(pPeel))
+                    {
+                        me->AttackStop(true);
+                        AttackStart(pPeel);
+                    }
                 }
             }
 
@@ -1573,6 +1777,10 @@ void PartyBotAI::UpdateInCombatAI()
 
     // Before rotation / healing: stop enemy heals and other casts (own target or an add).
     if (TryInterruptEnemyCast())
+        return;
+
+    // Ranged / caster packs: Silence when we have it, even between their casts.
+    if (TrySilenceRangedEnemy())
         return;
 
     if (CheckForDispelTargets())
@@ -2722,8 +2930,11 @@ void PartyBotAI::UpdateInCombatAI_Priest()
                 return;
         }
 
+        // Prefer Silence on casters / ranged even between casts (shared path also
+        // covers adds). Keep a victim-only fallback here for the current target.
         if (m_spells.priest.pSilence &&
-            pVictim->IsNonMeleeSpellCasted() &&
+            IsRangedEnemy(pVictim) &&
+            !pVictim->HasAuraType(SPELL_AURA_MOD_SILENCE) &&
             CanTryToCastSpell(pVictim, m_spells.priest.pSilence))
         {
             if (DoCastSpell(pVictim, m_spells.priest.pSilence) == SPELL_CAST_OK)
@@ -3045,7 +3256,9 @@ void PartyBotAI::UpdateOutOfCombatAI_Warrior()
 
     if (Unit* pVictim = me->GetVictim())
     {
+        // Calm mode: no Charge into a far pack (that pulls extras).
         if (m_spells.warrior.pCharge &&
+            CanEngageTarget(pVictim) &&
             CanTryToCastSpell(pVictim, m_spells.warrior.pCharge))
         {
             if (DoCastSpell(pVictim, m_spells.warrior.pCharge) == SPELL_CAST_OK)

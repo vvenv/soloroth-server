@@ -298,12 +298,14 @@ DungeonBotMgr::Settings& DungeonBotMgr::GetSettings(Player* pPlayer)
 
     Settings& s = m_settings[guid];
     if (std::unique_ptr<QueryResult> result = CharacterDatabase.PQuery(
-            "SELECT `role`, `auto_fill` FROM `character_party_bots` WHERE `guid` = %u", guid))
+            "SELECT `role`, `auto_fill`, `engage` FROM `character_party_bots` WHERE `guid` = %u", guid))
     {
         Field* fields = result->Fetch();
         uint8 const role = fields[0].GetUInt8();
         s.role = role <= ROLE_HEALER ? CombatBotRoles(role) : ROLE_INVALID;
         s.autoFill = fields[1].GetUInt8() != 0;
+        uint8 const engage = fields[2].GetUInt8();
+        s.engage = engage == PARTYBOT_ENGAGE_AGGRESSIVE ? PARTYBOT_ENGAGE_AGGRESSIVE : PARTYBOT_ENGAGE_CALM;
     }
     return s;
 }
@@ -311,8 +313,9 @@ DungeonBotMgr::Settings& DungeonBotMgr::GetSettings(Player* pPlayer)
 void DungeonBotMgr::SaveSettings(Player* pPlayer)
 {
     Settings const& s = GetSettings(pPlayer);
-    CharacterDatabase.PExecute("REPLACE INTO `character_party_bots` (`guid`, `role`, `auto_fill`) VALUES (%u, %u, %u)",
-        pPlayer->GetGUIDLow(), uint32(s.role), s.autoFill ? 1u : 0u);
+    CharacterDatabase.PExecute(
+        "REPLACE INTO `character_party_bots` (`guid`, `role`, `auto_fill`, `engage`) VALUES (%u, %u, %u, %u)",
+        pPlayer->GetGUIDLow(), uint32(s.role), s.autoFill ? 1u : 0u, uint32(s.engage));
 }
 
 CombatBotRoles DungeonBotMgr::GetChosenRole(Player* pPlayer)
@@ -335,6 +338,24 @@ void DungeonBotMgr::SetChosenRole(Player* pPlayer, CombatBotRoles role)
 bool DungeonBotMgr::IsAutoFill(Player* pPlayer)
 {
     return GetSettings(pPlayer).autoFill;
+}
+
+PartyBotEngageStyle DungeonBotMgr::GetEngageStyle(Player* pPlayer)
+{
+    return GetSettings(pPlayer).engage;
+}
+
+void DungeonBotMgr::SetEngageStyle(Player* pPlayer, PartyBotEngageStyle style)
+{
+    GetSettings(pPlayer).engage = style;
+    SaveSettings(pPlayer);
+}
+
+char const* DungeonBotMgr::EngageStyleName(PartyBotEngageStyle style, bool zh)
+{
+    if (style == PARTYBOT_ENGAGE_AGGRESSIVE)
+        return zh ? "奔放" : "aggressive";
+    return zh ? "冷静" : "calm";
 }
 
 void DungeonBotMgr::SetAutoFill(Player* pPlayer, bool on)
@@ -1068,7 +1089,7 @@ static bool BotsZh(ChatHandler* handler)
 
 bool ChatHandler::HandleBotsStatusCommand(char* args)
 {
-    // `.bots status quiet`: only the machine line, for the GMBox addon.
+    // `.bots status quiet`: only the machine line, for the Bots addon.
     bool const quiet = args && std::string(args) == "quiet";
     Player* pPlayer = m_session ? m_session->GetPlayer() : nullptr;
     if (!pPlayer)
@@ -1077,18 +1098,45 @@ bool ChatHandler::HandleBotsStatusCommand(char* args)
     CombatBotRoles const chosen = sDungeonBotMgr.GetChosenRole(pPlayer);
     CombatBotRoles const playing = sDungeonBotMgr.GetPlayerRole(pPlayer);
     bool const autoFill = sDungeonBotMgr.IsAutoFill(pPlayer);
-    // The first line is also read by the GMBox addon: keep its shape.
-    PSendSysMessage("[bots] role=%s playing=%s auto=%u", DungeonBotMgr::RoleName(chosen, false),
-        DungeonBotMgr::RoleName(playing, false), autoFill ? 1u : 0u);
+    PartyBotEngageStyle const engage = sDungeonBotMgr.GetEngageStyle(pPlayer);
+    // The first line is also read by the Bots addon: keep its shape.
+    PSendSysMessage("[bots] role=%s playing=%s auto=%u style=%s", DungeonBotMgr::RoleName(chosen, false),
+        DungeonBotMgr::RoleName(playing, false), autoFill ? 1u : 0u,
+        DungeonBotMgr::EngageStyleName(engage, false));
     if (quiet)
         return true;
     if (zh)
-        PSendSysMessage("你的职责：%s%s；进五人副本自动补机器人：%s。",
-            DungeonBotMgr::RoleName(playing, true), chosen == ROLE_INVALID ? "（自动判断）" : "", autoFill ? "开" : "关");
+        PSendSysMessage("你的职责：%s%s；进五人副本自动补机器人：%s；接战：%s。",
+            DungeonBotMgr::RoleName(playing, true), chosen == ROLE_INVALID ? "（自动判断）" : "",
+            autoFill ? "开" : "关", DungeonBotMgr::EngageStyleName(engage, true));
     else
-        PSendSysMessage("You play %s%s; five-player dungeons fill with bots: %s.",
-            DungeonBotMgr::RoleName(playing, false), chosen == ROLE_INVALID ? " (guessed)" : "", autoFill ? "on" : "off");
+        PSendSysMessage("You play %s%s; five-player dungeons fill with bots: %s; engage: %s.",
+            DungeonBotMgr::RoleName(playing, false), chosen == ROLE_INVALID ? " (guessed)" : "",
+            autoFill ? "on" : "off", DungeonBotMgr::EngageStyleName(engage, false));
     return true;
+}
+
+bool ChatHandler::HandleBotsEngageCommand(char* args)
+{
+    Player* pPlayer = m_session ? m_session->GetPlayer() : nullptr;
+    if (!pPlayer)
+        return false;
+    std::string const arg = args ? args : "";
+    PartyBotEngageStyle style;
+    if (arg == "calm" || arg == "safe" || arg == "hold")
+        style = PARTYBOT_ENGAGE_CALM;
+    else if (arg == "aggressive" || arg == "aggro" || arg == "rush")
+        style = PARTYBOT_ENGAGE_AGGRESSIVE;
+    else
+    {
+        SendSysMessage(BotsZh(this)
+            ? "用法：.bots engage calm|aggressive（冷静|奔放）"
+            : "Usage: .bots engage calm|aggressive");
+        SetSentErrorMessage(true);
+        return false;
+    }
+    sDungeonBotMgr.SetEngageStyle(pPlayer, style);
+    return HandleBotsStatusCommand(nullptr);
 }
 
 bool ChatHandler::HandleBotsRoleCommand(char* args)

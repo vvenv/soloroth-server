@@ -53,6 +53,12 @@ public:
     bool CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const override;
     Player* GetPartyLeader() const;
     bool AttackStart(Unit* pVictim);
+    // Leader's engage style (calm = wait for the pack; aggressive = charge in).
+    bool IsEngageAggressive() const;
+    bool IsInCalmEngageRange(Unit const* pTarget) const;
+    bool CanEngageTarget(Unit const* pTarget) const;
+    // `.partybot pull` / `attackstart`: allow opening this guid from any range for a while.
+    void AllowForcedEngage(ObjectGuid targetGuid, uint32 durationMs);
     // .partybot pull: score for who should open from range (hunter / mage / throw).
     int GetRangedPullScore(Unit const* pTarget) const;
     bool HasThrowableWeapon() const;
@@ -64,6 +70,8 @@ public:
     bool UpdateRangedPullHold();
     Unit* SelectAttackTarget(Player* pLeader) const;
     Unit* SelectPartyAttackTarget() const;
+    // A different mob on the healer/player — peel without thrashing every add.
+    Unit* SelectPartyPeelTarget() const;
     Player* SelectResurrectionTarget() const;
     bool MoveToResurrect();
     bool AllyWillResurrect() const;
@@ -86,6 +94,10 @@ public:
     int GetEnemyCastInterruptScore(Unit const* pEnemy) const;
     Unit* FindEnemyCastToInterrupt() const;
     bool TryInterruptEnemyCast();
+    // Caster / ranged pack members: Silence when we have it (not only mid-cast).
+    bool IsRangedEnemy(Unit const* pEnemy) const;
+    Unit* FindRangedEnemyToSilence() const;
+    bool TrySilenceRangedEnemy();
     bool EnterCombatDruidForm();
     bool ShouldEnterStealth() const;
     bool EnterStealthIfNeeded(SpellEntry const* pStealthSpell);
@@ -134,6 +146,9 @@ public:
     ObjectGuid m_pullHoldTargetGuid;
     ObjectGuid m_pullHoldPullerGuid;
     uint32 m_pullHoldDeadline = 0;
+    // Forced open (pull / attackstart) until this time.
+    ObjectGuid m_forceEngageGuid;
+    uint32 m_forceEngageUntil = 0;
 };
 
 #endif

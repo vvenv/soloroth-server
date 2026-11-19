@@ -11,11 +11,12 @@
  * World::Update next to sPlayerBotMgr), so no teleport or map code needs a
  * hook and nothing touches a map from a map thread.
  *
- * Each character keeps two settings in `character_party_bots`: the role the
- * player plays (auto = guessed from class and talents) and whether dungeons
- * fill on their own. `.bots` (open to every account) changes them, fills a
- * duo, a trio or a party of five, or dismisses by hand. The Bots addon
- * drives it. Raids are 20 or 40 and are not filled.
+ * Each character keeps settings in `character_party_bots`: the role the
+ * player plays (auto = guessed from class and talents), whether dungeons
+ * fill on their own, and engage style (calm = wait until mobs are close,
+ * aggressive = charge in). `.bots` (open to every account) changes them,
+ * fills a duo, a trio or a party of five, or dismisses by hand. The Bots
+ * addon drives it. Raids are 20 or 40 and are not filled.
  *
  * Each roster member a character calls becomes that character's companion
  * (`character_companions`): a saved character on its own made-up account,
@@ -38,6 +39,12 @@
 
 class Player;
 
+enum PartyBotEngageStyle : uint8
+{
+    PARTYBOT_ENGAGE_CALM = 0,        // Wait until the pack is near the party
+    PARTYBOT_ENGAGE_AGGRESSIVE = 1,  // Charge / open as soon as there is a target
+};
+
 class DungeonBotMgr
 {
 public:
@@ -51,6 +58,9 @@ public:
     void SetChosenRole(Player* pPlayer, CombatBotRoles role);
     bool IsAutoFill(Player* pPlayer);
     void SetAutoFill(Player* pPlayer, bool on);
+    PartyBotEngageStyle GetEngageStyle(Player* pPlayer);
+    void SetEngageStyle(Player* pPlayer, PartyBotEngageStyle style);
+    static char const* EngageStyleName(PartyBotEngageStyle style, bool zh);
 
     // Adds bots for the missing roles until the party has `target` members
     // (2, 3 or 5, counting the player), or sends extras home until it does.
@@ -73,6 +83,7 @@ private:
     {
         CombatBotRoles role = ROLE_INVALID;
         bool autoFill = true;
+        PartyBotEngageStyle engage = PARTYBOT_ENGAGE_CALM;
     };
     struct Watch
     {

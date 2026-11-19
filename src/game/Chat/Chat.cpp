@@ -120,6 +120,7 @@ ChatCommand * ChatHandler::getCommandTable()
         { "status",     SEC_PLAYER,             false, &ChatHandler::HandleBotsStatusCommand,          "", nullptr },
         { "role",       SEC_PLAYER,             false, &ChatHandler::HandleBotsRoleCommand,            "", nullptr },
         { "auto",       SEC_PLAYER,             false, &ChatHandler::HandleBotsAutoCommand,            "", nullptr },
+        { "engage",     SEC_PLAYER,             false, &ChatHandler::HandleBotsEngageCommand,          "", nullptr },
         { "fill",       SEC_PLAYER,             false, &ChatHandler::HandleBotsFillCommand,            "", nullptr },
         { "dismiss",    SEC_PLAYER,             false, &ChatHandler::HandleBotsDismissCommand,         "", nullptr },
         { "",           SEC_PLAYER,             false, &ChatHandler::HandleBotsStatusCommand,          "", nullptr },

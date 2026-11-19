@@ -300,6 +300,7 @@ class ChatHandler
         bool HandleBotsStatusCommand(char* args);
         bool HandleBotsRoleCommand(char* args);
         bool HandleBotsAutoCommand(char* args);
+        bool HandleBotsEngageCommand(char* args);
         bool HandleBotsFillCommand(char* args);
         bool HandleBotsDismissCommand(char* args);
         bool HandleSoloAutoLootCommand(char* args);

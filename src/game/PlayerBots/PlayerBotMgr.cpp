@@ -1124,7 +1124,11 @@ bool ChatHandler::HandlePartyBotAttackStartCommand(char* args)
                 if (PartyBotAI* pAI = dynamic_cast<PartyBotAI*>(pMember->AI()))
                 {
                     if (pMember->IsValidAttackTarget(pTarget))
+                    {
+                        // Override calm wait — the player ordered a go.
+                        pAI->AllowForcedEngage(pTarget->GetObjectGuid(), 15 * IN_MILLISECONDS);
                         pAI->AttackStart(pTarget);
+                    }
                 }
             }
         }
@@ -1798,6 +1802,9 @@ bool ChatHandler::HandlePartyBotPullCommand(char* args)
     bool rangedPull = pPuller && pPullerAI && bestScore >= 0;
     if (rangedPull)
     {
+        // Puller may open from range even in calm mode.
+        pPullerAI->AllowForcedEngage(pTarget->GetObjectGuid(), duration);
+
         bool opened = false;
         if (pPuller->GetClass() == CLASS_ROGUE)
             opened = pPullerAI->TryThrowPull(pTarget);
@@ -1837,7 +1844,10 @@ bool ChatHandler::HandlePartyBotPullCommand(char* args)
                             pAI->BeginRangedPullHold(pTarget->GetObjectGuid(),
                                 pPuller->GetObjectGuid(), duration);
                         else
+                        {
+                            pAI->AllowForcedEngage(pTarget->GetObjectGuid(), duration);
                             pAI->AttackStart(pTarget);
+                        }
                     }
                 }
             }
