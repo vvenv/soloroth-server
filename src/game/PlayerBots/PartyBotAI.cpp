@@ -2745,6 +2745,22 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
 {
     if (Unit* pVictim = me->GetVictim())
     {
+        // Tanks stay Defensive so Taunt / shield skills work. Berserker on
+        // under-level trash (old level check) left them unable to peel.
+        if (m_role == ROLE_TANK || me->GetHealthPercent() < 20.0f)
+        {
+            if (m_spells.warrior.pDefensiveStance &&
+                CanTryToCastSpell(me, m_spells.warrior.pDefensiveStance))
+            {
+                DoCastSpell(me, m_spells.warrior.pDefensiveStance);
+            }
+        }
+        else if (m_spells.warrior.pBerserkerStance &&
+                 CanTryToCastSpell(me, m_spells.warrior.pBerserkerStance))
+        {
+            DoCastSpell(me, m_spells.warrior.pBerserkerStance);
+        }
+
         if (pVictim->IsNonMeleeSpellCasted(false, false, true))
         {
             if (m_spells.warrior.pPummel &&
@@ -2913,24 +2929,6 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
         {
             if (DoCastSpell(pVictim, m_spells.warrior.pBloodthirst) == SPELL_CAST_OK)
                 return;
-        }
-
-        if ((me->GetHealthPercent() < 20.0f) ||
-            (m_role == ROLE_TANK && pVictim->GetLevel() >= me->GetLevel()))
-        {
-            if (m_spells.warrior.pDefensiveStance &&
-                CanTryToCastSpell(me, m_spells.warrior.pDefensiveStance))
-            {
-                DoCastSpell(me, m_spells.warrior.pDefensiveStance);
-            }
-        }
-        else
-        {
-            if (m_spells.warrior.pBerserkerStance &&
-                CanTryToCastSpell(me, m_spells.warrior.pBerserkerStance))
-            {
-                DoCastSpell(me, m_spells.warrior.pBerserkerStance);
-            }
         }
 
         if (m_spells.warrior.pIntercept &&
