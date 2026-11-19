@@ -4231,6 +4231,17 @@ void Player::BuildCreateUpdateBlockForPlayer(UpdateData& data, Player* target) c
 
             m_items[i]->BuildCreateUpdateBlockForPlayer(data, target);
         }
+        // Soloroth: backpack slots 17-32 live in 97-112 (past the keyring's
+        // addressable 81-96). Without these creates the client sees empty
+        // slots and bagspace counts them free until something else streams
+        // the objects.
+        for (int i = BACKPACK_EXTRA_START; i < BACKPACK_EXTRA_END; ++i)
+        {
+            if (m_items[i] == nullptr)
+                continue;
+
+            m_items[i]->BuildCreateUpdateBlockForPlayer(data, target);
+        }
     }
 
     Unit::BuildCreateUpdateBlockForPlayer(data, target);
@@ -4258,6 +4269,13 @@ void Player::DestroyForPlayer(Player const* target) const
             m_items[i]->DestroyForPlayer(target);
         }
         for (int i = KEYRING_SLOT_START; i < KEYRING_SLOT_END; ++i)
+        {
+            if (m_items[i] == nullptr)
+                continue;
+
+            m_items[i]->DestroyForPlayer(target);
+        }
+        for (int i = BACKPACK_EXTRA_START; i < BACKPACK_EXTRA_END; ++i)
         {
             if (m_items[i] == nullptr)
                 continue;
