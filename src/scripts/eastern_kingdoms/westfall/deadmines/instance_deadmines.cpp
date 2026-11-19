@@ -32,6 +32,7 @@ struct instance_deadmines : public ScriptedInstance
     };
 
     uint32 m_auiEncounter[INSTANCE_DM_MAX_ENCOUNTER];
+    std::string strInstData;
 
     uint64 m_uiIronCladGUID;
     uint64 m_uiCannonGUID;
@@ -55,6 +56,7 @@ struct instance_deadmines : public ScriptedInstance
     void Initialize() override
     {
         memset(&m_auiEncounter, 0, sizeof(m_auiEncounter));
+        strInstData.clear();
 
         m_uiIronCladGUID = 0;
         m_uiCannonGUID = 0;
@@ -69,6 +71,10 @@ struct instance_deadmines : public ScriptedInstance
 
         m_uiIronDoorTimer = 0;
         m_uiIronDoorStep = 0;
+
+        m_uiDoor1GUID = 0;
+        m_uiDoor2GUID = 0;
+        m_uiDoor3GUID = 0;
     }
 
     void OnCreatureCreate(Creature* pCreature) override
@@ -97,31 +103,45 @@ struct instance_deadmines : public ScriptedInstance
         }
     }
 
+    void OpenDoorIfDone(uint32 encounter, uint64 doorGuid)
+    {
+        if (m_auiEncounter[encounter] != DONE || !doorGuid)
+            return;
+        if (GameObject* pGo = instance->GetGameObject(doorGuid))
+            if (pGo->GetGoState() != GO_STATE_ACTIVE)
+                DoUseDoorOrButton(doorGuid);
+    }
+
+    void NoteDoorBossDone(uint32 encounter, uint64 doorGuid)
+    {
+        m_auiEncounter[encounter] = DONE;
+        OpenDoorIfDone(encounter, doorGuid);
+
+        OUT_SAVE_INST_DATA;
+        std::ostringstream saveStream;
+        saveStream << m_auiEncounter[0] << " " << m_auiEncounter[1] << " "
+                   << m_auiEncounter[2] << " " << m_auiEncounter[3];
+        strInstData = saveStream.str();
+        SaveToDB();
+        OUT_SAVE_INST_DATA_COMPLETE;
+    }
+
     void OnCreatureDeath(Creature *who) override
     {
         switch (who->GetEntry())
         {
             case NPC_RHAHKZOR :
-                if (GameObject* pGo = instance->GetGameObject(m_uiDoor1GUID))
-                    if (pGo->GetGoState() != GO_STATE_ACTIVE)
-                        DoUseDoorOrButton(m_uiDoor1GUID);
-
                 m_isRhahkDead = true;
                 m_uiSpawnPatrolOnRhahkDeath = 60000;
+                NoteDoorBossDone(TYPE_RHAHKZOR_DOOR, m_uiDoor1GUID);
                 break;
             case NPC_SNEED :
-                if (GameObject* pGo = instance->GetGameObject(m_uiDoor2GUID))
-                    if (pGo->GetGoState() != GO_STATE_ACTIVE)
-                        DoUseDoorOrButton(m_uiDoor2GUID);
+                NoteDoorBossDone(TYPE_SNEED_DOOR, m_uiDoor2GUID);
                 break;
             case NPC_GILDNID :
-                if (GameObject* pGo = instance->GetGameObject(m_uiDoor3GUID))
-                    if (pGo->GetGoState() != GO_STATE_ACTIVE)
-                        DoUseDoorOrButton(m_uiDoor3GUID);
-
                 m_isGilnidDead = true;
                 m_uiSpawnPatrolOnGilnidDeath = 30000;
-
+                NoteDoorBossDone(TYPE_GILNID_DOOR, m_uiDoor3GUID);
                 break;
         }
     }
@@ -135,11 +155,23 @@ struct instance_deadmines : public ScriptedInstance
             m_uiCannonGUID = pGo->GetGUID();
 
         if (pGo->GetEntry() == GO_DOOR1)
+        {
             m_uiDoor1GUID = pGo->GetGUID();
+            if (m_auiEncounter[TYPE_RHAHKZOR_DOOR] == DONE)
+                pGo->SetGoState(GO_STATE_ACTIVE);
+        }
         if (pGo->GetEntry() == GO_DOOR2 && pGo->GetPositionX() > -291.0f && pGo->GetPositionX() < -290.0f)
+        {
             m_uiDoor2GUID = pGo->GetGUID();
+            if (m_auiEncounter[TYPE_SNEED_DOOR] == DONE)
+                pGo->SetGoState(GO_STATE_ACTIVE);
+        }
         if (pGo->GetEntry() == GO_DOOR3 && pGo->GetPositionX() > -169.0f && pGo->GetPositionX() < -168.0f)
+        {
             m_uiDoor3GUID = pGo->GetGUID();
+            if (m_auiEncounter[TYPE_GILNID_DOOR] == DONE)
+                pGo->SetGoState(GO_STATE_ACTIVE);
+        }
 
         if (pGo->GetEntry() == GO_DMF_CHEST)
             pGo->SetVisible(false);
@@ -159,7 +191,17 @@ struct instance_deadmines : public ScriptedInstance
                     m_uiIronDoorTimer = 3000;
                 }
             }
-            m_auiEncounter[0] = uiData;
+            m_auiEncounter[TYPE_DEFIAS_ENDDOOR] = uiData;
+            if (uiData == DONE || uiData == SPECIAL || uiData == FAIL)
+            {
+                OUT_SAVE_INST_DATA;
+                std::ostringstream saveStream;
+                saveStream << m_auiEncounter[0] << " " << m_auiEncounter[1] << " "
+                           << m_auiEncounter[2] << " " << m_auiEncounter[3];
+                strInstData = saveStream.str();
+                SaveToDB();
+                OUT_SAVE_INST_DATA_COMPLETE;
+            }
         }
         else if (uiType == GUN_POWDER_EVENT)
             m_isGunPowderEventDone = uiData;
@@ -168,9 +210,11 @@ struct instance_deadmines : public ScriptedInstance
     uint32 GetData(uint32 uiType) override
     {
         if (uiType == TYPE_DEFIAS_ENDDOOR)
-            return m_auiEncounter[0];
+            return m_auiEncounter[TYPE_DEFIAS_ENDDOOR];
         else if (uiType == GUN_POWDER_EVENT)
             return m_isGunPowderEventDone;
+        else if (uiType < INSTANCE_DM_MAX_ENCOUNTER)
+            return m_auiEncounter[uiType];
         return 0;
     }
 
@@ -180,6 +224,46 @@ struct instance_deadmines : public ScriptedInstance
             return m_uiIronCladGUID;
 
         return 0;
+    }
+
+    char const* Save() override
+    {
+        return strInstData.c_str();
+    }
+
+    void Load(char const* chrIn) override
+    {
+        if (!chrIn)
+        {
+            OUT_LOAD_INST_DATA_FAIL;
+            return;
+        }
+
+        OUT_LOAD_INST_DATA(chrIn);
+
+        std::istringstream loadStream(chrIn);
+        // Old saves only stored the iron-clad door in one field.
+        loadStream >> m_auiEncounter[0];
+        if (!(loadStream >> m_auiEncounter[1] >> m_auiEncounter[2] >> m_auiEncounter[3]))
+        {
+            m_auiEncounter[TYPE_DEFIAS_ENDDOOR] = m_auiEncounter[0];
+            m_auiEncounter[TYPE_RHAHKZOR_DOOR] = NOT_STARTED;
+            m_auiEncounter[TYPE_SNEED_DOOR] = NOT_STARTED;
+            m_auiEncounter[TYPE_GILNID_DOOR] = NOT_STARTED;
+        }
+
+        for (uint32 & i : m_auiEncounter)
+        {
+            if (i == IN_PROGRESS)
+                i = NOT_STARTED;
+        }
+
+        if (m_auiEncounter[TYPE_RHAHKZOR_DOOR] == DONE)
+            m_isRhahkDead = true;
+        if (m_auiEncounter[TYPE_GILNID_DOOR] == DONE)
+            m_isGilnidDead = true;
+
+        OUT_LOAD_INST_DATA_COMPLETE;
     }
 
     void Update(uint32 uiDiff) override

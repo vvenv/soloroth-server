@@ -7,10 +7,15 @@
 
 enum
 {
-    INSTANCE_DM_MAX_ENCOUNTER           = 1,
+    // Doors after Rhahk'Zor / Sneed / Gilnid must persist across unload;
+    // previously only the iron-clad end door was saved.
+    INSTANCE_DM_MAX_ENCOUNTER           = 4,
 
-    TYPE_DEFIAS_ENDDOOR     = 1,
-    DATA_DEFIAS_DOOR        = 2,
+    TYPE_RHAHKZOR_DOOR      = 0,
+    TYPE_SNEED_DOOR         = 1,
+    TYPE_GILNID_DOOR        = 2,
+    TYPE_DEFIAS_ENDDOOR     = 3,
+    DATA_DEFIAS_DOOR        = 4,
 
     INST_SAY_ALARM1         = 1148,
     INST_SAY_ALARM2         = 1149,
