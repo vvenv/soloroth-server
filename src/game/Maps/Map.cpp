@@ -2232,22 +2232,28 @@ void DungeonMap::BindPlayerOrGroupOnEnter(Player* player)
                 {
                     // cannot jump to a different instance without resetting it
                     MANGOS_ASSERT(playerBind->state == GetPersistentState());
-                    player->UnbindInstance(GetId());
+                    // Solo realms keep the personal bind so logout/re-entry
+                    // still finds the same instance without the group.
+                    if (sWorld.getConfig(CONFIG_BOOL_INSTANCE_AUTO_RESET))
+                        player->UnbindInstance(GetId());
                 }
 
                 // reset personal saves of other members now that group save is created
-                for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+                if (sWorld.getConfig(CONFIG_BOOL_INSTANCE_AUTO_RESET))
                 {
-                    if (Player* pMember = itr->getSource())
+                    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
                     {
-                        if (pMember == player)
-                            continue;
-
-                        if (pMember->GetMapId() != GetId())
+                        if (Player* pMember = itr->getSource())
                         {
-                            InstancePlayerBind* memberBind = pMember->GetBoundInstance(GetId());
-                            if (memberBind && !memberBind->perm)
-                                pMember->UnbindInstance(GetId());
+                            if (pMember == player)
+                                continue;
+
+                            if (pMember->GetMapId() != GetId())
+                            {
+                                InstancePlayerBind* memberBind = pMember->GetBoundInstance(GetId());
+                                if (memberBind && !memberBind->perm)
+                                    pMember->UnbindInstance(GetId());
+                            }
                         }
                     }
                 }

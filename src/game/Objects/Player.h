@@ -661,6 +661,7 @@ enum PlayerLoginQueryIndex
     PLAYER_LOGIN_QUERY_LOADMAILEDITEMS,
     PLAYER_LOGIN_QUERY_BATTLEGROUND_DATA,
     PLAYER_LOGIN_QUERY_FORGOTTEN_SKILLS,
+    PLAYER_LOGIN_QUERY_LOADDUNGEONRESUME,
 
     MAX_PLAYER_LOGIN_QUERY
 };
@@ -694,6 +695,16 @@ struct InstancePlayerBind
        that aren't already permanently bound when they are inside when a boss is killed
        or when they enter an instance that the group leader is permanently bound to. */
     InstancePlayerBind() : state(nullptr), perm(false) {}
+};
+
+// Last stand-in spot for a bound dungeon. Re-entry uses it when instance still matches.
+struct DungeonResumePos
+{
+    uint32 instanceId = 0;
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    float o = 0.0f;
 };
 
 #define MAX_INSTANCE_PER_ACCOUNT_PER_HOUR 5
@@ -1259,6 +1270,7 @@ class Player final: public Unit
         bool SaveAura(SpellAuraHolder const* holder, AuraSaveStruct& saveStruct);
         void _LoadAuras(std::unique_ptr<QueryResult> result, uint32 timediff);
         void _LoadBoundInstances(std::unique_ptr<QueryResult> result);
+        void _LoadDungeonResume(std::unique_ptr<QueryResult> result);
         bool _LoadInventory(std::unique_ptr<QueryResult> result, uint32 timediff, bool& hasEpicMount);
         void _LoadItemLoot(std::unique_ptr<QueryResult> result);
         void _LoadQuestStatus(std::unique_ptr<QueryResult> result);
@@ -2477,6 +2489,7 @@ class Player final: public Unit
         // permanent binds and solo binds
         BoundInstancesMap m_boundInstances;
         mutable std::mutex m_boundInstancesMutex;
+        std::unordered_map<uint32 /*mapId*/, DungeonResumePos> m_dungeonResume;
         InstancePlayerBind* GetBoundInstance(uint32 mapId);
         BoundInstancesMap& GetBoundInstances() { return m_boundInstances; }
         void UnbindInstance(uint32 mapId, bool unload = false);
@@ -2485,6 +2498,10 @@ class Player final: public Unit
         // 5-man progress is stored on the group. Copy it onto this character
         // before logout or the group disbands, and write the instance script.
         void KeepInstanceProgress();
+        // Leave-spot for the current dungeon; re-entry restores it until reset.
+        void SaveDungeonResume();
+        bool ApplyDungeonResume(uint32 mapId, float& x, float& y, float& z, float& o);
+        void ClearDungeonResume(uint32 mapId);
         void SendRaidInfo() const;
         void SendSavedInstances() const;
         static void ConvertInstancesToGroup(Player* player, Group* group = nullptr, ObjectGuid player_guid = ObjectGuid());

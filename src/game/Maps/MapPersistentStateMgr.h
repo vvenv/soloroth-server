@@ -229,7 +229,9 @@ class DungeonPersistentState : public MapPersistentState
 
     protected:
         bool CanBeUnload() const override;                           // overwrite MapPersistentState::CanBeUnload
-        bool HasBounds() const { return !m_playerList.empty() || !m_groupList.empty(); }
+        // character_instance rows also lock the save: offline owners still
+        // own the run when Instance.AutoReset is off.
+        bool HasBounds() const { return !m_playerList.empty() || !m_groupList.empty() || !m_characterBinds.empty(); }
 
     private:
         typedef std::list<Player*> PlayerListType;

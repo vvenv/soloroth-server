@@ -341,6 +341,15 @@ struct instance_shadowfang_keep : public ScriptedInstance
                 i = NOT_STARTED;
         }
 
+        // Later bosses imply the courtyard is open. A missing FREE_NPC save
+        // left the door shut after logout and blocked the run.
+        if (m_auiEncounter[0] != DONE &&
+            (m_auiEncounter[1] == DONE || m_auiEncounter[2] == DONE || m_auiEncounter[3] == DONE))
+            m_auiEncounter[0] = DONE;
+        if (m_auiEncounter[1] != DONE &&
+            (m_auiEncounter[2] == DONE || m_auiEncounter[3] == DONE))
+            m_auiEncounter[1] = DONE;
+
         OUT_LOAD_INST_DATA_COMPLETE;
     }
 };

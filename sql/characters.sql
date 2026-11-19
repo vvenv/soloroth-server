@@ -259,6 +259,21 @@ CREATE TABLE IF NOT EXISTS `character_instance` (
 -- Data exporting was unselected.
 
 
+-- Dumping structure for table characters.character_dungeon_resume
+CREATE TABLE IF NOT EXISTS `character_dungeon_resume` (
+  `guid` int(11) unsigned NOT NULL COMMENT 'Character guid',
+  `map` smallint(5) unsigned NOT NULL,
+  `instance` int(11) unsigned NOT NULL,
+  `position_x` float NOT NULL,
+  `position_y` float NOT NULL,
+  `position_z` float NOT NULL,
+  `orientation` float NOT NULL,
+  PRIMARY KEY (`guid`, `map`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+
+-- Data exporting was unselected.
+
+
 -- Dumping structure for table characters.character_inventory
 CREATE TABLE IF NOT EXISTS `character_inventory` (
   `guid` int(11) unsigned NOT NULL DEFAULT '0' COMMENT 'Global Unique Identifier',

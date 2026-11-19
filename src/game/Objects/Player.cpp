@@ -1879,6 +1879,18 @@ bool Player::TeleportTo(uint32 mapId, float x, float y, float z, float orientati
     if (!InBattleGround() && pMapEntry->IsBattleGround())
         return false;
 
+    // Solo: leave a dungeon → remember the spot; re-enter the same bind → land there
+    // (entrance AreaTrigger and /gd .go both come through here).
+    if (!IsBot() && GetMapId() != mapId)
+    {
+        if (MapEntry const* oldMap = sMapStorage.LookupEntry<MapEntry>(GetMapId()))
+            if (oldMap->IsDungeon())
+                SaveDungeonResume();
+
+        if (IsAlive() && pMapEntry && pMapEntry->IsDungeon())
+            ApplyDungeonResume(mapId, x, y, z, orientation);
+    }
+
     sLog.Out(LOG_BASIC, LOG_LVL_DEBUG, "Player %s will teleported to map %u", GetName(), mapId);
 
     // if we were on a transport, leave
@@ -4506,6 +4518,7 @@ void Player::DeleteFromDB(ObjectGuid playerGuid, uint32 accountId, bool updateRe
             CharacterDatabase.PExecute("DELETE FROM `character_homebind` WHERE `guid` = '%u'", lowGuid);
             CharacterDatabase.PExecute("DELETE FROM `character_honor_cp` WHERE `guid` = '%u'", lowGuid);
             CharacterDatabase.PExecute("DELETE FROM `character_instance` WHERE `guid` = '%u'", lowGuid);
+            CharacterDatabase.PExecute("DELETE FROM `character_dungeon_resume` WHERE `guid` = '%u'", lowGuid);
             CharacterDatabase.PExecute("DELETE FROM `group_instance` WHERE `leader_guid` = '%u'", lowGuid);
             CharacterDatabase.PExecute("DELETE FROM `character_inventory` WHERE `guid` = '%u'", lowGuid);
             CharacterDatabase.PExecute("DELETE FROM `character_queststatus` WHERE `guid` = '%u'", lowGuid);
@@ -14878,6 +14891,7 @@ bool Player::LoadFromDB(ObjectGuid guid, SqlQueryHolder* holder)
 
     m_honorMgr.Load(holder->TakeResult(PLAYER_LOGIN_QUERY_LOADHONORCP));
     _LoadBoundInstances(holder->TakeResult(PLAYER_LOGIN_QUERY_LOADBOUNDINSTANCES));
+    _LoadDungeonResume(holder->TakeResult(PLAYER_LOGIN_QUERY_LOADDUNGEONRESUME));
     _LoadBGData(holder->TakeResult(PLAYER_LOGIN_QUERY_LOADBGDATA));
 
     _LoadGuild(holder->TakeResult(PLAYER_LOGIN_QUERY_LOADGUILD));
@@ -14902,6 +14916,35 @@ bool Player::LoadFromDB(ObjectGuid guid, SqlQueryHolder* holder)
         SetBattleGroundId(0, BATTLEGROUND_TYPE_NONE);
         // remove outdated DB data in DB
         _SaveBGData();
+    }
+
+    // Solo: re-attach a lost personal bind before CreateMap, otherwise a
+    // missing character_instance makes CreateInstance spin a fresh dungeon.
+    {
+        MapEntry const* loginMap = sMapStorage.LookupEntry<MapEntry>(GetMapId());
+        uint32 savedInstance = fields[57].GetUInt32();
+        if (loginMap && loginMap->IsDungeon() && savedInstance &&
+            !sWorld.getConfig(CONFIG_BOOL_INSTANCE_AUTO_RESET))
+        {
+            DungeonPersistentState* bound = GetBoundInstanceSaveForSelfOrGroup(GetMapId());
+            if (!bound || bound->GetInstanceId() != savedInstance)
+            {
+                if (MapPersistentState* recovered = sMapPersistentStateMgr.GetPersistentState(GetMapId(), savedInstance))
+                {
+                    if (DungeonPersistentState* dungeon = dynamic_cast<DungeonPersistentState*>(recovered))
+                        BindToInstance(dungeon, false, false);
+                }
+                else if (std::unique_ptr<QueryResult> inst = CharacterDatabase.PQuery(
+                             "SELECT `reset_time` FROM `instance` WHERE `id` = %u AND `map` = %u",
+                             savedInstance, GetMapId()))
+                {
+                    time_t resetTime = (time_t)inst->Fetch()[0].GetUInt64();
+                    if (DungeonPersistentState* dungeon = (DungeonPersistentState*)sMapPersistentStateMgr.AddPersistentState(
+                            loginMap, savedInstance, resetTime, true, true))
+                        BindToInstance(dungeon, false, false);
+                }
+            }
+        }
     }
 
     // load the player's map here if it's not already loaded
@@ -14972,6 +15015,33 @@ bool Player::LoadFromDB(ObjectGuid guid, SqlQueryHolder* holder)
     {
         // if the player is in an instance and it has been reset in the meantime teleport him to the entrance
         uint32 instanceId = fields[57].GetUInt32();
+        // Solo: group_instance may hold the bind while character_instance was
+        // cleared, or the bind was lost while the instance row remains. Recover
+        // before kicking the character to the exit.
+        if ((!state || state->GetInstanceId() != instanceId) && instanceId &&
+            !sWorld.getConfig(CONFIG_BOOL_INSTANCE_AUTO_RESET))
+        {
+            if (MapPersistentState* recovered = sMapPersistentStateMgr.GetPersistentState(GetMapId(), instanceId))
+            {
+                if (DungeonPersistentState* dungeon = dynamic_cast<DungeonPersistentState*>(recovered))
+                {
+                    BindToInstance(dungeon, false, false);
+                    state = dungeon;
+                }
+            }
+            else if (std::unique_ptr<QueryResult> inst = CharacterDatabase.PQuery(
+                         "SELECT `reset_time` FROM `instance` WHERE `id` = %u AND `map` = %u",
+                         instanceId, GetMapId()))
+            {
+                time_t resetTime = (time_t)inst->Fetch()[0].GetUInt64();
+                if (DungeonPersistentState* dungeon = (DungeonPersistentState*)sMapPersistentStateMgr.AddPersistentState(
+                        mapEntry, instanceId, resetTime, true, true))
+                {
+                    BindToInstance(dungeon, false, false);
+                    state = dungeon;
+                }
+            }
+        }
         if (!state || state->GetInstanceId() != instanceId)
         {
             AreaTriggerTeleport const* at = sObjectMgr.GetGoBackTrigger(GetMapId());
@@ -15995,6 +16065,79 @@ void Player::_LoadBoundInstances(std::unique_ptr<QueryResult> result)
     }
 }
 
+void Player::_LoadDungeonResume(std::unique_ptr<QueryResult> result)
+{
+    m_dungeonResume.clear();
+    if (!result)
+        return;
+
+    do
+    {
+        Field* fields = result->Fetch();
+        uint32 mapId = fields[0].GetUInt32();
+        DungeonResumePos pos;
+        pos.instanceId = fields[1].GetUInt32();
+        pos.x = fields[2].GetFloat();
+        pos.y = fields[3].GetFloat();
+        pos.z = fields[4].GetFloat();
+        pos.o = fields[5].GetFloat();
+        m_dungeonResume[mapId] = pos;
+    }
+    while (result->NextRow());
+}
+
+void Player::SaveDungeonResume()
+{
+    if (IsBot())
+        return;
+
+    uint32 mapId = GetMapId();
+    MapEntry const* mapEntry = sMapStorage.LookupEntry<MapEntry>(mapId);
+    if (!mapEntry || !mapEntry->IsDungeon())
+        return;
+
+    DungeonResumePos pos;
+    pos.instanceId = GetInstanceId();
+    pos.x = GetPositionX();
+    pos.y = GetPositionY();
+    pos.z = GetPositionZ();
+    pos.o = GetOrientation();
+    m_dungeonResume[mapId] = pos;
+
+    CharacterDatabase.PExecute(
+        "REPLACE INTO `character_dungeon_resume` (`guid`, `map`, `instance`, `position_x`, `position_y`, `position_z`, `orientation`) "
+        "VALUES (%u, %u, %u, %f, %f, %f, %f)",
+        GetGUIDLow(), mapId, pos.instanceId, pos.x, pos.y, pos.z, pos.o);
+}
+
+bool Player::ApplyDungeonResume(uint32 mapId, float& x, float& y, float& z, float& o)
+{
+    auto itr = m_dungeonResume.find(mapId);
+    if (itr == m_dungeonResume.end())
+        return false;
+
+    DungeonPersistentState* bound = GetBoundInstanceSaveForSelfOrGroup(mapId);
+    if (!bound || bound->GetInstanceId() != itr->second.instanceId)
+        return false;
+
+    if (!MapManager::IsValidMapCoord(mapId, itr->second.x, itr->second.y, itr->second.z, itr->second.o))
+        return false;
+
+    x = itr->second.x;
+    y = itr->second.y;
+    z = itr->second.z;
+    o = itr->second.o;
+    return true;
+}
+
+void Player::ClearDungeonResume(uint32 mapId)
+{
+    m_dungeonResume.erase(mapId);
+    CharacterDatabase.PExecute(
+        "DELETE FROM `character_dungeon_resume` WHERE `guid` = %u AND `map` = %u",
+        GetGUIDLow(), mapId);
+}
+
 InstancePlayerBind* Player::GetBoundInstance(uint32 mapId)
 {
     std::lock_guard<std::mutex> guard(m_boundInstancesMutex);
@@ -16022,6 +16165,8 @@ void Player::UnbindInstance(BoundInstancesMap::iterator &itr, bool unload)
         itr->second.state->ForgetCharacterBind(GetGUIDLow());
         itr->second.state->RemovePlayer(this);              // state can become invalid
         m_boundInstances.erase(itr++);
+        // Resume stays: group conversion also unbinds the personal copy of the
+        // same instance. ResetInstance clears it when the run is actually wiped.
     }
 }
 
@@ -16100,9 +16245,26 @@ void Player::KeepInstanceProgress()
         }
     }
 
+    // Pin the dungeon we are standing in even when the group bind list was
+    // empty (solo, or ConvertInstancesToGroup already cleared the personal copy).
     if (Map* map = FindMap())
-        if (InstanceData* data = map->GetInstanceData())
+    {
+        if (map->IsNonRaidDungeon())
+        {
+            if (DungeonPersistentState* state = ((DungeonMap*)map)->GetPersistanceState())
+            {
+                InstancePlayerBind* mine = GetBoundInstance(map->GetId());
+                if (!mine)
+                    BindToInstance(state, false, false);
+                else if (mine->state == state)
+                    state->NoteCharacterBind(GetGUIDLow());
+            }
+            if (InstanceData* data = map->GetInstanceData())
+                data->SaveToDB();
+        }
+        else if (InstanceData* data = map->GetInstanceData())
             data->SaveToDB();
+    }
 }
 
 DungeonPersistentState* Player::GetBoundInstanceSaveForSelfOrGroup(uint32 mapId)
@@ -16219,8 +16381,10 @@ void Player::ConvertInstancesToGroup(Player* player, Group* group, ObjectGuid pl
             if (group)
                 group->BindToInstance(itr->second.state, itr->second.perm, true);
 
-            // permanent binds are not removed
-            if (!itr->second.perm)
+            // Solo realms keep the personal bind: ConvertInstancesToGroup used
+            // to wipe character_instance, so a logout before KeepInstanceProgress
+            // (or a missed copy) made the next login a fresh dungeon.
+            if (!itr->second.perm && sWorld.getConfig(CONFIG_BOOL_INSTANCE_AUTO_RESET))
             {
                 // increments itr in call
                 player->UnbindInstance(itr, true);
@@ -16238,7 +16402,7 @@ void Player::ConvertInstancesToGroup(Player* player, Group* group, ObjectGuid pl
         CharacterDatabase.PExecute("INSERT INTO `group_instance` SELECT `guid`, `instance`, `permanent` FROM `character_instance` WHERE `guid` = '%u'", playerLowGuid);
 
     // the following should not get executed when changing leaders
-    if (!player || has_solo)
+    if ((!player || has_solo) && sWorld.getConfig(CONFIG_BOOL_INSTANCE_AUTO_RESET))
         CharacterDatabase.PExecute("DELETE FROM `character_instance` WHERE `guid` = '%u' AND `permanent` = 0", playerLowGuid);
 }
 
@@ -17298,18 +17462,20 @@ bool Player::ResetOneInstance(uint32 mapId)
 void Player::ResetInstance(InstanceResetMethod method, BoundInstancesMap::iterator& itr)
 {
     DungeonPersistentState* state = itr->second.state;
+    uint32 mapId = state->GetMapId();
 
     // if the map is loaded, reset it
-    if (Map* map = sMapMgr.FindMap(state->GetMapId(), state->GetInstanceId()))
+    if (Map* map = sMapMgr.FindMap(mapId, state->GetInstanceId()))
         if (map->IsDungeon())
             ((DungeonMap*)map)->Reset(method);
 
     // since this is a solo instance there should not be any players inside
     if (method == INSTANCE_RESET_ALL)
-        SendResetInstanceSuccess(state->GetMapId());
+        SendResetInstanceSuccess(mapId);
 
     state->DeleteFromDB();
     m_boundInstances.erase(itr++);
+    ClearDungeonResume(mapId);
 
     // the following should remove the instance save from the manager and delete it as well
     state->RemovePlayer(this);
