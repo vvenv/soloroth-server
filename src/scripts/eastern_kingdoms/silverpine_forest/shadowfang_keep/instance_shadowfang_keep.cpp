@@ -350,6 +350,12 @@ struct instance_shadowfang_keep : public ScriptedInstance
             (m_auiEncounter[2] == DONE || m_auiEncounter[3] == DONE))
             m_auiEncounter[1] = DONE;
 
+        // KeepInstanceProgress SaveToDB must not wipe a loaded row.
+        std::ostringstream saveStream;
+        saveStream << m_auiEncounter[0] << " " << m_auiEncounter[1] << " " << m_auiEncounter[2] << " " << m_auiEncounter[3]
+                   << " " << m_auiEncounter[4] << " " << m_auiEncounter[5];
+        strInstData = saveStream.str();
+
         OUT_LOAD_INST_DATA_COMPLETE;
     }
 };

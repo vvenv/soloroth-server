@@ -391,6 +391,11 @@ void DungeonProgress::Load()
     std::unordered_map<uint32, float> sumX, sumY;
     std::unordered_map<uint32, uint32> sumN;
 
+    // Some bosses have no creature row (e.g. Sneed 643 comes from shredder 642).
+    // Map the spawn entry we should read for XY / respawn checks.
+    std::unordered_map<uint32, uint32> spawnAlias;
+    spawnAlias[643] = 642; // Sneed <- Sneed's Shredder
+
     auto worker = [&](CreatureDataPair const& pair) -> bool
     {
         CreatureData const& data = pair.second;
@@ -398,14 +403,23 @@ void DungeonProgress::Load()
         {
             if (!id)
                 continue;
-            auto expect = expectMap.find(id);
+            uint32 bossId = id;
+            for (auto const& a : spawnAlias)
+                if (a.second == id)
+                    bossId = a.first;
+            auto expect = expectMap.find(bossId);
             if (expect == expectMap.end() || data.position.mapId != expect->second)
-                continue;
-            m_spawns[id].push_back(pair.first);
-            sumX[id] += data.position.x;
-            sumY[id] += data.position.y;
-            sumN[id] += 1;
-            Boss const* boss = m_byEntry[id];
+            {
+                expect = expectMap.find(id);
+                if (expect == expectMap.end() || data.position.mapId != expect->second)
+                    continue;
+                bossId = id;
+            }
+            m_spawns[bossId].push_back(pair.first);
+            sumX[bossId] += data.position.x;
+            sumY[bossId] += data.position.y;
+            sumN[bossId] += 1;
+            Boss const* boss = m_byEntry[bossId];
             for (Wing& wing : m_wings)
             {
                 if (wing.map != boss->map || wing.wing != boss->wing)

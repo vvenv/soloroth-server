@@ -103,27 +103,78 @@ struct instance_deadmines : public ScriptedInstance
         }
     }
 
+    void PersistEncounters()
+    {
+        strInstData = GenSaveData(m_auiEncounter, INSTANCE_DM_MAX_ENCOUNTER - 1);
+        OUT_SAVE_INST_DATA;
+        SaveToDB();
+        OUT_SAVE_INST_DATA_COMPLETE;
+    }
+
     void OpenDoorIfDone(uint32 encounter, uint64 doorGuid)
     {
         if (m_auiEncounter[encounter] != DONE || !doorGuid)
             return;
         if (GameObject* pGo = instance->GetGameObject(doorGuid))
             if (pGo->GetGoState() != GO_STATE_ACTIVE)
-                DoUseDoorOrButton(doorGuid);
+                DoOpenDoor(doorGuid);
+    }
+
+    // Bosses that open doors leave a creature_respawn row; use it when the
+    // encounter string was wiped by an empty Save() after logout.
+    bool IsSpawnDown(uint32 entry) const
+    {
+        MapPersistentState* state = instance->GetPersistentState();
+        if (!state)
+            return false;
+        time_t now = time(nullptr);
+        bool down = false;
+        auto worker = [&](CreatureDataPair const& pair) -> bool
+        {
+            if (pair.second.position.mapId != instance->GetId())
+                return false;
+            if (!pair.second.HasCreatureId(entry))
+                return false;
+            if (state->GetCreatureRespawnTime(pair.first) > now)
+            {
+                down = true;
+                return true;
+            }
+            return false;
+        };
+        sObjectMgr.DoCreatureData(worker);
+        return down;
+    }
+
+    void SyncDoorsFromRespawns()
+    {
+        bool changed = false;
+        if (m_auiEncounter[TYPE_RHAHKZOR_DOOR] != DONE && IsSpawnDown(NPC_RHAHKZOR))
+        {
+            m_auiEncounter[TYPE_RHAHKZOR_DOOR] = DONE;
+            m_isRhahkDead = true;
+            changed = true;
+        }
+        if (m_auiEncounter[TYPE_SNEED_DOOR] != DONE && IsSpawnDown(NPC_SNEED))
+        {
+            m_auiEncounter[TYPE_SNEED_DOOR] = DONE;
+            changed = true;
+        }
+        if (m_auiEncounter[TYPE_GILNID_DOOR] != DONE && IsSpawnDown(NPC_GILDNID))
+        {
+            m_auiEncounter[TYPE_GILNID_DOOR] = DONE;
+            m_isGilnidDead = true;
+            changed = true;
+        }
+        if (changed)
+            PersistEncounters();
     }
 
     void NoteDoorBossDone(uint32 encounter, uint64 doorGuid)
     {
         m_auiEncounter[encounter] = DONE;
         OpenDoorIfDone(encounter, doorGuid);
-
-        OUT_SAVE_INST_DATA;
-        std::ostringstream saveStream;
-        saveStream << m_auiEncounter[0] << " " << m_auiEncounter[1] << " "
-                   << m_auiEncounter[2] << " " << m_auiEncounter[3];
-        strInstData = saveStream.str();
-        SaveToDB();
-        OUT_SAVE_INST_DATA_COMPLETE;
+        PersistEncounters();
     }
 
     void OnCreatureDeath(Creature *who) override
@@ -193,15 +244,7 @@ struct instance_deadmines : public ScriptedInstance
             }
             m_auiEncounter[TYPE_DEFIAS_ENDDOOR] = uiData;
             if (uiData == DONE || uiData == SPECIAL || uiData == FAIL)
-            {
-                OUT_SAVE_INST_DATA;
-                std::ostringstream saveStream;
-                saveStream << m_auiEncounter[0] << " " << m_auiEncounter[1] << " "
-                           << m_auiEncounter[2] << " " << m_auiEncounter[3];
-                strInstData = saveStream.str();
-                SaveToDB();
-                OUT_SAVE_INST_DATA_COMPLETE;
-            }
+                PersistEncounters();
         }
         else if (uiType == GUN_POWDER_EVENT)
             m_isGunPowderEventDone = uiData;
@@ -228,14 +271,20 @@ struct instance_deadmines : public ScriptedInstance
 
     char const* Save() override
     {
+        // Never return empty: KeepInstanceProgress calls SaveToDB and would
+        // wipe a good row if strInstData was never filled after Load.
+        if (strInstData.empty())
+            strInstData = GenSaveData(m_auiEncounter, INSTANCE_DM_MAX_ENCOUNTER - 1);
         return strInstData.c_str();
     }
 
     void Load(char const* chrIn) override
     {
-        if (!chrIn)
+        if (!chrIn || !*chrIn)
         {
             OUT_LOAD_INST_DATA_FAIL;
+            SyncDoorsFromRespawns();
+            strInstData = GenSaveData(m_auiEncounter, INSTANCE_DM_MAX_ENCOUNTER - 1);
             return;
         }
 
@@ -258,11 +307,14 @@ struct instance_deadmines : public ScriptedInstance
                 i = NOT_STARTED;
         }
 
+        SyncDoorsFromRespawns();
+
         if (m_auiEncounter[TYPE_RHAHKZOR_DOOR] == DONE)
             m_isRhahkDead = true;
         if (m_auiEncounter[TYPE_GILNID_DOOR] == DONE)
             m_isGilnidDead = true;
 
+        strInstData = GenSaveData(m_auiEncounter, INSTANCE_DM_MAX_ENCOUNTER - 1);
         OUT_LOAD_INST_DATA_COMPLETE;
     }
 
