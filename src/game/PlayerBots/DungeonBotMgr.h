@@ -2,6 +2,11 @@
  * Fills a player's party with party bots when they enter a five-player
  * dungeon, and sends the bots home when they leave it alive.
  *
+ * Tracks the last "safe" spot the player walked through (outside hostile
+ * aggro radii). After a full party wipe and a short wait for mobs to evade,
+ * teleports the player and same-map bots there and resurrects them at half
+ * health, so standing up in the pack does not re-pull.
+ *
  * The manager polls the online players from the world thread (it runs from
  * World::Update next to sPlayerBotMgr), so no teleport or map code needs a
  * hook and nothing touches a map from a map thread.
@@ -70,7 +75,23 @@ private:
     {
         uint32 lastMap = UINT32_MAX;
         uint32 fillAt = 0;          // world ms; 0 = no fill pending
+        // Last spot outside hostile aggro range in this dungeon instance.
+        bool hasSafe = false;
+        uint32 safeMap = 0;
+        uint32 safeInstance = 0;
+        float safeX = 0.f;
+        float safeY = 0.f;
+        float safeZ = 0.f;
+        float safeO = 0.f;
+        uint32 wipeAt = 0;          // world ms when full wipe seen; 0 = none
     };
+
+    void ClearSafe(Watch& w);
+    void SeedSafe(Watch& w, Player* pPlayer);
+    void MaybeUpdateSafe(Watch& w, Player* pPlayer);
+    bool IsSafeSpot(Player* pPlayer) const;
+    bool PartyWipedOnMap(Player* pPlayer) const;
+    void RevivePartyAtSafe(Player* pPlayer, Watch& w);
     struct AutoBot
     {
         CombatBotRoles role = ROLE_INVALID;

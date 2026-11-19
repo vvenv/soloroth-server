@@ -909,14 +909,37 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         }
         else
         {
-            bool memberInCombat = false;
-            if (Group* pGroup = me->GetGroup())
+            // Full wipe in a five-player dungeon: DungeonBotMgr teleports the
+            // party to the last safe spot. Standing up here would re-pull.
+            bool partyWipe = false;
+            if (me->GetMap() && me->GetMap()->IsNonRaidDungeon())
             {
-                for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+                partyWipe = true;
+                if (Group* pGroup = me->GetGroup())
                 {
-                    if (Player* pMember = itr->getSource())
-                        if (pMember != me && pMember->IsInCombat())
-                            memberInCombat = true;
+                    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+                    {
+                        if (Player* pMember = itr->getSource())
+                            if (pMember->GetMap() == me->GetMap() && pMember->IsAlive())
+                            {
+                                partyWipe = false;
+                                break;
+                            }
+                    }
+                }
+            }
+
+            bool memberInCombat = false;
+            if (!partyWipe)
+            {
+                if (Group* pGroup = me->GetGroup())
+                {
+                    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+                    {
+                        if (Player* pMember = itr->getSource())
+                            if (pMember != me && pMember->IsInCombat())
+                                memberInCombat = true;
+                    }
                 }
             }
 
@@ -924,7 +947,7 @@ void PartyBotAI::UpdateAI(uint32 const diff)
             // here would teleport us out to them (the follow catch-up).
             bool const leaderGhostOutside = pLeader && !pLeader->IsAlive() && pLeader->GetMapId() != me->GetMapId();
 
-            if (memberInCombat || leaderGhostOutside)
+            if (partyWipe || memberInCombat || leaderGhostOutside)
                 m_corpseSeconds = 0;
             else
             {
@@ -964,8 +987,14 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         {
             // Wand is autorepeat: drop it when someone needs a heal/shield so that
             // UpdateInCombatAI_Priest can act. Otherwise keep shooting.
+            // Weakened Soul makes the self immune to MECHANIC_SHIELD: without that
+            // check CanTryToCastSpell stays true after the absorb falls off, and the
+            // wand is interrupted every tick while DoCastSpell keeps failing.
+            bool const canSelfShield = m_spells.priest.pPowerWordShield &&
+                !me->IsImmuneToMechanic(MECHANIC_SHIELD) &&
+                CanTryToCastSpell(me, m_spells.priest.pPowerWordShield);
             bool const needCare =
-                (m_spells.priest.pPowerWordShield && CanTryToCastSpell(me, m_spells.priest.pPowerWordShield)) ||
+                canSelfShield ||
                 SelectShieldTarget() ||
                 SelectHealTarget(60.0f, 80.0f) ||
                 SelectPeriodicHealTarget(80.0f, 90.0f);
@@ -2297,6 +2326,7 @@ bool PartyBotAI::TryShootWand(Unit* pVictim)
 void PartyBotAI::UpdateInCombatAI_Priest()
 {
     if (m_spells.priest.pPowerWordShield &&
+        !me->IsImmuneToMechanic(MECHANIC_SHIELD) &&
         CanTryToCastSpell(me, m_spells.priest.pPowerWordShield))
     {
         if (DoCastSpell(me, m_spells.priest.pPowerWordShield) == SPELL_CAST_OK)

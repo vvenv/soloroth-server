@@ -7,6 +7,7 @@
 #include "PartyBotAI.h"
 #include "PlayerBotMgr.h"
 #include "Player.h"
+#include "Creature.h"
 #include "Group.h"
 #include "Map.h"
 #include "World.h"
@@ -16,7 +17,11 @@
 #include "Database/DatabaseEnv.h"
 #include "Util.h"
 #include "Utilities/Random.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
+#include "CellImpl.h"
 #include <algorithm>
+#include <list>
 #include <vector>
 
 namespace
@@ -104,6 +109,11 @@ namespace
     uint32 const FILL_GIVE_UP_MS = 120000;
     // A bot that never shows up in the group is forgotten after this.
     uint32 const BOT_LOGIN_GRACE_MS = 30000;
+    // After a full wipe, wait for mobs to evade before safe-spot revive.
+    uint32 const WIPE_REVIVE_DELAY_MS = 8000;
+    float const SAFE_AGGRO_MARGIN = 3.0f;
+    float const SAFE_SEARCH_RANGE = 40.0f;
+    uint32 const SPELL_HONORLESS_TARGET = 2479;
     uint32 const PARTY_SIZE = 5;
     uint8 const NO_PREFERENCE = 0;  // no class
 
@@ -715,6 +725,130 @@ uint32 DungeonBotMgr::Dismiss(Player* pPlayer, bool autoOnly)
     return count;
 }
 
+// ---------------------------------------------------------- safe / wipe rez --
+
+void DungeonBotMgr::ClearSafe(Watch& w)
+{
+    w.hasSafe = false;
+    w.safeMap = 0;
+    w.safeInstance = 0;
+    w.safeX = w.safeY = w.safeZ = w.safeO = 0.f;
+}
+
+void DungeonBotMgr::SeedSafe(Watch& w, Player* pPlayer)
+{
+    if (!pPlayer || !pPlayer->GetMap())
+        return;
+    w.hasSafe = true;
+    w.safeMap = pPlayer->GetMapId();
+    w.safeInstance = pPlayer->GetInstanceId();
+    w.safeX = pPlayer->GetPositionX();
+    w.safeY = pPlayer->GetPositionY();
+    w.safeZ = pPlayer->GetPositionZ();
+    w.safeO = pPlayer->GetOrientation();
+}
+
+bool DungeonBotMgr::IsSafeSpot(Player* pPlayer) const
+{
+    if (!pPlayer || !pPlayer->IsInWorld())
+        return false;
+
+    std::list<Unit*> hostiles;
+    MaNGOS::AnyHostileUnitInObjectRangeCheck u_check(pPlayer, pPlayer, SAFE_SEARCH_RANGE);
+    MaNGOS::UnitListSearcher<MaNGOS::AnyHostileUnitInObjectRangeCheck> searcher(hostiles, u_check);
+    Cell::VisitAllObjects(pPlayer, searcher, SAFE_SEARCH_RANGE);
+
+    for (Unit* u : hostiles)
+    {
+        Creature* c = u ? u->ToCreature() : nullptr;
+        if (!c || !c->IsAlive() || c->IsCivilian())
+            continue;
+        if (c->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_ATTACKABLE_1 | UNIT_FLAG_NON_ATTACKABLE_2 | UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_IMMUNE_TO_PLAYER))
+            continue;
+        float const aggro = c->GetAttackDistance(pPlayer) + SAFE_AGGRO_MARGIN;
+        if (aggro > 0.f && pPlayer->IsWithinDistInMap(c, aggro))
+            return false;
+    }
+    return true;
+}
+
+void DungeonBotMgr::MaybeUpdateSafe(Watch& w, Player* pPlayer)
+{
+    if (!pPlayer || !pPlayer->IsAlive() || pPlayer->IsInCombat())
+        return;
+    if (!IsSafeSpot(pPlayer))
+        return;
+    SeedSafe(w, pPlayer);
+}
+
+bool DungeonBotMgr::PartyWipedOnMap(Player* pPlayer) const
+{
+    if (!pPlayer || pPlayer->IsAlive())
+        return false;
+    Map* pMap = pPlayer->GetMap();
+    if (!pMap)
+        return false;
+
+    Group* pGroup = pPlayer->GetGroup();
+    if (!pGroup)
+        return true;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember->GetMap() != pMap)
+            continue;
+        if (pMember->IsAlive())
+            return false;
+    }
+    return true;
+}
+
+void DungeonBotMgr::RevivePartyAtSafe(Player* pPlayer, Watch& w)
+{
+    if (!pPlayer || !w.hasSafe)
+        return;
+
+    uint32 const mapId = w.safeMap;
+    float const x = w.safeX;
+    float const y = w.safeY;
+    float const z = w.safeZ;
+    float const o = w.safeO;
+
+    auto reviveOne = [&](Player* p)
+    {
+        if (!p || p->IsAlive() || !p->IsInWorld() || p->IsBeingTeleported())
+            return;
+        if (p->GetMapId() != mapId)
+            return;
+
+        p->TeleportTo(mapId, x, y, z, o);
+        if (!p->IsAlive())
+        {
+            p->ResurrectPlayer(0.5f);
+            p->SpawnCorpseBones();
+        }
+        if (p->IsBot())
+            p->CastSpell(p, SPELL_HONORLESS_TARGET, true);
+    };
+
+    reviveOne(pPlayer);
+    if (Group* pGroup = pPlayer->GetGroup())
+    {
+        for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* pMember = itr->getSource();
+            if (pMember && pMember != pPlayer)
+                reviveOne(pMember);
+        }
+    }
+
+    bool const zh = IsZh(pPlayer->GetSession());
+    ChatHandler(pPlayer).SendSysMessage(zh
+        ? "团灭了。队伍已在最近的安全点复活。"
+        : "Party wiped. The group resurrected at the last safe spot.");
+}
+
 // ------------------------------------------------------------------- update --
 
 void DungeonBotMgr::Update(uint32 diff)
@@ -748,11 +882,17 @@ void DungeonBotMgr::Update(uint32 diff)
         {
             w.lastMap = pMap->GetId();
             w.fillAt = (inDungeon && IsAutoFill(pPlayer)) ? m_now + FILL_DELAY_MS : 0;
+            w.wipeAt = 0;
+            ClearSafe(w);
+            if (inDungeon && pPlayer->IsAlive())
+                SeedSafe(w, pPlayer);
         }
 
         if (!inDungeon)
         {
             w.fillAt = 0;
+            w.wipeAt = 0;
+            ClearSafe(w);
             // Out of the dungeon on their feet: the dungeon's bots go home.
             // A ghost on its corpse run keeps them.
             auto mine = m_autoBots.find(guid.GetCounter());
@@ -767,6 +907,31 @@ void DungeonBotMgr::Update(uint32 diff)
             }
             continue;
         }
+
+        // Safe checkpoint while alive and out of combat.
+        if (pPlayer->IsAlive())
+        {
+            w.wipeAt = 0;
+            if (!w.hasSafe)
+                SeedSafe(w, pPlayer);
+            else
+                MaybeUpdateSafe(w, pPlayer);
+        }
+        else if (PartyWipedOnMap(pPlayer))
+        {
+            if (!w.wipeAt)
+                w.wipeAt = m_now;
+            else if (m_now - w.wipeAt >= WIPE_REVIVE_DELAY_MS)
+            {
+                // No walk recorded (e.g. died on the load-in): use the corpse.
+                if (!w.hasSafe)
+                    SeedSafe(w, pPlayer);
+                RevivePartyAtSafe(pPlayer, w);
+                w.wipeAt = 0;
+            }
+        }
+        else
+            w.wipeAt = 0;
 
         if (!w.fillAt || m_now < w.fillAt)
             continue;
