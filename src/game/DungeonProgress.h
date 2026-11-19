@@ -8,7 +8,8 @@
  *
  *   S                  start
  *   H clears\tname     this wing, and how many times it has been cleared
- *   K 0|1\tname        one boss, in order; 1 = down
+ *   P x\ty             player world XY (for minimap pins)
+ *   K 0|1\tname\tx\ty  one boss, in order; 1 = down; x/y = spawn (optional)
  *   D                  show
  *   X                  not in a tracked instance; hide
  *
@@ -100,10 +101,17 @@ private:
     static void SendAddon(Player* pPlayer, std::string const& text);
     static int Locale(Player* pPlayer);
 
+    struct BossXY
+    {
+        float x = 0;
+        float y = 0;
+    };
+
     std::vector<Boss> m_bosses;
     std::vector<Wing> m_wings;
     std::unordered_map<uint32, Boss const*> m_byEntry;
     std::unordered_map<uint32, std::vector<uint32>> m_spawns; // entry -> creature guid
+    std::unordered_map<uint32, BossXY> m_bossXY;              // entry -> mean spawn XY
     std::unordered_map<uint32, Run> m_runs;                   // by character guid
     std::mutex m_lock;
 };

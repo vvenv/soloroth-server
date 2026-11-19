@@ -356,6 +356,7 @@ void DungeonProgress::Load()
     m_wings.clear();
     m_byEntry.clear();
     m_spawns.clear();
+    m_bossXY.clear();
 
     for (WingInfo const& src : WING_LIST)
     {
@@ -387,6 +388,9 @@ void DungeonProgress::Load()
         if (!wing.finalBoss || wing.bosses.empty())
             sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "DungeonProgress: wing %u/%u has no last boss", wing.map, wing.wing);
 
+    std::unordered_map<uint32, float> sumX, sumY;
+    std::unordered_map<uint32, uint32> sumN;
+
     auto worker = [&](CreatureDataPair const& pair) -> bool
     {
         CreatureData const& data = pair.second;
@@ -398,6 +402,9 @@ void DungeonProgress::Load()
             if (expect == expectMap.end() || data.position.mapId != expect->second)
                 continue;
             m_spawns[id].push_back(pair.first);
+            sumX[id] += data.position.x;
+            sumY[id] += data.position.y;
+            sumN[id] += 1;
             Boss const* boss = m_byEntry[id];
             for (Wing& wing : m_wings)
             {
@@ -414,6 +421,16 @@ void DungeonProgress::Load()
         return false;
     };
     sObjectMgr.DoCreatureData(worker);
+
+    for (auto const& n : sumN)
+    {
+        if (!n.second)
+            continue;
+        BossXY xy;
+        xy.x = sumX[n.first] / float(n.second);
+        xy.y = sumY[n.first] / float(n.second);
+        m_bossXY[n.first] = xy;
+    }
 
     for (Wing& wing : m_wings)
     {
@@ -705,11 +722,22 @@ void DungeonProgress::Push(Player* pPlayer, bool backfill)
             rows.push_back(std::make_pair(run.down.find(boss->entry) != run.down.end(), BossName(boss->entry, loc)));
     }
 
+    float const px = pPlayer->GetPositionX();
+    float const py = pPlayer->GetPositionY();
     std::string const header = "H " + std::to_string(clears) + "\t" + WingName(pWing, loc);
     SendAddon(pPlayer, "S");
     SendAddon(pPlayer, header);
-    for (auto const& row : rows)
-        SendAddon(pPlayer, std::string("K ") + (row.first ? "1" : "0") + "\t" + row.second);
+    SendAddon(pPlayer, "P " + std::to_string(px) + "\t" + std::to_string(py));
+    for (std::size_t i = 0; i < rows.size(); ++i)
+    {
+        auto const& row = rows[i];
+        std::string line = std::string("K ") + (row.first ? "1" : "0") + "\t" + row.second;
+        Boss const* boss = pWing->bosses[i];
+        auto xy = m_bossXY.find(boss->entry);
+        if (xy != m_bossXY.end())
+            line += "\t" + std::to_string(xy->second.x) + "\t" + std::to_string(xy->second.y);
+        SendAddon(pPlayer, line);
+    }
     SendAddon(pPlayer, "D");
 }
 
