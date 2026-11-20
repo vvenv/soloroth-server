@@ -16121,29 +16121,17 @@ void Player::SaveDungeonResume()
     pos.z = GetPositionZ();
     pos.o = GetOrientation();
 
-    // Walking out the front door (or /gd hopping to the stock entrance) used to
-    // overwrite a deeper leave-spot. Keep the farther checkpoint when the new
-    // one sits on the map entrance.
+    // The entrance pad often overlaps the exit areatrigger (BFD AT 259). A
+    // resume there re-fires the exit on the next enter. Never checkpoint on
+    // the pad: a deeper leave-spot stays, and a first leave at the door leaves
+    // no resume so re-entry uses the stock entrance.
     if (AreaTriggerTeleport const* entr = sObjectMgr.GetMapEntranceTrigger(mapId))
     {
-        auto itr = m_dungeonResume.find(mapId);
-        if (itr != m_dungeonResume.end() && itr->second.instanceId == pos.instanceId)
-        {
-            auto dist2 = [](float ax, float ay, float bx, float by)
-            {
-                float const dx = ax - bx;
-                float const dy = ay - by;
-                return dx * dx + dy * dy;
-            };
-            float const ex = entr->destination.x;
-            float const ey = entr->destination.y;
-            float const newD = dist2(pos.x, pos.y, ex, ey);
-            float const oldD = dist2(itr->second.x, itr->second.y, ex, ey);
-            constexpr float kEntranceR = 25.0f;
-            constexpr float kDeeperR = 40.0f;
-            if (newD <= kEntranceR * kEntranceR && oldD >= kDeeperR * kDeeperR)
-                return;
-        }
+        float const dx = pos.x - entr->destination.x;
+        float const dy = pos.y - entr->destination.y;
+        constexpr float kEntranceR = 25.0f;
+        if (dx * dx + dy * dy <= kEntranceR * kEntranceR)
+            return;
     }
 
     m_dungeonResume[mapId] = pos;
@@ -16166,6 +16154,19 @@ bool Player::ApplyDungeonResume(uint32 mapId, float& x, float& y, float& z, floa
 
     if (!MapManager::IsValidMapCoord(mapId, itr->second.x, itr->second.y, itr->second.z, itr->second.o))
         return false;
+
+    // Scrub a resume that lands on the entrance/exit pad (see SaveDungeonResume).
+    if (AreaTriggerTeleport const* entr = sObjectMgr.GetMapEntranceTrigger(mapId))
+    {
+        float const dx = itr->second.x - entr->destination.x;
+        float const dy = itr->second.y - entr->destination.y;
+        constexpr float kEntranceR = 25.0f;
+        if (dx * dx + dy * dy <= kEntranceR * kEntranceR)
+        {
+            ClearDungeonResume(mapId);
+            return false;
+        }
+    }
 
     x = itr->second.x;
     y = itr->second.y;
