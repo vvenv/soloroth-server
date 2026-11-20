@@ -4836,7 +4836,7 @@ void PartyBotAI::UpdateInCombatAI_Hunter()
         }
 
         if (!softPull && m_spells.hunter.pVolley &&
-           (me->GetEnemyCountInRadiusAround(pVictim, 10.0f) > 2) &&
+           (GetCombatEnemyCountInRadiusAround(pVictim, 10.0f) > 2) &&
             CanTryToCastSpell(pVictim, m_spells.hunter.pVolley))
         {
             if (DoCastSpell(pVictim, m_spells.hunter.pVolley) == SPELL_CAST_OK)
@@ -5085,8 +5085,10 @@ void PartyBotAI::UpdateInCombatAI_Mage()
                 return;
         }
 
+        // Only a pack already fighting — idle trash in range must not count or
+        // solo grind Blizzards a camp and drinks after every pull.
         if (m_spells.mage.pBlizzard &&
-           (me->GetEnemyCountInRadiusAround(pVictim, 10.0f) > 2) &&
+           (GetCombatEnemyCountInRadiusAround(pVictim, 10.0f) > 2) &&
             CanTryToCastSpell(pVictim, m_spells.mage.pBlizzard))
         {
             if (DoCastSpell(pVictim, m_spells.mage.pBlizzard) == SPELL_CAST_OK)
@@ -5608,7 +5610,7 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
         }
 
         if (m_spells.warlock.pRainOfFire &&
-           (me->GetEnemyCountInRadiusAround(pVictim, 10.0f) > 2) &&
+           (GetCombatEnemyCountInRadiusAround(pVictim, 10.0f) > 2) &&
             CanTryToCastSpell(pVictim, m_spells.warlock.pRainOfFire))
         {
             if (DoCastSpell(pVictim, m_spells.warlock.pRainOfFire) == SPELL_CAST_OK)
@@ -6745,7 +6747,7 @@ void PartyBotAI::UpdateInCombatAI_Druid()
                 return;
 
             if (m_spells.druid.pHurricane &&
-               (me->GetEnemyCountInRadiusAround(pVictim, 10.0f) > 2) &&
+               (GetCombatEnemyCountInRadiusAround(pVictim, 10.0f) > 2) &&
                 CanTryToCastSpell(pVictim, m_spells.druid.pHurricane))
             {
                 if (DoCastSpell(pVictim, m_spells.druid.pHurricane) == SPELL_CAST_OK)

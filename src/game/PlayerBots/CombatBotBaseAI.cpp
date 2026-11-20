@@ -2371,6 +2371,27 @@ uint8 CombatBotBaseAI::GetAttackersInRangeCount(float range) const
     return count;
 }
 
+uint8 CombatBotBaseAI::GetCombatEnemyCountInRadiusAround(Unit const* pTarget, float radius) const
+{
+    if (!pTarget)
+        return 0;
+
+    // GetEnemyCountInRadiusAround sees every unfriendly in range, including idle
+    // camp mobs. Blizzard / Volley / Rain on that count pulls the neighborhood.
+    std::list<Unit*> targets;
+    me->GetEnemyListInRadiusAround(pTarget, radius, targets);
+    uint8 count = 0;
+    for (Unit* pEnemy : targets)
+    {
+        if (!pEnemy || !pEnemy->IsInCombat())
+            continue;
+        if (pEnemy->HasBreakableByDamageCrowdControlAura())
+            continue;
+        ++count;
+    }
+    return count;
+}
+
 Unit* CombatBotBaseAI::SelectAttackerDifferentFrom(Unit const* pExcept) const
 {
     for (const auto& pTarget : me->GetAttackers())

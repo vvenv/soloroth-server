@@ -105,6 +105,8 @@ public:
     void LearnRandomTalents();
     
     uint8 GetAttackersInRangeCount(float range) const;
+    // Hostiles already in combat near pTarget — not idle camp trash in range.
+    uint8 GetCombatEnemyCountInRadiusAround(Unit const* pTarget, float radius) const;
     Unit* SelectAttackerDifferentFrom(Unit const* pExcept) const;
     Unit* SelectHealTarget(float selfHealPercent = 100.0f, float groupHealPercent = 100.0f) const;
     Unit* SelectPeriodicHealTarget(float selfHealPercent = 100.0f, float groupHealPercent = 100.0f) const;
