@@ -153,6 +153,8 @@ public:
     bool TryHealerStackWithTank();
     // Ranged: step apart when stacked on another party member (cleave / rain).
     bool TryRangedSpread();
+    // Ranged / healer: leave melee like a player (root/slow, then step to the tank).
+    bool TryKeepRangedDistance();
     // Paladin: Blessing of Freedom on a rooted/snared ally (tank/healer first).
     bool TryBlessingOfFreedom();
     // Step out of a hostile AoE cast (Blizzard / Rain of Fire / …) before it lands.

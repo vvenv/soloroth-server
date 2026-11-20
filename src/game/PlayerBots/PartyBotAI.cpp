@@ -243,8 +243,8 @@ bool PartyBotAI::RunAwayFromTarget(Unit* pEnemy)
     if (!pEnemy)
         return false;
 
-    // Dungeon: no long MoveDistance (lava / pits). Ranged / healers just stop
-    // chase and hold the 25 yd band instead of standing in cleave.
+    // Dungeon: no long retreat (lava / pits). Same short MoveDistance as ground
+    // AoE / whirlwind kite — stop chase, step out of cleave, hold the 25 yd band.
     if (me->GetMap() && me->GetMap()->IsDungeon())
     {
         if ((m_role == ROLE_RANGE_DPS || m_role == ROLE_HEALER) &&
@@ -252,13 +252,18 @@ bool PartyBotAI::RunAwayFromTarget(Unit* pEnemy)
             !IsAttackSpeedOverridenForm(me->GetShapeshiftForm()) &&
             me->GetCombatDistance(pEnemy) < 10.0f)
         {
+            if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == DISTANCING_MOTION_TYPE)
+            {
+                me->SetCasterChaseDistance(25.0f);
+                return true;
+            }
             if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
             {
                 me->GetMotionMaster()->Clear(false, true);
                 me->GetMotionMaster()->MoveIdle();
             }
             me->SetCasterChaseDistance(25.0f);
-            return true;
+            return me->GetMotionMaster()->MoveDistance(pEnemy, 12.0f);
         }
         return false;
     }
@@ -2813,6 +2818,10 @@ void PartyBotAI::UpdateInCombatAI()
     if (TryRangedSpread())
         return;
 
+    // Ranged / healer: leave melee (root/slow, then step) before the rotation GCD.
+    if (TryKeepRangedDistance())
+        return;
+
     // Dump threat before the next damaging GCD (Fade / Feign / Cower / …).
     if (TryThreatDump())
         return;
@@ -3502,7 +3511,7 @@ bool PartyBotAI::TryAvoidGroundDamage()
     if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == DISTANCING_MOTION_TYPE)
         return true;
 
-    // Short step — RunAwayFromTarget refuses MoveDistance in dungeons.
+    // Short step — same dungeon-safe MoveDistance as RunAwayFromTarget.
     return me->GetMotionMaster()->MoveDistance(pFrom, 10.0f);
 }
 
@@ -3603,6 +3612,172 @@ bool PartyBotAI::TryRangedSpread()
 
     if (me->GetMotionMaster()->MoveDistance(pTooClose, stepOut))
         m_repositionUntil = WorldTimer::getMSTime() + 3 * IN_MILLISECONDS;
+    return false;
+}
+
+bool PartyBotAI::TryKeepRangedDistance()
+{
+    // Party ranged / healers: do not stand in melee trading hits. Root or slow,
+    // then step toward the tank (or a short dungeon backstep). Bear / cat / enh
+    // melee roles keep swinging.
+    if (IsInDuel())
+        return false;
+    if (m_role != ROLE_RANGE_DPS && m_role != ROLE_HEALER)
+        return false;
+    if (!IsRangedDamageClass(me->GetClass()) ||
+        IsAttackSpeedOverridenForm(me->GetShapeshiftForm()))
+        return false;
+
+    Unit* pEnemy = nullptr;
+    float best = 999.0f;
+    for (Unit* pAttacker : me->GetAttackers())
+    {
+        if (!pAttacker || !pAttacker->IsAlive())
+            continue;
+        float const d = me->GetCombatDistance(pAttacker);
+        if (d < best)
+        {
+            best = d;
+            pEnemy = pAttacker;
+        }
+    }
+
+    if (Unit* pVictim = me->GetVictim())
+    {
+        if (pVictim->IsAlive())
+        {
+            float const d = me->GetCombatDistance(pVictim);
+            if (!pEnemy || d < best)
+            {
+                best = d;
+                pEnemy = pVictim;
+            }
+        }
+    }
+    if (!pEnemy)
+        return false;
+
+    // Healers only leave when something is actually hitting them — otherwise
+    // stay in heal range of the tank.
+    if (m_role == ROLE_HEALER && GetAttackersInRangeCount(10.0f) == 0)
+        return false;
+
+    bool const inMelee = pEnemy->CanReachWithMeleeAutoAttack(me);
+    // Auto Shot / most caster spells lose the dead zone under 8 yd; start a
+    // little earlier when the mob is on us, the way a player backs up.
+    bool const tooClose = best < 8.0f ||
+        (best < 12.0f && pEnemy->GetVictim() == me &&
+         (inMelee || GetAttackersInRangeCount(12.0f) > 0));
+    if (!tooClose)
+        return false;
+
+    bool const distancing =
+        me->GetMotionMaster()->GetCurrentMovementGeneratorType() == DISTANCING_MOTION_TYPE;
+
+    // Instant (or short) tools that make the gap stick — then step.
+    if (!me->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_STUNNED))
+    {
+        switch (me->GetClass())
+        {
+            case CLASS_MAGE:
+                if (m_spells.mage.pFrostNova &&
+                    !pEnemy->HasUnitState(UNIT_STATE_ROOT) &&
+                    !pEnemy->HasUnitState(UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL) &&
+                    CanTryToCastSpell(me, m_spells.mage.pFrostNova) &&
+                    DoCastSpell(me, m_spells.mage.pFrostNova) == SPELL_CAST_OK)
+                    break;
+                if (m_spells.mage.pBlink &&
+                    (me->HasUnitState(UNIT_STATE_CAN_NOT_MOVE) ||
+                     me->HasAuraType(SPELL_AURA_MOD_DECREASE_SPEED)) &&
+                    CanTryToCastSpell(me, m_spells.mage.pBlink) &&
+                    DoCastSpell(me, m_spells.mage.pBlink) == SPELL_CAST_OK)
+                    return true;
+                break;
+            case CLASS_HUNTER:
+                if (GetAttackersInRangeCount(8.0f))
+                {
+                    Unit* pAttacker = *me->GetAttackers().begin();
+                    if (m_spells.hunter.pScareBeast &&
+                        CanTryToCastSpell(pAttacker, m_spells.hunter.pScareBeast) &&
+                        CanUseCrowdControl(m_spells.hunter.pScareBeast, pAttacker) &&
+                        DoCastSpell(pAttacker, m_spells.hunter.pScareBeast) == SPELL_CAST_OK)
+                        return true;
+                    if (m_spells.hunter.pDisengage &&
+                        CanTryToCastSpell(pAttacker, m_spells.hunter.pDisengage) &&
+                        DoCastSpell(pAttacker, m_spells.hunter.pDisengage) == SPELL_CAST_OK)
+                        return true;
+                }
+                if (inMelee && m_spells.hunter.pWingClip &&
+                    CanTryToCastSpell(pEnemy, m_spells.hunter.pWingClip))
+                    DoCastSpell(pEnemy, m_spells.hunter.pWingClip);
+                else if (m_spells.hunter.pConcussiveShot &&
+                    CanTryToCastSpell(pEnemy, m_spells.hunter.pConcussiveShot) &&
+                    DoCastSpell(pEnemy, m_spells.hunter.pConcussiveShot) == SPELL_CAST_OK)
+                    return true;
+                break;
+            case CLASS_WARLOCK:
+                if (m_spells.warlock.pDeathCoil && inMelee &&
+                    CanTryToCastSpell(pEnemy, m_spells.warlock.pDeathCoil) &&
+                    DoCastSpell(pEnemy, m_spells.warlock.pDeathCoil) == SPELL_CAST_OK)
+                    return true;
+                if (m_spells.warlock.pHowlofTerror &&
+                    GetAttackersInRangeCount(10.0f) > 1 &&
+                    CanTryToCastSpell(me, m_spells.warlock.pHowlofTerror) &&
+                    DoCastSpell(me, m_spells.warlock.pHowlofTerror) == SPELL_CAST_OK)
+                    return true;
+                break;
+            case CLASS_PRIEST:
+                if (m_spells.priest.pPsychicScream &&
+                    GetAttackersInRangeCount(8.0f) > 0 &&
+                    CanTryToCastSpell(me, m_spells.priest.pPsychicScream) &&
+                    DoCastSpell(me, m_spells.priest.pPsychicScream) == SPELL_CAST_OK)
+                    return true;
+                break;
+            case CLASS_SHAMAN:
+                if (m_spells.shaman.pFrostShock &&
+                    CanTryToCastSpell(pEnemy, m_spells.shaman.pFrostShock) &&
+                    DoCastSpell(pEnemy, m_spells.shaman.pFrostShock) == SPELL_CAST_OK)
+                    return true;
+                break;
+            case CLASS_DRUID:
+                if ((me->GetShapeshiftForm() == FORM_NONE ||
+                     me->GetShapeshiftForm() == FORM_MOONKIN) &&
+                    m_spells.druid.pEntanglingRoots &&
+                    !pEnemy->HasUnitState(UNIT_STATE_ROOT) &&
+                    CanTryToCastSpell(pEnemy, m_spells.druid.pEntanglingRoots) &&
+                    DoCastSpell(pEnemy, m_spells.druid.pEntanglingRoots) == SPELL_CAST_OK)
+                    return true;
+                break;
+            default:
+                break;
+        }
+    }
+
+    // Hold the kite — do not cancel it with Aimed Shot / Shadow Bolt mid-step.
+    if (distancing)
+        return true;
+
+    if (me->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_STUNNED | UNIT_STATE_CAN_NOT_MOVE))
+        return false;
+
+    // Healers finish the heal; DPS drop a cast only when swings are already landing.
+    if (me->IsNonMeleeSpellCasted())
+    {
+        if (m_role == ROLE_HEALER)
+            return false;
+        if (!inMelee && best >= 8.0f)
+            return false;
+        me->InterruptNonMeleeSpells(false);
+    }
+
+    if (!me->IsStopped())
+        me->StopMoving();
+    me->GetMotionMaster()->Clear();
+    if (RunAwayFromTarget(pEnemy))
+    {
+        me->SetCasterChaseDistance(25.0f);
+        return true;
+    }
     return false;
 }
 
@@ -4396,14 +4571,15 @@ void PartyBotAI::UpdateInCombatAI_Hunter()
     if (Unit* pVictim = me->GetVictim())
     {
         float const shootDist = me->GetCombatDistance(pVictim);
-        // Auto Shot is 8–35 yd. Stay in that band: approach only when too far, stand
-        // still when in range (do not keep chasing into melee).
+        // Kiting / Disengage / Clip live in TryKeepRangedDistance. Here: hold the
+        // Auto Shot band, and only melee-fill when rooted inside the dead zone.
         if (shootDist > 30.0f)
         {
             if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
                 BeginChasing(pVictim);
         }
-        else if (shootDist >= 8.0f)
+        else if (shootDist >= 8.0f &&
+                 me->GetMotionMaster()->GetCurrentMovementGeneratorType() != DISTANCING_MOTION_TYPE)
         {
             if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE ||
                 me->IsMoving() || !me->movespline->Finalized())
@@ -4411,6 +4587,43 @@ void PartyBotAI::UpdateInCombatAI_Hunter()
                 me->StopMoving();
                 me->GetMotionMaster()->Clear();
             }
+        }
+        else if (shootDist < 8.0f)
+        {
+            // Stuck in the dead zone (rooted / no path): Monkey + melee fillers.
+            if (m_spells.hunter.pAspectOfTheMonkey &&
+                CanTryToCastSpell(me, m_spells.hunter.pAspectOfTheMonkey))
+            {
+                if (DoCastSpell(me, m_spells.hunter.pAspectOfTheMonkey) == SPELL_CAST_OK)
+                    return;
+            }
+
+            if (m_spells.hunter.pFeignDeath &&
+               (me->GetHealthPercent() < 20.0f) &&
+                CanTryToCastSpell(me, m_spells.hunter.pFeignDeath))
+            {
+                if (DoCastSpell(me, m_spells.hunter.pFeignDeath) == SPELL_CAST_OK)
+                    return;
+            }
+
+            if (pVictim->CanReachWithMeleeAutoAttack(me) ||
+                me->HasUnitState(UNIT_STATE_ROOT))
+            {
+                if (m_spells.hunter.pMongooseBite &&
+                    CanTryToCastSpell(pVictim, m_spells.hunter.pMongooseBite))
+                {
+                    if (DoCastSpell(pVictim, m_spells.hunter.pMongooseBite) == SPELL_CAST_OK)
+                        return;
+                }
+
+                if (m_spells.hunter.pRaptorStrike &&
+                    CanTryToCastSpell(pVictim, m_spells.hunter.pRaptorStrike))
+                {
+                    if (DoCastSpell(pVictim, m_spells.hunter.pRaptorStrike) == SPELL_CAST_OK)
+                        return;
+                }
+            }
+            return;
         }
 
         if (m_spells.hunter.pHuntersMark &&
@@ -4495,82 +4708,10 @@ void PartyBotAI::UpdateInCombatAI_Hunter()
                 return;
         }
 
-        if (GetAttackersInRangeCount(8.0f))
+        if (m_spells.hunter.pAspectOfTheHawk &&
+            CanTryToCastSpell(me, m_spells.hunter.pAspectOfTheHawk))
         {
-            Unit* pAttacker = *me->GetAttackers().begin();
-
-            if (m_spells.hunter.pScareBeast &&
-                CanTryToCastSpell(pAttacker, m_spells.hunter.pScareBeast) &&
-                CanUseCrowdControl(m_spells.hunter.pScareBeast, pAttacker))
-            {
-                if (DoCastSpell(pAttacker, m_spells.hunter.pScareBeast) == SPELL_CAST_OK)
-                    return;
-            }
-
-            if (m_spells.hunter.pDisengage &&
-                CanTryToCastSpell(pAttacker, m_spells.hunter.pDisengage))
-            {
-                if (DoCastSpell(pAttacker, m_spells.hunter.pDisengage) == SPELL_CAST_OK)
-                    return;
-            }
-
-            if (m_spells.hunter.pAspectOfTheMonkey &&
-                CanTryToCastSpell(me, m_spells.hunter.pAspectOfTheMonkey))
-            {
-                if (DoCastSpell(me, m_spells.hunter.pAspectOfTheMonkey) == SPELL_CAST_OK)
-                    return;
-            }
-
-            // Feign on high threat is TryThreatDump; here only as a last-stand.
-            if (m_spells.hunter.pFeignDeath &&
-               (me->GetHealthPercent() < 20.0f) &&
-                CanTryToCastSpell(me, m_spells.hunter.pFeignDeath))
-            {
-                if (DoCastSpell(me, m_spells.hunter.pFeignDeath) == SPELL_CAST_OK)
-                    return;
-            }
-        }
-
-        if (pVictim->CanReachWithMeleeAutoAttack(me))
-        {
-            if (m_spells.hunter.pWingClip &&
-                CanTryToCastSpell(pVictim, m_spells.hunter.pWingClip))
-            {
-                DoCastSpell(pVictim, m_spells.hunter.pWingClip);
-            }
-
-            if (m_spells.hunter.pMongooseBite &&
-                CanTryToCastSpell(pVictim, m_spells.hunter.pMongooseBite))
-            {
-                DoCastSpell(pVictim, m_spells.hunter.pMongooseBite);
-            }
-
-            if (m_spells.hunter.pRaptorStrike &&
-                CanTryToCastSpell(pVictim, m_spells.hunter.pRaptorStrike))
-            {
-                DoCastSpell(pVictim, m_spells.hunter.pRaptorStrike);
-            }
-        }
-        else
-        {
-            if (m_spells.hunter.pAspectOfTheHawk &&
-                CanTryToCastSpell(me, m_spells.hunter.pAspectOfTheHawk))
-            {
-                if (DoCastSpell(me, m_spells.hunter.pAspectOfTheHawk) == SPELL_CAST_OK)
-                    return;
-            }
-        }
-
-        if (!me->HasUnitState(UNIT_STATE_ROOT) &&
-            (me->GetCombatDistance(pVictim) < 8.0f) &&
-            (GetRole() != ROLE_MELEE_DPS) &&
-             me->GetMotionMaster()->GetCurrentMovementGeneratorType() != DISTANCING_MOTION_TYPE &&
-             !(me->GetMap() && me->GetMap()->IsDungeon()))
-        {
-            if (!me->IsStopped())
-                me->StopMoving();
-            me->GetMotionMaster()->Clear();
-            if (RunAwayFromTarget(pVictim))
+            if (DoCastSpell(me, m_spells.hunter.pAspectOfTheHawk) == SPELL_CAST_OK)
                 return;
         }
     }

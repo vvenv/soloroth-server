@@ -3683,8 +3683,8 @@ void CombatBotBaseAI::UpdateVisualHonorRankBasedOnItems()
 void CombatBotBaseAI::BeginChasing(Unit* pVictim) const
 {
     // Hunters / casters hold ~25 yd so they shoot instead of running into melee.
-    // Dungeon kiting into lava is handled by not MoveDistance-backing when already close
-    // (see PartyBotAI::RunAwayFromTarget and the hunter range band).
+    // Dungeon backs off with a short MoveDistance (lava / pits); outdoor uses a
+    // longer step or walks toward the tank (see PartyBotAI::RunAwayFromTarget).
     if ((m_role == ROLE_RANGE_DPS || m_role == ROLE_HEALER) &&
         IsRangedDamageClass(me->GetClass()) &&
        !IsAttackSpeedOverridenForm(me->GetShapeshiftForm()) &&
