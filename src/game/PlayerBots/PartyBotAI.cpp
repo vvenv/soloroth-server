@@ -215,6 +215,10 @@ bool PartyBotAI::UnstickIfFloating()
         return false;
     if (me->IsInWater())
         return false;
+    // WMO dungeons stack floors over water/void; an 80 yd GetHeight often
+    // hits a lower deck (BFD) and would Clear the motion stack empty → ASSERT.
+    if (me->GetMap()->IsDungeon())
+        return false;
 
     float const x = me->GetPositionX();
     float const y = me->GetPositionY();
@@ -232,7 +236,9 @@ bool PartyBotAI::UnstickIfFloating()
     if (!me->movespline->Finalized() && delta < 6.0f)
         return false;
 
+    // Clear(all) empties the stack; always leave Idle or UpdateMotion aborts.
     me->GetMotionMaster()->Clear(false, true);
+    me->GetMotionMaster()->MoveIdle();
     me->StopMoving(true);
     me->NearTeleportTo(x, y, ground + 0.05f, me->GetOrientation());
     return true;
