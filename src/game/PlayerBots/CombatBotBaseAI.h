@@ -115,6 +115,10 @@ public:
     bool IsValidHealTarget(Unit const* pTarget, float healthPercent = 100.0f) const;
     bool IsValidHostileTarget(Unit const* pTarget) const;
     bool IsValidDispelTarget(Unit const* pTarget, SpellEntry const* pSpellEntry) const;
+    // Higher = strip sooner. Fear/charm/silence first; tank beats DPS for the same aura.
+    int GetFriendlyDispelScore(Unit const* pTarget, SpellEntry const* pSpellEntry) const;
+    // Higher = Purge / offensive Dispel Magic first (absorbs, damage buffs, shields).
+    int GetEnemyBuffStripScore(Unit const* pTarget, SpellEntry const* pSpellEntry) const;
     bool FindAndPreHealTarget();
     bool FindAndHealInjuredAlly(float selfHealPercent = 100.0f, float groupHealPercent = 100.0f);
     bool HealInjuredTarget(Unit* pTarget);
@@ -126,6 +130,16 @@ public:
     SpellEntry const* SelectMostEfficientHealingSpell(Unit const* pTarget, int32 missingHealth, std::set<SpellEntry const*, T>& spellList) const;
     int32 GetIncomingdamage(Unit const* pTarget) const;
     bool AreOthersOnSameTarget(ObjectGuid guid, bool checkMelee = true, bool checkSpells = true) const;
+    // myThreat / tankOrVictimThreat. 1.0 = about to rip; 0 = safe.
+    float GetThreatRatio(Unit* pEnemy) const;
+    bool IsNearTankThreat(Unit* pEnemy, float ratio = 0.80f) const;
+    uint32 GetAuraStackCount(Unit const* pTarget, uint32 spellId) const;
+    // Party role of a member (tank / healer), including the human leader guess.
+    bool IsPartyTank(Player const* pMember) const;
+    bool IsPartyHealer(Player const* pMember) const;
+    // Elite / boss / multi-pull / long fight — burn Recklessness, Combustion, etc.
+    bool IsDangerousFight(Unit const* pVictim) const;
+    bool ShouldBurnMajorCooldown(Unit const* pVictim) const;
 
     SpellCastResult DoCastSpell(Unit* pTarget, SpellEntry const* pSpellEntry);
     virtual bool CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const;
@@ -140,12 +154,20 @@ public:
     void EnsureCombatPotions();
     // Instant heal / mana from a potion or healthstone / mana gem. Prefer stones.
     bool UseCombatConsumable(uint32 effect);
+    // True when bags already hold a conjured stone/gem for this effect.
+    bool HasConjuredConsumable(uint32 effect) const;
+    // Free Action / Limited Invulnerability when rooted, snared, or nearly dead.
+    bool TryUtilityConsumable();
     // Blood Fury / Berserking / War Stomp when an elite or packed fight needs it.
     bool TryRacialCombatAbility(Unit* pVictim);
     uint8 GetHighestHonorRankFromEquippedItems() const;
     void UpdateVisualHonorRankBasedOnItems();
     void BeginChasing(Unit* pVictim) const;
-    virtual bool ChaseFromBehind(Unit* /*pVictim*/) const { return m_role == ROLE_MELEE_DPS; }
+    // Melee DPS and healers approach from behind; ranged hold a band instead.
+    virtual bool ChaseFromBehind(Unit* /*pVictim*/) const
+    {
+        return m_role == ROLE_MELEE_DPS || m_role == ROLE_HEALER;
+    }
     bool SummonShamanTotems();
     // True when a party member is feared / charmed / asleep — drop Tremor.
     bool PartyNeedsTremorTotem() const;
@@ -367,6 +389,8 @@ public:
             SpellEntry const* pFeignDeath;
             SpellEntry const* pScareBeast;
             SpellEntry const* pVolley;
+            // Long CD haste — burn on elites / packed pulls only.
+            SpellEntry const* pRapidFire;
         } hunter;
         struct
         {
@@ -394,6 +418,8 @@ public:
             SpellEntry const* pBlizzard;
             SpellEntry const* pBlastWave;
             SpellEntry const* pCombustion;
+            // Highest Conjure Mana * gem the mage knows.
+            SpellEntry const* pConjureManaGem;
         } mage;
         struct
         {
@@ -452,6 +478,8 @@ public:
             SpellEntry const* pCurseofTongues;
             SpellEntry const* pCurseofExhaustion;
             SpellEntry const* pLifeTap;
+            // Highest Create Healthstone rank — restock between pulls.
+            SpellEntry const* pCreateHealthstone;
         } warlock;
         struct
         {
@@ -489,6 +517,9 @@ public:
             SpellEntry const* pSunderArmor;
             SpellEntry const* pConcussionBlow;
             SpellEntry const* pPiercingHowl;
+            // Tank: after dodge/parry/block. Arms filler (not Shield Slam).
+            SpellEntry const* pRevenge;
+            SpellEntry const* pSlam;
         } warrior;
         struct
         {

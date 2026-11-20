@@ -15,9 +15,11 @@
 */
 
 #include "PartyBotAI.h"
+#include "PartyBotEncounter.h"
 #include "Player.h"
 #include "Creature.h"
 #include "CreatureAI.h"
+#include "Bag.h"
 #include "MotionMaster.h"
 #include "ObjectMgr.h"
 #include "PlayerBotMgr.h"
@@ -28,10 +30,12 @@
 #include "Spell.h"
 #include "SpellAuras.h"
 #include "Chat.h"
+#include "Map.h"
 #include "MoveSpline.h"
 #include "Utilities/Random.h"
 
 #include <algorithm>
+#include <cmath>
 #include <random>
 
 enum PartyBotSpells
@@ -44,7 +48,8 @@ enum PartyBotSpells
     PB_SPELL_HONORLESS_TARGET = 2479,
 };
 
-#define PB_UPDATE_INTERVAL 1000
+// Half-second ticks catch Kick / Counterspell windows that a 1s tick misses.
+#define PB_UPDATE_INTERVAL 500
 #define PB_MIN_FOLLOW_DIST 3.0f
 #define PB_MAX_FOLLOW_DIST 6.0f
 #define PB_MIN_FOLLOW_ANGLE 0.0f
@@ -55,6 +60,8 @@ enum PartyBotSpells
 #define PB_CALM_ENGAGE_DIST 8.0f
 // Do not open a pull from farther than Auto Shot / Throw can reach.
 #define PB_PULL_MAX_DIST 40.0f
+// Improved Scorch "Fire Vulnerability" (stacks to 5).
+#define PB_SPELL_FIRE_VULNERABILITY 22959
 
 bool PartyBotAI::OnSessionLoaded(PlayerBotEntry* entry, WorldSession* sess)
 {
@@ -202,20 +209,499 @@ Unit* PartyBotAI::GetDistancingTarget(Unit* pEnemy)
     return pNonTank;
 }
 
+bool PartyBotAI::UnstickIfFloating()
+{
+    if (!me->GetMap() || me->IsTaxiFlying() || me->IsBeingTeleported() || me->GetTransport())
+        return false;
+    if (me->IsInWater())
+        return false;
+
+    float const x = me->GetPositionX();
+    float const y = me->GetPositionY();
+    float const z = me->GetPositionZ();
+    // Default height search is 10 yd; mesa towns (Thunder Bluff) hang higher.
+    float const ground = me->GetMap()->GetHeight(x, y, z, true, 80.0f);
+    if (ground <= INVALID_HEIGHT)
+        return false;
+
+    float const delta = z - ground;
+    if (delta < 2.5f)
+        return false;
+    // Pathfinding on ramps can sit a few yards above mesh mid-move; only yank
+    // a clearly airborne bot while a spline is still running.
+    if (!me->movespline->Finalized() && delta < 6.0f)
+        return false;
+
+    me->GetMotionMaster()->Clear(false, true);
+    me->StopMoving(true);
+    me->NearTeleportTo(x, y, ground + 0.05f, me->GetOrientation());
+    return true;
+}
+
 bool PartyBotAI::RunAwayFromTarget(Unit* pEnemy)
 {
-    // Five-player dungeon: the tank holds aggro. MoveDistance / MonsterMove walk
-    // into lava (Ragefire) and pits; stand and fight instead.
-    if (me->GetMap() && me->GetMap()->IsDungeon())
+    if (!pEnemy)
         return false;
+
+    // Dungeon: no long MoveDistance (lava / pits). Ranged / healers just stop
+    // chase and hold the 25 yd band instead of standing in cleave.
+    if (me->GetMap() && me->GetMap()->IsDungeon())
+    {
+        if ((m_role == ROLE_RANGE_DPS || m_role == ROLE_HEALER) &&
+            IsRangedDamageClass(me->GetClass()) &&
+            !IsAttackSpeedOverridenForm(me->GetShapeshiftForm()) &&
+            me->GetCombatDistance(pEnemy) < 10.0f)
+        {
+            if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
+            {
+                me->GetMotionMaster()->Clear(false, true);
+                me->GetMotionMaster()->MoveIdle();
+            }
+            me->SetCasterChaseDistance(25.0f);
+            return true;
+        }
+        return false;
+    }
 
     if (Unit* pTarget = GetDistancingTarget(pEnemy))
     {
-        me->MonsterMove(pTarget->GetPositionX(), pTarget->GetPositionY(), pTarget->GetPositionZ());
+        me->GetMotionMaster()->MovePoint(0,
+            pTarget->GetPositionX(), pTarget->GetPositionY(), pTarget->GetPositionZ(),
+            MOVE_PATHFINDING | MOVE_EXCLUDE_STEEP_SLOPES);
         return true;
     }
 
     return me->GetMotionMaster()->MoveDistance(pEnemy, 15.0f);
+}
+
+bool PartyBotAI::PartyNeedsRest() const
+{
+    if (me->IsInCombat() || IsInDuel())
+        return false;
+
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return false;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || !pMember->IsAlive() || pMember->GetMap() != me->GetMap())
+            continue;
+        if (pMember->GetDistance(me) > 40.0f)
+            continue;
+        if (pMember->GetHealthPercent() < 60.0f)
+            return true;
+        if (IsPartyHealer(pMember) && pMember->GetPowerType() == POWER_MANA &&
+            pMember->GetPowerPercent(POWER_MANA) < 40.0f)
+            return true;
+    }
+    return false;
+}
+
+bool PartyBotAI::ShouldWaitForPatrol(Unit const* pTarget) const
+{
+    if (!pTarget || me->IsInCombat() || IsEngageAggressive() || IsInDuel())
+        return false;
+    // Leader already swung — the pull is theirs; join in.
+    if (IsLeaderCommittedTo(pTarget))
+        return false;
+    // Commanded pull skips the wait.
+    if (!m_forceEngageGuid.IsEmpty() &&
+        pTarget->GetObjectGuid() == m_forceEngageGuid &&
+        WorldTimer::getMSTime() < m_forceEngageUntil)
+        return false;
+
+    Player const* pLeader = GetPartyLeader();
+    if (!pLeader)
+        return false;
+
+    // Linked-pack / call-for-help bubble around the pull target.
+    float const linkRadius = 12.0f;
+    float const partyDanger = 18.0f;
+    std::list<Unit*> near;
+    me->GetEnemyListInRadiusAround(const_cast<Unit*>(pTarget), linkRadius, near);
+
+    for (Unit* pUnit : near)
+    {
+        if (!pUnit || pUnit == pTarget || !pUnit->IsAlive() || pUnit->IsInCombat())
+            continue;
+        if (!pUnit->IsMoving())
+            continue;
+        // A patrol is already inside party aggro range — wait for it to walk clear.
+        if (pUnit->GetDistance(pLeader) < partyDanger)
+            return true;
+        // Or still close to the selected pack and near the party path.
+        if (pUnit->GetDistance(pLeader) < 30.0f)
+            return true;
+    }
+
+    // Selected mob itself is patrolling past another idle pack near the leader.
+    if (pTarget->IsMoving())
+    {
+        for (Unit* pUnit : near)
+        {
+            if (!pUnit || pUnit == pTarget || !pUnit->IsAlive() || pUnit->IsInCombat())
+                continue;
+            if (pUnit->GetDistance(pLeader) < partyDanger)
+                return true;
+        }
+    }
+    return false;
+}
+
+Player* PartyBotAI::FindPartyTank() const
+{
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return nullptr;
+
+    Player* pBest = nullptr;
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || !pMember->IsAlive())
+            continue;
+        if (!IsPartyTank(pMember))
+            continue;
+        // Prefer an explicit bot tank over a human-with-shield guess.
+        if (PartyBotAI* pAI = dynamic_cast<PartyBotAI*>(pMember->AI()))
+        {
+            if (pAI->m_role == ROLE_TANK)
+                return pMember;
+        }
+        if (!pBest)
+            pBest = pMember;
+    }
+    return pBest;
+}
+
+bool PartyBotAI::AreAllHostilesOnTank(Unit const* pAround, float radius) const
+{
+    if (!pAround || IsInDuel())
+        return true;
+
+    Player* pTank = FindPartyTank();
+    if (!pTank)
+        return true;
+
+    std::list<Unit*> targets;
+    me->GetEnemyListInRadiusAround(const_cast<Unit*>(pAround), radius, targets);
+    for (Unit* pEnemy : targets)
+    {
+        if (!pEnemy || !pEnemy->IsInCombat())
+            continue;
+        if (pEnemy->HasBreakableByDamageCrowdControlAura())
+            continue;
+        Unit* pVictim = pEnemy->GetVictim();
+        if (!pVictim)
+            continue;
+        if (pVictim == pTank)
+            continue;
+        // Still loose on a healer / DPS / the player — hold the AoE.
+        if (pVictim->IsPlayer())
+            return false;
+    }
+    return true;
+}
+
+bool PartyBotAI::TryRegainLineOfSight(Unit* pVictim)
+{
+    if (!pVictim || m_role == ROLE_TANK || IsInDuel())
+        return false;
+    if (me->IsWithinLOSInMap(pVictim))
+        return false;
+    if (me->IsNonMeleeSpellCasted() || me->IsMounted())
+        return false;
+
+    // Melee already path via chase; this is for casters stuck behind a pillar.
+    if (m_role == ROLE_MELEE_DPS && me->CanReachWithMeleeAutoAttack(pVictim))
+        return false;
+
+    // Already pathing — let MoveChase walk the corner.
+    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
+        return true;
+
+    // Prefer stepping out beside the tank (classic corner), else chase the mob around the wall.
+    Unit* pPivot = FindPartyTank();
+    if (!pPivot)
+        pPivot = GetPartyLeader();
+    if (pPivot && pPivot != me && me->GetDistance(pPivot) > 3.0f &&
+        me->GetDistance(pPivot) < me->GetDistance(pVictim))
+        BeginChasing(pPivot);
+    else
+        BeginChasing(pVictim);
+    return true;
+}
+
+bool PartyBotAI::EnsurePetAttacks(Unit* pVictim)
+{
+    if (!pVictim || !IsValidHostileTarget(pVictim))
+        return false;
+
+    Pet* pPet = me->GetPet();
+    if (!pPet || !pPet->IsAlive())
+        return false;
+
+    if (pPet->GetVictim() == pVictim)
+        return false;
+
+    if (CreatureAI* pAI = pPet->AI())
+        pAI->AttackStart(pVictim);
+    return true;
+}
+
+bool PartyBotAI::TryDragPackToParty()
+{
+    if (m_role != ROLE_TANK || IsInDuel())
+        return false;
+
+    Player* pLeader = GetPartyLeader();
+    Unit* pVictim = me->GetVictim();
+    if (!pLeader || !pVictim || pVictim->GetVictim() != me)
+        return false;
+    // Early pull only — once the pack is low, plant and threat.
+    if (pVictim->GetHealthPercent() < 75.0f)
+        return false;
+    if (me->GetDistance(pLeader) <= PB_CALM_ENGAGE_DIST + 4.0f)
+        return false;
+    if (me->GetDistance(pLeader) > 40.0f)
+        return false;
+    // Stay for sheep drag / snap peels instead.
+    if (FindBreakableCrowdControlNear(15.0f))
+        return false;
+    if (m_snapThreatUntil && WorldTimer::getMSTime() < m_snapThreatUntil)
+        return false;
+    // Keep melee contact while walking back.
+    if (!me->CanReachWithMeleeAutoAttack(pVictim) && me->GetDistance(pVictim) > 12.0f)
+        return false;
+
+    MovementGeneratorType const mt = me->GetMotionMaster()->GetCurrentMovementGeneratorType();
+    if (mt == POINT_MOTION_TYPE || mt == DISTANCING_MOTION_TYPE)
+        return true;
+
+    me->GetMotionMaster()->Clear(false, true);
+    me->GetMotionMaster()->MovePoint(0,
+        pLeader->GetPositionX(), pLeader->GetPositionY(), pLeader->GetPositionZ(),
+        MOVE_PATHFINDING);
+    return true;
+}
+
+bool PartyBotAI::TryBandage()
+{
+    if (me->IsInCombat() || IsInDuel() || me->GetVictim())
+        return false;
+    if (me->GetHealthPercent() > 70.0f)
+        return false;
+    // Food / drink already ticking — do not interrupt.
+    if (me->HasAura(PB_SPELL_FOOD) || me->HasAura(PB_SPELL_DRINK) || me->IsNonMeleeSpellCasted())
+        return false;
+
+    Item* pBest = nullptr;
+    int32 bestPower = 0;
+    auto consider = [&](Item* pItem)
+    {
+        if (!pItem)
+            return;
+        ItemPrototype const* pProto = pItem->GetProto();
+        if (!pProto || pProto->Class != ITEM_CLASS_CONSUMABLE ||
+            me->CanUseItem(pProto) != EQUIP_ERR_OK)
+            return;
+        for (auto const& itemSpell : pProto->Spells)
+        {
+            if (!itemSpell.SpellId || itemSpell.SpellTrigger != ITEM_SPELLTRIGGER_ON_USE)
+                continue;
+            SpellEntry const* pSpell = sSpellMgr.GetSpellEntry(itemSpell.SpellId);
+            // Bandages: cast time, typically peaceful-only.
+            if (!pSpell || pSpell->GetCastTime(me) <= 0)
+                continue;
+            if (!me->IsSpellReady(pSpell, pProto))
+                continue;
+            int32 power = 0;
+            bool heal = false;
+            for (uint32 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            {
+                if (pSpell->Effect[i] == SPELL_EFFECT_HEAL ||
+                    (pSpell->Effect[i] == SPELL_EFFECT_APPLY_AURA &&
+                     pSpell->EffectApplyAuraName[i] == SPELL_AURA_PERIODIC_HEAL))
+                {
+                    heal = true;
+                    power = std::max(power, pSpell->CalculateSimpleValue(SpellEffectIndex(i)));
+                }
+            }
+            if (!heal)
+                continue;
+            if (power > bestPower)
+            {
+                bestPower = power;
+                pBest = pItem;
+            }
+        }
+    };
+
+    for (int slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        consider(me->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (int bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+    {
+        Item* pBagItem = me->GetItemByPos(INVENTORY_SLOT_BAG_0, bag);
+        if (!pBagItem || !pBagItem->IsBag())
+            continue;
+        Bag* pBag = static_cast<Bag*>(pBagItem);
+        for (uint32 slot = 0; slot < pBag->GetBagSize(); ++slot)
+            consider(pBag->GetItemByPos(uint8(slot)));
+    }
+
+    if (!pBest)
+        return false;
+    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType())
+    {
+        me->StopMoving();
+        me->GetMotionMaster()->Clear(false, true);
+        me->GetMotionMaster()->MoveIdle();
+    }
+    return UseItemEffect(pBest, false);
+}
+
+void PartyBotAI::GetHealerCareThresholds(float& directSelf, float& directGroup,
+                                         float& hotSelf, float& hotGroup,
+                                         bool& allowPreHeal) const
+{
+    // Default: heal early, pre-heal freely.
+    directSelf = 60.0f;
+    directGroup = 80.0f;
+    hotSelf = 80.0f;
+    hotGroup = 90.0f;
+    allowPreHeal = true;
+
+    if (GetRole() != ROLE_HEALER || me->GetPowerType() != POWER_MANA)
+        return;
+
+    // Someone is dying — full care regardless of mana.
+    if (PartyMemberBelow(40.0f))
+        return;
+
+    Unit* pThreat = me->GetVictim();
+    if (!pThreat)
+    {
+        if (Player* pTank = FindPartyTank())
+            pThreat = pTank->GetVictim();
+    }
+    bool const hard = IsDangerousFight(pThreat);
+    float const mana = me->GetPowerPercent(POWER_MANA);
+
+    if (hard)
+    {
+        // Elite / boss: keep the tank topped; still skip tiny top-offs when OOM.
+        if (mana < 30.0f)
+        {
+            directSelf = 50.0f;
+            directGroup = 70.0f;
+            hotSelf = 70.0f;
+            hotGroup = 80.0f;
+            allowPreHeal = false;
+        }
+        return;
+    }
+
+    // Trash: a pro healer wanders and lets HoTs work — save mana for the next elite.
+    if (mana < 50.0f)
+    {
+        directSelf = 45.0f;
+        directGroup = 60.0f;
+        hotSelf = 65.0f;
+        hotGroup = 70.0f;
+        allowPreHeal = false;
+    }
+    else if (mana < 70.0f)
+    {
+        directSelf = 50.0f;
+        directGroup = 70.0f;
+        hotSelf = 75.0f;
+        hotGroup = 80.0f;
+        allowPreHeal = false;
+    }
+    else
+    {
+        directSelf = 55.0f;
+        directGroup = 75.0f;
+        allowPreHeal = false; // trash rarely needs predictive heals
+    }
+}
+
+bool PartyBotAI::TryTankFaceAwayFromParty()
+{
+    if (m_role != ROLE_TANK || IsInDuel() || !me->IsInCombat())
+        return false;
+
+    Unit* pVictim = me->GetVictim();
+    if (!pVictim || pVictim->GetVictim() != me)
+        return false;
+    // Encounter table or elite/boss cleave — skip the dance on plain trash.
+    uint32 const encFlags = PartyBotEncounter::GetFlags(pVictim);
+    if (!(encFlags & PB_ENC_FACE_AWAY) && !IsDangerousFight(pVictim))
+        return false;
+    if (me->IsNonMeleeSpellCasted() || !me->CanReachWithMeleeAutoAttack(pVictim))
+        return false;
+    // Sheep drag / snap peels own the movement.
+    if (FindBreakableCrowdControlNear(15.0f))
+        return false;
+    if (m_snapThreatUntil && WorldTimer::getMSTime() < m_snapThreatUntil)
+        return false;
+
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return false;
+
+    float sumX = 0.0f, sumY = 0.0f;
+    int count = 0;
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == me || !pMember->IsAlive())
+            continue;
+        if (pMember->GetDistance(pVictim) > 40.0f)
+            continue;
+        sumX += pMember->GetPositionX();
+        sumY += pMember->GetPositionY();
+        ++count;
+    }
+    if (count == 0)
+        return false;
+
+    float const partyX = sumX / count;
+    float const partyY = sumY / count;
+    float const bossX = pVictim->GetPositionX();
+    float const bossY = pVictim->GetPositionY();
+
+    // Angle boss→party vs boss→tank. Want ~180° (tank opposite the party).
+    float const angParty = std::atan2(partyY - bossY, partyX - bossX);
+    float const angTank = std::atan2(me->GetPositionY() - bossY, me->GetPositionX() - bossX);
+    float diff = std::fabs(angParty - angTank);
+    while (diff > M_PI_F)
+        diff = std::fabs(diff - 2.0f * M_PI_F);
+
+    // Already opposite enough — just face the boss.
+    if (diff > 2.0f)
+    {
+        me->SetInFront(pVictim);
+        me->SendMovementPacket(MSG_MOVE_SET_FACING, false);
+        return false;
+    }
+
+    MovementGeneratorType const mt = me->GetMotionMaster()->GetCurrentMovementGeneratorType();
+    if (mt == POINT_MOTION_TYPE || mt == DISTANCING_MOTION_TYPE)
+        return true;
+
+    float const melee = std::max(3.0f, pVictim->GetCombatReach() + me->GetCombatReach());
+    float const targetAng = angParty + M_PI_F;
+    float x = bossX + std::cos(targetAng) * melee;
+    float y = bossY + std::sin(targetAng) * melee;
+    float z = pVictim->GetPositionZ();
+    me->UpdateAllowedPositionZ(x, y, z);
+
+    me->GetMotionMaster()->Clear(false, true);
+    me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING);
+    return true;
 }
 
 bool PartyBotAI::DrinkAndEat()
@@ -226,14 +712,27 @@ bool PartyBotAI::DrinkAndEat()
     if (me->GetVictim())
         return false;
 
-    bool const needToEat = me->GetHealthPercent() < 100.0f;
-    bool const needToDrink = (me->GetPowerType() == POWER_MANA) && (me->GetPowerPercent(POWER_MANA) < 100.0f);
+    // Still hurt and not eating yet: bandage before sitting for food.
+    if (TryBandage())
+        return true;
+
+    bool const isEating = me->HasAura(PB_SPELL_FOOD);
+    bool const isDrinking = me->HasAura(PB_SPELL_DRINK);
+
+    // Start earlier than 100%, finish near full — a real group waits on the healer.
+    bool const needToEat = me->GetHealthPercent() < (isEating ? 95.0f : 70.0f) ||
+        (PartyNeedsRest() && me->GetHealthPercent() < 95.0f);
+    bool const needToDrink = (me->GetPowerType() == POWER_MANA) &&
+        (me->GetPowerPercent(POWER_MANA) < (isDrinking ? 90.0f : 50.0f) ||
+         (PartyNeedsRest() && me->GetPowerPercent(POWER_MANA) < 90.0f));
 
     if (!needToEat && !needToDrink)
         return false;
 
-    bool const isEating = me->HasAura(PB_SPELL_FOOD);
-    bool const isDrinking = me->HasAura(PB_SPELL_DRINK);
+    // Between pulls: top potions / ammo so a long dungeon does not run dry.
+    EnsureCombatPotions();
+    if (me->GetClass() == CLASS_HUNTER)
+        AddHunterAmmo();
 
     if (!isEating && needToEat)
     {
@@ -332,6 +831,10 @@ bool PartyBotAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpell
         else
             radius = 10.0f;
 
+        // Classic dungeon habit: no Blizzard / Volley until every add is on the tank.
+        if (m_role != ROLE_TANK && !AreAllHostilesOnTank(pTarget, radius))
+            return false;
+
         std::list<Unit*> targets;
         me->GetEnemyListInRadiusAround(pTarget, radius, targets);
 
@@ -403,20 +906,91 @@ Unit* PartyBotAI::FindBreakableCrowdControlNear(float radius) const
     return nullptr;
 }
 
+uint32 PartyBotAI::GetEncounterFlags() const
+{
+    return PartyBotEncounter::GetFlags(me->GetVictim());
+}
+
+bool PartyBotAI::ChaseFromBehind(Unit* pVictim) const
+{
+    if (!pVictim)
+        return m_role == ROLE_MELEE_DPS || m_role == ROLE_HEALER;
+
+    uint32 const flags = PartyBotEncounter::GetFlags(pVictim);
+    if (flags & PB_ENC_MELEE_BEHIND)
+        return m_role == ROLE_MELEE_DPS || m_role == ROLE_HEALER;
+
+    // Default habit: melee and healers still prefer the rear on trash.
+    return m_role == ROLE_MELEE_DPS || m_role == ROLE_HEALER;
+}
+
 int PartyBotAI::GetEnemyCastInterruptScore(Unit const* pEnemy) const
 {
     if (!pEnemy || !pEnemy->IsNonMeleeSpellCasted(false, false, true))
         return -1;
 
+    uint32 const encFlags = PartyBotEncounter::GetFlags(pEnemy);
+    bool const hardInterrupt = (encFlags & PB_ENC_INTERRUPT_HARD) != 0;
+
     Spell const* pSpell = pEnemy->GetCurrentSpell(CURRENT_GENERIC_SPELL);
     if (!pSpell)
         pSpell = pEnemy->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
     if (!pSpell || !pSpell->m_spellInfo)
-        return 10;
+    {
+        if (hardInterrupt)
+            return 80;
+        return IsRangedEnemy(pEnemy) ? 40 : 10;
+    }
+
+    SpellEntry const* info = pSpell->m_spellInfo;
 
     // Healing casts (mob "Heal" / Renew / …) are the main reason to interrupt.
-    if (pSpell->m_spellInfo->IsHealSpell())
+    if (info->IsHealSpell())
         return 100;
+
+    // Named dungeon casters: treat every other cast as kick-worthy.
+    if (hardInterrupt)
+        return 90;
+
+    // Fear / charm / sleep / polymorph — stop before the party scatters.
+    for (uint32 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+    {
+        if (info->Effect[i] != SPELL_EFFECT_APPLY_AURA)
+            continue;
+        switch (info->EffectApplyAuraName[i])
+        {
+            case SPELL_AURA_MOD_FEAR:
+            case SPELL_AURA_MOD_CHARM:
+            case SPELL_AURA_MOD_CONFUSE:
+            case SPELL_AURA_MOD_STUN:
+                return 90;
+            default:
+                break;
+        }
+    }
+
+    // Ground AoE about to land on the party — kick it or the floor eats everyone.
+    if (!info->IsPositiveSpell() && info->IsAreaOfEffectSpell())
+    {
+        for (uint32 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        {
+            if (info->Effect[i] == SPELL_EFFECT_SCHOOL_DAMAGE ||
+                info->Effect[i] == SPELL_EFFECT_PERSISTENT_AREA_AURA ||
+                info->EffectApplyAuraName[i] == SPELL_AURA_PERIODIC_DAMAGE)
+                return 85;
+        }
+    }
+
+    // Direct damage or school nuke from a caster beats filler casts.
+    for (uint32 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+    {
+        if (info->Effect[i] == SPELL_EFFECT_SCHOOL_DAMAGE ||
+            info->Effect[i] == SPELL_EFFECT_HEALTH_LEECH)
+            return IsRangedEnemy(pEnemy) ? 60 : 40;
+    }
+
+    if (IsRangedEnemy(pEnemy))
+        return 50;
 
     return 10;
 }
@@ -469,13 +1043,103 @@ Unit* PartyBotAI::FindEnemyCastToInterrupt() const
     return best;
 }
 
+bool PartyBotAI::CanInterruptTarget(Unit const* pEnemy) const
+{
+    if (!pEnemy || !IsValidHostileTarget(pEnemy))
+        return false;
+
+    auto ready = [&](SpellEntry const* pSpell, float maxDist) -> bool
+    {
+        if (!pSpell || !me->IsSpellReady(pSpell))
+            return false;
+        if (!me->IsWithinDist(pEnemy, maxDist))
+            return false;
+        return true;
+    };
+
+    switch (me->GetClass())
+    {
+        case CLASS_ROGUE:
+            return ready(m_spells.rogue.pKick, 5.0f) || ready(m_spells.rogue.pGouge, 5.0f);
+        case CLASS_WARRIOR:
+            return ready(m_spells.warrior.pShieldBash, 5.0f) ||
+                   ready(m_spells.warrior.pPummel, 5.0f) ||
+                   ready(m_spells.warrior.pConcussionBlow, 5.0f);
+        case CLASS_MAGE:
+            return ready(m_spells.mage.pCounterspell, 30.0f);
+        case CLASS_SHAMAN:
+            return ready(m_spells.shaman.pEarthShock, 20.0f);
+        case CLASS_PRIEST:
+            return ready(m_spells.priest.pSilence, 30.0f);
+        case CLASS_PALADIN:
+            return ready(m_spells.paladin.pHammerOfJustice, 10.0f);
+        case CLASS_DRUID:
+            return ready(m_spells.druid.pBash, 5.0f);
+        default:
+            return false;
+    }
+}
+
+bool PartyBotAI::IsAssignedToInterrupt(Unit const* pEnemy) const
+{
+    if (!pEnemy || IsInDuel())
+        return true;
+    if (!CanInterruptTarget(pEnemy))
+        return false;
+
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return true;
+
+    // Someone already casting at this caster: do not double-kick.
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == me || !pMember->IsAlive())
+            continue;
+        if (!pMember->IsNonMeleeSpellCasted(false, false, true))
+            continue;
+        if (pMember->GetTargetGuid() == pEnemy->GetObjectGuid())
+            return false;
+    }
+
+    // Closest ready interrupter owns the kick; guid breaks a distance tie.
+    float const myDist = me->GetDistance(pEnemy);
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == me || !pMember->IsAlive() || pMember->GetMap() != me->GetMap())
+            continue;
+        PartyBotAI const* pAI = dynamic_cast<PartyBotAI const*>(pMember->AI());
+        if (!pAI || !pAI->CanInterruptTarget(pEnemy))
+            continue;
+
+        float const dist = pMember->GetDistance(pEnemy);
+        if (dist + 0.5f < myDist)
+            return false;
+        if (dist <= myDist + 0.5f &&
+            pMember->GetObjectGuid() < me->GetObjectGuid())
+            return false;
+    }
+    return true;
+}
+
 bool PartyBotAI::TryInterruptEnemyCast()
 {
     if (IsInDuel())
         return false;
 
     Unit* pTarget = FindEnemyCastToInterrupt();
-    if (!pTarget)
+    if (!pTarget || !IsAssignedToInterrupt(pTarget))
+        return false;
+
+    int const score = GetEnemyCastInterruptScore(pTarget);
+    // Kick / Shield Bash / Pummel are long CDs — on hard fights save them for
+    // heals, CC, and ground AoE; ignore filler casts.
+    bool const preciousKick =
+        me->GetClass() == CLASS_ROGUE || me->GetClass() == CLASS_WARRIOR;
+    Unit* pThreat = me->GetVictim() ? me->GetVictim() : pTarget;
+    if (preciousKick && score < 60 && IsDangerousFight(pThreat))
         return false;
 
     auto trySpell = [&](SpellEntry const* pSpell) -> bool
@@ -649,6 +1313,9 @@ bool PartyBotAI::AttackStart(Unit* pVictim)
     if (me->IsMounted())
         me->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
 
+    // Classic pre-pot: mana flask/pot as the elite pull starts, not mid-GCD later.
+    TryPrePullConsumable(pVictim);
+
     if (me->Attack(pVictim, true))
     {
         BeginChasing(pVictim);
@@ -675,6 +1342,33 @@ bool PartyBotAI::IsInCalmEngageRange(Unit const* pTarget) const
         return pLeader->GetDistance(pTarget) <= PB_CALM_ENGAGE_DIST;
 
     return me->GetDistance(pTarget) <= PB_CALM_ENGAGE_DIST;
+}
+
+bool PartyBotAI::IsLeaderCommittedTo(Unit const* pTarget) const
+{
+    Player* pLeader = GetPartyLeader();
+    if (!pLeader || !pTarget)
+        return false;
+
+    // Leader is swinging / casting at it, or it is on the leader.
+    if (pLeader->GetVictim() == pTarget && (pLeader->IsInCombat() || pTarget->IsInCombat()))
+        return true;
+    if (pTarget->GetVictim() == pLeader)
+        return true;
+    for (Unit* pAttacker : pLeader->GetAttackers())
+        if (pAttacker == pTarget)
+            return true;
+
+    // Threat after a ranged open (Frostbolt, Auto Shot) before the mob reaches them.
+    // getThreat is non-const on ThreatManager; the leader check above covers most cases.
+    if (pTarget->CanHaveThreatList())
+    {
+        ThreatManager& threat = const_cast<Unit*>(pTarget)->GetThreatManager();
+        if (threat.getThreat(pLeader) > 0.0f)
+            return true;
+    }
+
+    return false;
 }
 
 void PartyBotAI::AllowForcedEngage(ObjectGuid targetGuid, uint32 durationMs)
@@ -705,6 +1399,36 @@ bool PartyBotAI::CanEngageTarget(Unit const* pTarget) const
         pTarget->GetObjectGuid() == m_forceEngageGuid &&
         WorldTimer::getMSTime() < m_forceEngageUntil)
         return true;
+
+    // Fresh pack: wait out a patrol that would chain into the party.
+    if (ShouldWaitForPatrol(pTarget))
+        return false;
+
+    // You opened the pull: join at the party, do not bee-line through side packs.
+    // Melee wait until the mob is near you (or you are already next to it). Ranged
+    // may shoot from beside the leader once the fight is theirs.
+    if (IsLeaderCommittedTo(pTarget))
+    {
+        if (me->GetDistance(pTarget) <= PB_CALM_ENGAGE_DIST)
+            return true;
+
+        Player const* pLeader = GetPartyLeader();
+        float const partyRadius = PB_CALM_ENGAGE_DIST + 4.0f;
+        bool const atParty = !pLeader || me->GetDistance(pLeader) <= partyRadius;
+        if (!atParty)
+            return false;
+
+        if (IsInCalmEngageRange(pTarget))
+            return true;
+
+        if ((m_role == ROLE_RANGE_DPS || m_role == ROLE_HEALER) &&
+            IsRangedDamageClass(me->GetClass()) &&
+            !IsAttackSpeedOverridenForm(me->GetShapeshiftForm()) &&
+            me->GetDistance(pTarget) <= 30.0f)
+            return true;
+
+        return false;
+    }
 
     return IsInCalmEngageRange(pTarget);
 }
@@ -876,6 +1600,151 @@ bool PartyBotAI::UpdateRangedPullHold()
     return true;
 }
 
+bool PartyBotAI::PartyAlreadyPulling(ObjectGuid targetGuid) const
+{
+    if (targetGuid.IsEmpty())
+        return false;
+
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return false;
+
+    uint32 const now = WorldTimer::getMSTime();
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember)
+            continue;
+        PartyBotAI* pAI = dynamic_cast<PartyBotAI*>(pMember->AI());
+        if (!pAI)
+            continue;
+        if (!pAI->m_forceEngageGuid.IsEmpty() &&
+            pAI->m_forceEngageGuid == targetGuid &&
+            now < pAI->m_forceEngageUntil)
+            return true;
+        if (!pAI->m_pullHoldTargetGuid.IsEmpty() &&
+            pAI->m_pullHoldTargetGuid == targetGuid &&
+            now < pAI->m_pullHoldDeadline)
+            return true;
+    }
+    return false;
+}
+
+bool PartyBotAI::StartPartyRangedPull(Unit* pTarget, uint32 durationMs)
+{
+    if (!pTarget || !me->IsValidAttackTarget(pTarget))
+        return false;
+
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return false;
+
+    // Caller is the chosen puller.
+    AllowForcedEngage(pTarget->GetObjectGuid(), durationMs);
+
+    bool opened = false;
+    if (me->GetClass() == CLASS_ROGUE)
+        opened = TryThrowPull(pTarget);
+    else
+        opened = AttackStart(pTarget);
+
+    if (!opened)
+    {
+        m_forceEngageGuid.Clear();
+        m_forceEngageUntil = 0;
+        return false;
+    }
+
+    if (me->GetClass() == CLASS_ROGUE)
+    {
+        // Stay put after the throw so the tank can pick up at the party.
+        uint32 const hold = std::min(durationMs, 4u * IN_MILLISECONDS);
+        me->StopMoving();
+        me->GetMotionMaster()->Clear(false, true);
+        me->GetMotionMaster()->MoveIdle();
+        m_updateTimer.Reset(hold);
+    }
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == me)
+            continue;
+
+        PartyBotAI* pAI = dynamic_cast<PartyBotAI*>(pMember->AI());
+        if (!pAI)
+            continue;
+
+        if (pAI->m_role == ROLE_MELEE_DPS || pAI->m_role == ROLE_RANGE_DPS)
+        {
+            pMember->StopMoving();
+            pMember->GetMotionMaster()->Clear(false, true);
+            pMember->GetMotionMaster()->MoveIdle();
+            pAI->m_updateTimer.Reset(durationMs);
+            continue;
+        }
+
+        if (pAI->m_role == ROLE_TANK && pMember->IsValidAttackTarget(pTarget))
+            pAI->BeginRangedPullHold(pTarget->GetObjectGuid(), me->GetObjectGuid(), durationMs);
+    }
+
+    return true;
+}
+
+bool PartyBotAI::TryAssistLeaderPull(Player* pLeader)
+{
+    if (!pLeader || IsInDuel() || IsEngageAggressive())
+        return false;
+    if (me->IsInCombat() || pLeader->IsInCombat() || pLeader->IsMounted())
+        return false;
+    // Walking owns the pull timing: only open once they stop on a selected mob.
+    if (pLeader->IsMoving())
+        return false;
+
+    ObjectGuid const selGuid = pLeader->GetSelectionGuid();
+    if (selGuid.IsEmpty())
+        return false;
+
+    Unit* pTarget = me->GetMap()->GetUnit(selGuid);
+    if (!pTarget || !pTarget->IsAlive() || !IsValidHostileTarget(pTarget))
+        return false;
+    // Already engaged: IsLeaderCommittedTo / SelectAttackTarget handle the join-in.
+    if (pTarget->IsInCombat() || pTarget->GetVictim())
+        return false;
+    if (pLeader->GetDistance(pTarget) > PB_PULL_MAX_DIST)
+        return false;
+    if (!pLeader->IsWithinLOSInMap(pTarget))
+        return false;
+    // Patrol walking into us — a pro waits; do not soft-open into a chain pull.
+    if (ShouldWaitForPatrol(pTarget))
+        return false;
+    // Close enough for calm engage — walk up with the leader, do not ranged-open.
+    if (IsInCalmEngageRange(pTarget))
+        return false;
+    if (PartyAlreadyPulling(pTarget->GetObjectGuid()))
+        return false;
+
+    int const myScore = GetRangedPullScore(pTarget);
+    if (myScore < 0)
+        return false;
+
+    // Only the best-scoring bot orchestrates, so one pull runs once.
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return false;
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == me)
+            continue;
+        if (PartyBotAI* pAI = dynamic_cast<PartyBotAI*>(pMember->AI()))
+            if (pAI->GetRangedPullScore(pTarget) > myScore)
+                return false;
+    }
+
+    return StartPartyRangedPull(pTarget, 10 * IN_MILLISECONDS);
+}
+
 Unit* PartyBotAI::GetMarkedTarget(RaidTargetIcon mark) const
 {
     if (!me->GetGroup())
@@ -915,6 +1784,18 @@ Unit* PartyBotAI::SelectAttackTarget(Player* pLeader) const
         {
             if (IsValidHostileTarget(pVictim))
                 return pVictim;
+        }
+
+        // Soft assist: what the leader has selected (tab / click), within pull range.
+        if (!pLeader->GetSelectionGuid().IsEmpty())
+        {
+            if (Unit* pSel = me->GetMap()->GetUnit(pLeader->GetSelectionGuid()))
+            {
+                if (IsValidHostileTarget(pSel) &&
+                    pLeader->IsWithinDist(pSel, PB_PULL_MAX_DIST) &&
+                    me->IsWithinDist(pSel, PB_PULL_MAX_DIST + 10.0f))
+                    return pSel;
+            }
         }
 
         // Already in a multi-pull with no mark/leader target: finish the weakest.
@@ -1141,22 +2022,30 @@ Player* PartyBotAI::SelectShieldTarget() const
     Group* pGroup = me->GetGroup();
     if (!pGroup)
         return nullptr;
+
+    Player* pBest = nullptr;
+    float bestScore = 1000.0f;
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
-        if (Player* pMember = itr->getSource())
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == me)
+            continue;
+        if (pMember->IsImmuneToMechanic(MECHANIC_SHIELD) || pMember->GetAttackers().empty())
+            continue;
+        // Tank gets a shield earlier; DPS only when actually low.
+        float const line = IsPartyTank(pMember) ? 95.0f : 70.0f;
+        if (pMember->GetHealthPercent() >= line)
+            continue;
+        float score = pMember->GetHealthPercent();
+        if (IsPartyTank(pMember))
+            score -= 20.0f;
+        if (score < bestScore)
         {
-            // We already checked self.
-            if (pMember == me)
-                continue;
-
-            if ((pMember->GetHealthPercent() < 90.0f) &&
-                !pMember->GetAttackers().empty() &&
-                !pMember->IsImmuneToMechanic(MECHANIC_SHIELD))
-                return pMember;
+            bestScore = score;
+            pBest = pMember;
         }
     }
-
-    return nullptr;
+    return pBest;
 }
 
 bool PartyBotAI::CrowdControlMarkedTargets()
@@ -1293,6 +2182,9 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     if (!me->IsInWorld() || me->IsBeingTeleported())
         return;
 
+    if (m_initialized && me->IsAlive() && UnstickIfFloating())
+        return;
+
     if (!m_initialized)
     {
         AddToPlayerGroup();
@@ -1351,6 +2243,7 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         PopulateSpellData();
         AddAllSpellReagents();
         EnsureCombatPotions();
+        EnsureDefaultMarks();
         if (me->GetClass() == CLASS_HUNTER)
             AddHunterAmmo();
         me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_SPAWNING);
@@ -1417,7 +2310,13 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
     if (me->HasUnitState(UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL))
     {
+        bool const wasFeared = me->HasAuraType(SPELL_AURA_MOD_FEAR) ||
+            me->HasAuraType(SPELL_AURA_MOD_CHARM) ||
+            me->HasAuraType(SPELL_AURA_MOD_CONFUSE);
         BreakCrowdControlEffects();
+        // Tank just broke fear: snap threat for a few seconds so adds do not chew the healer.
+        if (wasFeared && m_role == ROLE_TANK)
+            m_snapThreatUntil = WorldTimer::getMSTime() + 4000;
         return;
     }
 
@@ -1614,6 +2513,10 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         return;
     }
 
+    // Standing still with a far mob selected: hunter / mage opens, tank waits nearby.
+    if (!me->IsInCombat() && !me->IsMounted() && !PartyNeedsRest() && TryAssistLeaderPull(pLeader))
+        return;
+
     if (!me->IsInCombat() && !me->IsMounted())
     {
         UpdateOutOfCombatAI();
@@ -1628,6 +2531,7 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     Unit* pVictim = me->GetVictim();
 
     // Calm mode: do not run at a far pack — release and wait by the leader.
+    // Leader-committed targets pass CanEngageTarget and are not released.
     if (pVictim && IsValidHostileTarget(pVictim) && !CanEngageTarget(pVictim))
     {
         me->AttackStop(true);
@@ -1639,6 +2543,21 @@ void PartyBotAI::UpdateAI(uint32 const diff)
             me->GetMotionMaster()->MoveIdle();
         }
         pVictim = nullptr;
+    }
+
+    // Healer still drinking: nobody opens a fresh pull.
+    if (!me->IsInCombat() && PartyNeedsRest())
+    {
+        if (pVictim)
+        {
+            me->AttackStop(true);
+            pVictim = nullptr;
+        }
+        if (!me->IsMoving() &&
+            me->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
+            me->GetMotionMaster()->MoveFollow(pLeader, urand(PB_MIN_FOLLOW_DIST, PB_MAX_FOLLOW_DIST),
+                frand(PB_MIN_FOLLOW_ANGLE, PB_MAX_FOLLOW_ANGLE));
+        return;
     }
 
     // Priests (including healers) assist so they can wand when nothing needs a heal.
@@ -1813,7 +2732,24 @@ void PartyBotAI::UpdateInCombatAI()
             // Player (or a bot) sheeped an add: drag the rest clear so AoE does not open it.
             bool const dragging = PullFightAwayFromCrowdControl();
 
-            // Taunt target if its attacking someone else (also while dragging).
+            // Far open: walk the pack back to the party so casters keep LoS at the corner.
+            if (!dragging && TryDragPackToParty())
+                return;
+
+            // Elite/boss: stand opposite the party so cleave hits the wall.
+            if (!dragging && TryTankFaceAwayFromParty())
+                return;
+
+            // Post-fear / multi-pull: taunt every loose mob, not only the current target.
+            bool const snapWindow = m_snapThreatUntil &&
+                WorldTimer::getMSTime() < m_snapThreatUntil;
+            if (snapWindow || dragging)
+            {
+                if (TryTankSnapThreat())
+                    return;
+            }
+
+            // Taunt current target if it is attacking someone else.
             pVictim = me->GetVictim();
             if (pVictim && pVictim->GetVictim() != me)
             {
@@ -1851,25 +2787,92 @@ void PartyBotAI::UpdateInCombatAI()
             return;
     }
 
+    // Step out while a hostile AoE is still casting — before the floor drops.
+    if (TryScatterFromDangerousCast())
+        return;
+
+    // Get out of Rain of Fire / Blizzard / Consecration before the next cast.
+    if (TryAvoidGroundDamage())
+        return;
+
+    // Herod-style Whirlwind: melee leave the spin, then resume.
+    if (TryKiteWhirlwind())
+        return;
+
+    // Free Action / Limited Invuln when rooted or nearly dead.
+    if (TryUtilityConsumable())
+        return;
+
+    // Healer stays in heal range of the tank; ranged unstack from cleave.
+    if (TryHealerStackWithTank())
+        return;
+    if (TryRangedSpread())
+        return;
+
+    // Dump threat before the next damaging GCD (Fade / Feign / Cower / …).
+    if (TryThreatDump())
+        return;
+
+    // Pet on the kill target; casters step out when a wall ate their last cast.
+    if (Unit* pVictim = me->GetVictim())
+    {
+        EnsurePetAttacks(pVictim);
+        if (TryRegainLineOfSight(pVictim))
+        {
+            // Keep moving this tick; spells stay gated by LOS in CanTryToCastSpell.
+        }
+    }
+
     // Fear Ward / racial damage CD before the rotation spends the GCD.
     if (TryFearWard())
         return;
     if (TryRacialCombatAbility(me->GetVictim()))
         return;
 
+    // Dry healer first; battle-rez a dead healer/tank while the fight is still up.
+    if (TryInnervate())
+        return;
+    if (TryBattleResurrection())
+        return;
+
+    // Tank (or designated bot) keeps skull on the kill target and moon on sheep.
+    UpdateAutoRaidMarks();
+
     // Before rotation / healing: stop enemy heals and other casts (own target or an add).
     if (TryInterruptEnemyCast())
         return;
 
-    // Ranged / caster packs: Silence when we have it, even between their casts.
-    if (TrySilenceRangedEnemy())
-        return;
+    // Someone is dying: healers skip silence / sheep / friendly dispel and go triage.
+    bool const triage = GetRole() == ROLE_HEALER && PartyMemberBelow(40.0f);
 
-    // Multi-pull: park one add so healers and tanks are not flooded.
-    if (m_role != ROLE_TANK && TryCrowdControlExtra())
-        return;
+    if (!triage)
+    {
+        // Ranged / caster packs: Silence when we have it, even between their casts.
+        if (TrySilenceRangedEnemy())
+            return;
 
-    if (CheckForDispelTargets())
+        // Multi-pull: park one add so healers and tanks are not flooded.
+        if (m_role != ROLE_TANK && TryCrowdControlExtra())
+            return;
+
+        if (CheckForDispelTargets())
+            return;
+
+        // Strip enemy magic buffs (Power Word: Shield, enrage auras, …) before damage.
+        if (TryStripEnemyBuffs())
+            return;
+
+        // Multi-DoT spare adds once the kill target already has its DoT.
+        if (TrySpreadDots())
+            return;
+
+        // Paladin: free a rooted tank / healer before the rotation GCD.
+        if (TryBlessingOfFreedom())
+            return;
+    }
+
+    // About to rip aggro: healers may still heal; DPS hold the next damage spell.
+    if (ShouldHoldFire() && GetRole() != ROLE_HEALER)
         return;
 
     switch (me->GetClass())
@@ -1953,10 +2956,188 @@ bool PartyBotAI::TryFearWard()
     if (me->GetShapeshiftForm() != FORM_NONE)
         return false;
 
+    // Mid-fight: only spend the GCD when the table flags fear, or OOC pre-buff.
+    uint32 const encFlags = GetEncounterFlags();
+    if (me->IsInCombat() && !(encFlags & PB_ENC_FEAR_WARD))
+    {
+        // Still refresh if the tank is already feared / about to be.
+        Unit* pVictim = me->GetVictim();
+        if (!pVictim || !IsDangerousFight(pVictim))
+            return false;
+    }
+
     Player* pTarget = SelectFearWardTarget();
     if (!pTarget || !CanTryToCastSpell(pTarget, m_spells.priest.pFearWard))
         return false;
     return DoCastSpell(pTarget, m_spells.priest.pFearWard) == SPELL_CAST_OK;
+}
+
+Player* PartyBotAI::SelectInnervateTarget() const
+{
+    if (!m_spells.druid.pInnervate)
+        return nullptr;
+
+    Group* pGroup = me->GetGroup();
+    Player* pBest = nullptr;
+    float bestMana = 100.0f;
+
+    auto consider = [&](Player* pMember)
+    {
+        if (!pMember || !pMember->IsAlive() || pMember->GetMap() != me->GetMap())
+            return;
+        if (pMember->GetPowerType() != POWER_MANA)
+            return;
+        if (pMember->GetDistance(me) > 30.0f)
+            return;
+        if (pMember->HasAura(m_spells.druid.pInnervate->Id))
+            return;
+        float const mana = pMember->GetPowerPercent(POWER_MANA);
+        // Healers first when dry; otherwise only help someone critically low.
+        bool const healer = IsPartyHealer(pMember) || pMember == me;
+        float const line = healer ? 35.0f : 10.0f;
+        if (mana >= line)
+            return;
+        float score = mana;
+        if (healer)
+            score -= 40.0f;
+        if (score < bestMana)
+        {
+            bestMana = score;
+            pBest = pMember;
+        }
+    };
+
+    if (pGroup)
+    {
+        for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+            consider(itr->getSource());
+    }
+    else
+        consider(me);
+
+    return pBest;
+}
+
+bool PartyBotAI::TryInnervate()
+{
+    if (me->GetClass() != CLASS_DRUID || !m_spells.druid.pInnervate)
+        return false;
+    // Cat/bear cannot Innervate; leave form only when we are not the tank mid-peel.
+    if (me->GetShapeshiftForm() != FORM_NONE && me->GetShapeshiftForm() != FORM_MOONKIN)
+    {
+        if (m_role == ROLE_TANK)
+            return false;
+        me->RemoveSpellsCausingAura(SPELL_AURA_MOD_SHAPESHIFT);
+    }
+
+    Player* pTarget = SelectInnervateTarget();
+    if (!pTarget || !CanTryToCastSpell(pTarget, m_spells.druid.pInnervate))
+        return false;
+    return DoCastSpell(pTarget, m_spells.druid.pInnervate) == SPELL_CAST_OK;
+}
+
+bool PartyBotAI::TryBattleResurrection()
+{
+    if (IsInDuel() || !me->IsInCombat())
+        return false;
+
+    SpellEntry const* pRez = m_spells.druid.pRebirth;
+    if (!pRez || me->GetClass() != CLASS_DRUID)
+        return false;
+    if (!me->IsSpellReady(pRez))
+        return false;
+
+    // Healers leave form; tanks keep bear unless nobody else can rez.
+    if (me->GetShapeshiftForm() != FORM_NONE && me->GetShapeshiftForm() != FORM_MOONKIN)
+    {
+        if (m_role == ROLE_TANK && GetRole() != ROLE_HEALER)
+            return false;
+        me->RemoveSpellsCausingAura(SPELL_AURA_MOD_SHAPESHIFT);
+    }
+
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return false;
+
+    // Prefer healer > tank > others. Skip if someone is already rezzing them.
+    Player* pBest = nullptr;
+    int bestScore = -1;
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == me || pMember->GetDeathState() != CORPSE)
+            continue;
+        if (pMember->GetMapId() != me->GetMapId() || !me->IsWithinDist(pMember, 40.0f))
+            continue;
+
+        bool someoneRezzing = false;
+        for (GroupReference* jtr = pGroup->GetFirstMember(); jtr != nullptr; jtr = jtr->next())
+        {
+            Player* pOther = jtr->getSource();
+            if (!pOther || pOther == me || !pOther->IsAlive())
+                continue;
+            if (pOther->IsNonMeleeSpellCasted(false, false, true) &&
+                pOther->GetTargetGuid() == pMember->GetObjectGuid())
+            {
+                someoneRezzing = true;
+                break;
+            }
+        }
+        if (someoneRezzing)
+            continue;
+
+        int score = 10;
+        if (IsPartyHealer(pMember))
+            score = 100;
+        else if (IsPartyTank(pMember))
+            score = 80;
+        else if (pMember->GetObjectGuid() == m_leaderGuid)
+            score = 90;
+        if (score > bestScore)
+        {
+            bestScore = score;
+            pBest = pMember;
+        }
+    }
+
+    if (!pBest || !CanTryToCastSpell(pBest, pRez))
+        return false;
+    if (!pRez->IsTargetInRange(me, pBest) || !me->IsWithinLOSInMap(pBest))
+        return false;
+    return DoCastSpell(pBest, pRez) == SPELL_CAST_OK;
+}
+
+bool PartyBotAI::TryApplyWarlockCurse(Unit* pVictim)
+{
+    if (!pVictim || me->GetClass() != CLASS_WARLOCK)
+        return false;
+
+    SpellEntry const* pCurse = nullptr;
+    bool const elite = pVictim->IsCreature() &&
+        (static_cast<Creature*>(pVictim)->IsElite() ||
+         static_cast<Creature*>(pVictim)->IsWorldBoss());
+
+    // Caster packs: Tongues slows their casts more than Agony ticks help.
+    if (IsRangedEnemy(pVictim) && m_spells.warlock.pCurseofTongues)
+        pCurse = m_spells.warlock.pCurseofTongues;
+    // Elites / bosses: raid curse for the whole party.
+    else if (elite && m_spells.warlock.pCurseoftheElements)
+        pCurse = m_spells.warlock.pCurseoftheElements;
+    else if (elite && m_spells.warlock.pCurseofShadow)
+        pCurse = m_spells.warlock.pCurseofShadow;
+    // Armored melee trash: Reck raises physical damage taken.
+    else if (IsMeleeWeaponClass(pVictim->GetClass()) &&
+             m_spells.warlock.pCurseofRecklessness &&
+             pVictim->GetHealthPercent() > 40.0f)
+        pCurse = m_spells.warlock.pCurseofRecklessness;
+    else if (m_spells.warlock.pCurseofAgony)
+        pCurse = m_spells.warlock.pCurseofAgony;
+
+    if (!pCurse || pVictim->HasAura(pCurse->Id))
+        return false;
+    if (!CanTryToCastSpell(pVictim, pCurse))
+        return false;
+    return DoCastSpell(pVictim, pCurse) == SPELL_CAST_OK;
 }
 
 bool PartyBotAI::TryCrowdControlExtra()
@@ -1986,7 +3167,7 @@ bool PartyBotAI::TryCrowdControlExtra()
         return false;
 
     Unit* pBest = nullptr;
-    float bestHp = 0.0f;
+    float bestScore = -1.0f;
     auto consider = [&](Unit* pUnit)
     {
         if (!pUnit || pUnit == pVictim || !IsValidHostileTarget(pUnit))
@@ -1999,11 +3180,16 @@ bool PartyBotAI::TryCrowdControlExtra()
             return;
         if (!CanTryToCastSpell(pUnit, pCC) || !CanUseCrowdControl(pCC, pUnit))
             return;
-        // Prefer the healthiest spare so the kill target stays the focus fire.
-        if (!pBest || pUnit->GetHealthPercent() > bestHp)
+        // Casters first (priest healers, ranged packs), then the healthiest spare.
+        float score = pUnit->GetHealthPercent();
+        if (IsRangedEnemy(pUnit))
+            score += 100.0f;
+        if (pUnit->IsNonMeleeSpellCasted(false, false, true))
+            score += 50.0f;
+        if (score > bestScore)
         {
             pBest = pUnit;
-            bestHp = pUnit->GetHealthPercent();
+            bestScore = score;
         }
     };
 
@@ -2031,135 +3217,782 @@ bool PartyBotAI::TryCrowdControlExtra()
     return false;
 }
 
+bool PartyBotAI::ShouldHoldFire() const
+{
+    if (m_role == ROLE_TANK || IsInDuel())
+        return false;
+    Unit* pVictim = me->GetVictim();
+    if (!pVictim)
+        return false;
+    // About to rip: stop damaging so the tank can catch up.
+    return IsNearTankThreat(pVictim, 0.90f);
+}
+
+bool PartyBotAI::TryThreatDump()
+{
+    if (m_role == ROLE_TANK || IsInDuel())
+        return false;
+
+    Unit* pVictim = me->GetVictim();
+    bool const highThreat = pVictim && IsNearTankThreat(pVictim, 0.80f);
+    bool const gotAggro = !me->GetAttackers().empty();
+    if (!highThreat && !gotAggro)
+        return false;
+
+    // Only dump when we are in real danger of a rip or already tanking.
+    if (!gotAggro && !IsNearTankThreat(pVictim, 0.85f))
+        return false;
+
+    switch (me->GetClass())
+    {
+        case CLASS_PRIEST:
+            if (m_spells.priest.pFade && CanTryToCastSpell(me, m_spells.priest.pFade))
+                return DoCastSpell(me, m_spells.priest.pFade) == SPELL_CAST_OK;
+            break;
+        case CLASS_HUNTER:
+            if (m_spells.hunter.pFeignDeath && CanTryToCastSpell(me, m_spells.hunter.pFeignDeath))
+                return DoCastSpell(me, m_spells.hunter.pFeignDeath) == SPELL_CAST_OK;
+            break;
+        case CLASS_ROGUE:
+            if (gotAggro && m_spells.rogue.pVanish && CanTryToCastSpell(me, m_spells.rogue.pVanish))
+                return DoCastSpell(me, m_spells.rogue.pVanish) == SPELL_CAST_OK;
+            if (gotAggro && m_spells.rogue.pEvasion && CanTryToCastSpell(me, m_spells.rogue.pEvasion))
+                return DoCastSpell(me, m_spells.rogue.pEvasion) == SPELL_CAST_OK;
+            break;
+        case CLASS_DRUID:
+            if (me->GetShapeshiftForm() == FORM_CAT && m_spells.druid.pCower &&
+                CanTryToCastSpell(me, m_spells.druid.pCower))
+                return DoCastSpell(me, m_spells.druid.pCower) == SPELL_CAST_OK;
+            break;
+        case CLASS_WARLOCK:
+            // No Fade; Death Coil the mob on us as an emergency peel.
+            if (gotAggro && m_spells.warlock.pDeathCoil)
+            {
+                Unit* pAttacker = *me->GetAttackers().begin();
+                if (pAttacker && CanTryToCastSpell(pAttacker, m_spells.warlock.pDeathCoil))
+                    return DoCastSpell(pAttacker, m_spells.warlock.pDeathCoil) == SPELL_CAST_OK;
+            }
+            break;
+        default:
+            break;
+    }
+    return false;
+}
+
+bool PartyBotAI::PartyMemberBelow(float hpPercent) const
+{
+    if (me->GetHealthPercent() < hpPercent)
+        return true;
+
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return false;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || !pMember->IsAlive() || pMember->IsGameMaster())
+            continue;
+        if (pMember->GetHealthPercent() < hpPercent)
+            return true;
+    }
+    return false;
+}
+
+bool PartyBotAI::TryStripEnemyBuffs()
+{
+    SpellEntry const* pPurge = nullptr;
+    switch (me->GetClass())
+    {
+        case CLASS_SHAMAN:
+            pPurge = m_spells.shaman.pPurge;
+            break;
+        case CLASS_PRIEST:
+            pPurge = m_spells.priest.pDispelMagic;
+            break;
+        default:
+            return false;
+    }
+    if (!pPurge)
+        return false;
+
+    Unit* pBest = nullptr;
+    int bestScore = 0;
+    auto consider = [&](Unit* pEnemy)
+    {
+        if (!pEnemy || !IsValidHostileTarget(pEnemy))
+            return;
+        if (!CanTryToCastSpell(pEnemy, pPurge))
+            return;
+        int const score = GetEnemyBuffStripScore(pEnemy, pPurge);
+        if (score > bestScore)
+        {
+            bestScore = score;
+            pBest = pEnemy;
+        }
+    };
+
+    consider(me->GetVictim());
+    for (Unit* pAttacker : me->GetAttackers())
+        consider(pAttacker);
+    if (Group* pGroup = me->GetGroup())
+    {
+        for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* pMember = itr->getSource();
+            if (!pMember)
+                continue;
+            for (Unit* pAttacker : pMember->GetAttackers())
+                consider(pAttacker);
+        }
+    }
+
+    if (!pBest || bestScore <= 0)
+        return false;
+    return DoCastSpell(pBest, pPurge) == SPELL_CAST_OK;
+}
+
+bool PartyBotAI::TryPrePullConsumable(Unit* pTarget)
+{
+    if (!pTarget || IsInDuel())
+        return false;
+    // Only on hard opens — trash does not deserve a Major Mana Potion.
+    if (!IsDangerousFight(pTarget) &&
+        !(pTarget->IsCreature() && static_cast<Creature*>(pTarget)->IsElite()))
+        return false;
+    if (m_prePotUntil && WorldTimer::getMSTime() < m_prePotUntil)
+        return false;
+
+    bool used = false;
+    // Pre-pot mana so the first GCD is full (healers and casters).
+    if (me->GetPowerType() == POWER_MANA &&
+        me->GetPowerPercent(POWER_MANA) < 90.0f &&
+        UseCombatConsumable(SPELL_EFFECT_ENERGIZE))
+        used = true;
+
+    // Lock out for a minute so the next tick does not drain the bag.
+    m_prePotUntil = WorldTimer::getMSTime() + 60 * IN_MILLISECONDS;
+    return used;
+}
+
+bool PartyBotAI::TryScatterFromDangerousCast()
+{
+    // Tank holds the pack in place; DPS/healers leave the blast radius.
+    if (m_role == ROLE_TANK || IsInDuel())
+        return false;
+
+    Unit* pDanger = nullptr;
+    float safeDist = 0.0f;
+
+    auto consider = [&](Unit* pEnemy)
+    {
+        if (!pEnemy || !pEnemy->IsAlive() || !pEnemy->IsNonMeleeSpellCasted(false, false, true))
+            return;
+        if (!IsValidHostileTarget(pEnemy) && !pEnemy->IsValidAttackTarget(me))
+            return;
+
+        Spell const* pSpell = pEnemy->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+        if (!pSpell)
+            pSpell = pEnemy->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+        if (!pSpell || !pSpell->m_spellInfo)
+            return;
+
+        SpellEntry const* info = pSpell->m_spellInfo;
+        if (info->IsPositiveSpell() || !info->IsAreaOfEffectSpell())
+            return;
+
+        bool damaging = false;
+        for (uint32 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        {
+            if (info->Effect[i] == SPELL_EFFECT_SCHOOL_DAMAGE ||
+                info->Effect[i] == SPELL_EFFECT_PERSISTENT_AREA_AURA ||
+                info->EffectApplyAuraName[i] == SPELL_AURA_PERIODIC_DAMAGE ||
+                info->EffectApplyAuraName[i] == SPELL_AURA_PERIODIC_DAMAGE_PERCENT)
+            {
+                damaging = true;
+                break;
+            }
+        }
+        if (!damaging)
+            return;
+
+        float radius = 10.0f;
+        if (info->EffectRadiusIndex[0])
+            radius = Spells::GetSpellRadius(sSpellRadiusStore.LookupEntry(info->EffectRadiusIndex[0]));
+        else if (info->EffectRadiusIndex[1])
+            radius = Spells::GetSpellRadius(sSpellRadiusStore.LookupEntry(info->EffectRadiusIndex[1]));
+        else if (info->EffectRadiusIndex[2])
+            radius = Spells::GetSpellRadius(sSpellRadiusStore.LookupEntry(info->EffectRadiusIndex[2]));
+
+        // Already outside the blast — nothing to do.
+        if (me->GetDistance(pEnemy) > radius + 1.0f)
+            return;
+
+        // Prefer the biggest blast still overlapping us.
+        float const need = radius + 4.0f;
+        if (!pDanger || need > safeDist)
+        {
+            pDanger = pEnemy;
+            safeDist = need;
+        }
+    };
+
+    consider(me->GetVictim());
+    for (Unit* pAttacker : me->GetAttackers())
+        consider(pAttacker);
+    if (Group* pGroup = me->GetGroup())
+    {
+        for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* pMember = itr->getSource();
+            if (!pMember)
+                continue;
+            consider(pMember->GetVictim());
+            for (Unit* pAttacker : pMember->GetAttackers())
+                consider(pAttacker);
+        }
+    }
+
+    if (!pDanger)
+        return false;
+
+    if (me->IsNonMeleeSpellCasted())
+        me->InterruptNonMeleeSpells(false);
+
+    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == DISTANCING_MOTION_TYPE)
+        return true;
+
+    return me->GetMotionMaster()->MoveDistance(pDanger, safeDist);
+}
+
+bool PartyBotAI::TryAvoidGroundDamage()
+{
+    Unit* pFrom = nullptr;
+    auto scan = [&](Unit::AuraList const& list)
+    {
+        for (Aura* aura : list)
+        {
+            if (!aura)
+                continue;
+            Unit* pCaster = aura->GetCaster();
+            if (!pCaster || !pCaster->IsAlive() || pCaster->IsFriendlyTo(me))
+                continue;
+            pFrom = pCaster;
+            return;
+        }
+    };
+    scan(me->GetAurasByType(SPELL_AURA_PERIODIC_DAMAGE));
+    if (!pFrom)
+        scan(me->GetAurasByType(SPELL_AURA_PERIODIC_DAMAGE_PERCENT));
+    if (!pFrom)
+        return false;
+
+    // Tank holds for threat unless the floor is eating them alive.
+    if (m_role == ROLE_TANK && me->GetHealthPercent() > 40.0f)
+        return false;
+
+    if (me->IsNonMeleeSpellCasted())
+        me->InterruptNonMeleeSpells(false);
+
+    // Already stepping out.
+    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == DISTANCING_MOTION_TYPE)
+        return true;
+
+    // Short step — RunAwayFromTarget refuses MoveDistance in dungeons.
+    return me->GetMotionMaster()->MoveDistance(pFrom, 10.0f);
+}
+
+bool PartyBotAI::TryHealerStackWithTank()
+{
+    if (m_role != ROLE_HEALER || IsInDuel() || !me->IsInCombat())
+        return false;
+    if (me->IsNonMeleeSpellCasted() || PartyMemberBelow(50.0f))
+        return false;
+
+    Player* pTank = FindPartyTank();
+    if (!pTank || pTank == me)
+        return false;
+
+    uint32 const encFlags = GetEncounterFlags();
+    // STACK_TANK: hug the tank; otherwise hold the cleave-safe heal band.
+    bool const stackHard = (encFlags & PB_ENC_STACK_TANK) != 0;
+    float const minDist = stackHard ? 2.0f : 8.0f;
+    float const maxDist = stackHard ? 8.0f : 18.0f;
+    float const stepOut = stackHard ? 5.0f : 12.0f;
+
+    float const dist = me->GetDistance(pTank);
+    if (dist >= minDist && dist <= maxDist)
+        return false;
+
+    MovementGeneratorType const mt = me->GetMotionMaster()->GetCurrentMovementGeneratorType();
+    if (mt == DISTANCING_MOTION_TYPE || mt == POINT_MOTION_TYPE)
+        return true;
+
+    if (dist < minDist)
+    {
+        if (!stackHard && pTank->GetAttackers().empty())
+            return false;
+        return me->GetMotionMaster()->MoveDistance(pTank, stepOut);
+    }
+
+    // Close the gap but keep healing this tick.
+    BeginChasing(pTank);
+    return false;
+}
+
+bool PartyBotAI::TryRangedSpread()
+{
+    if ((m_role != ROLE_RANGE_DPS && m_role != ROLE_HEALER) || IsInDuel())
+        return false;
+    if (!me->IsInCombat() || me->IsNonMeleeSpellCasted())
+        return false;
+
+    uint32 const encFlags = GetEncounterFlags();
+    bool const spreadHard = (encFlags & PB_ENC_SPREAD) != 0;
+    // STACK_TANK owns healer feet — do not unstack off the tank during soak.
+    if (m_role == ROLE_HEALER && (encFlags & PB_ENC_STACK_TANK))
+        return false;
+
+    // Only bother when the pack can cleave / rain, or the boss table asks for spread.
+    if (!spreadHard &&
+        me->GetEnemyCountInRadiusAround(me, 12.0f) < 2 && me->GetAttackers().size() < 2)
+        return false;
+
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return false;
+
+    float const tooClose = spreadHard ? 6.0f : 2.5f;
+    float const stepOut = spreadHard ? 10.0f : 6.0f;
+
+    Player* pTooClose = nullptr;
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == me || !pMember->IsAlive())
+            continue;
+        if (me->GetDistance(pMember) > tooClose)
+            continue;
+        // Prefer unstacking from another caster / healer over melee.
+        if (IsRangedDamageClass(pMember->GetClass()) || IsPartyHealer(pMember))
+        {
+            pTooClose = pMember;
+            break;
+        }
+        if (!pTooClose)
+            pTooClose = pMember;
+    }
+    if (!pTooClose)
+        return false;
+
+    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == DISTANCING_MOTION_TYPE)
+        return true;
+    return me->GetMotionMaster()->MoveDistance(pTooClose, stepOut);
+}
+
+bool PartyBotAI::TryKiteWhirlwind()
+{
+    if (m_role == ROLE_TANK || m_role == ROLE_HEALER || IsInDuel())
+        return false;
+    if (!me->IsInCombat())
+        return false;
+
+    Unit* pVictim = me->GetVictim();
+    if (!pVictim)
+        return false;
+
+    uint32 const encFlags = PartyBotEncounter::GetFlags(pVictim);
+    if (!(encFlags & PB_ENC_KITE_WHIRLWIND))
+        return false;
+    if (!PartyBotEncounter::HasWhirlwindAura(pVictim))
+        return false;
+
+    // Already clear of the spin.
+    if (me->GetDistance(pVictim) >= 12.0f)
+        return false;
+
+    if (me->IsNonMeleeSpellCasted())
+        me->InterruptNonMeleeSpells(false);
+
+    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == DISTANCING_MOTION_TYPE)
+        return true;
+
+    // Short step — same dungeon-safe MoveDistance path as ground AoE.
+    return me->GetMotionMaster()->MoveDistance(pVictim, 14.0f);
+}
+
+bool PartyBotAI::TryBlessingOfFreedom()
+{
+    if (me->GetClass() != CLASS_PALADIN || !m_spells.paladin.pBlessingOfFreedom)
+        return false;
+    if (me->GetShapeshiftForm() != FORM_NONE)
+        return false;
+
+    Player* pBest = nullptr;
+    int bestScore = -1;
+    auto consider = [&](Player* pMember)
+    {
+        if (!pMember || !pMember->IsAlive())
+            return;
+        bool const locked = pMember->HasUnitState(UNIT_STATE_ROOT) ||
+            pMember->HasAuraType(SPELL_AURA_MOD_ROOT) ||
+            pMember->HasAuraType(SPELL_AURA_MOD_DECREASE_SPEED);
+        if (!locked)
+            return;
+        if (!CanTryToCastSpell(pMember, m_spells.paladin.pBlessingOfFreedom))
+            return;
+        int score = 10;
+        if (IsPartyTank(pMember))
+            score += 40;
+        else if (IsPartyHealer(pMember))
+            score += 25;
+        else if (pMember->GetObjectGuid() == m_leaderGuid)
+            score += 30;
+        if (pMember == me)
+            score += 5;
+        if (score > bestScore)
+        {
+            bestScore = score;
+            pBest = pMember;
+        }
+    };
+
+    consider(me);
+    if (Group* pGroup = me->GetGroup())
+    {
+        for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+            consider(itr->getSource());
+    }
+    if (!pBest)
+        return false;
+    return DoCastSpell(pBest, m_spells.paladin.pBlessingOfFreedom) == SPELL_CAST_OK;
+}
+
+bool PartyBotAI::IsAssignedToDispel(Player const* pFriend, SpellEntry const* pSpellEntry) const
+{
+    if (!pFriend || !pSpellEntry)
+        return false;
+
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return true;
+
+    Player* pBest = nullptr;
+    float bestDist = 9999.0f;
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || !pMember->IsAlive())
+            continue;
+        PartyBotAI* pAI = dynamic_cast<PartyBotAI*>(pMember->AI());
+        if (!pAI)
+            continue;
+        // Only bots that actually know this cleanse spell compete.
+        if (!pMember->HasSpell(pSpellEntry->Id) || !pMember->IsSpellReady(pSpellEntry))
+            continue;
+        if (!pMember->IsWithinDist(pFriend, 30.0f) || !pMember->IsWithinLOSInMap(pFriend))
+            continue;
+        float const dist = pMember->GetDistance(pFriend);
+        if (!pBest || dist < bestDist - 0.01f ||
+            (std::fabs(dist - bestDist) < 0.01f && pMember->GetObjectGuid() < pBest->GetObjectGuid()))
+        {
+            pBest = pMember;
+            bestDist = dist;
+        }
+    }
+    return !pBest || pBest == me;
+}
+
+bool PartyBotAI::TrySpreadDots()
+{
+    if (m_role == ROLE_TANK || m_role == ROLE_HEALER || IsInDuel())
+        return false;
+
+    SpellEntry const* pDot = nullptr;
+    switch (me->GetClass())
+    {
+        case CLASS_WARLOCK:
+            pDot = m_spells.warlock.pCorruption;
+            break;
+        case CLASS_PRIEST:
+            if (GetRole() != ROLE_HEALER)
+                pDot = m_spells.priest.pShadowWordPain;
+            break;
+        case CLASS_HUNTER:
+            pDot = m_spells.hunter.pSerpentSting;
+            break;
+        case CLASS_DRUID:
+            if (m_role == ROLE_RANGE_DPS)
+                pDot = m_spells.druid.pMoonfire;
+            break;
+        default:
+            return false;
+    }
+    if (!pDot)
+        return false;
+
+    Unit* pMain = me->GetVictim();
+    // Only spread once the kill target already has the DoT — keep focus fire first.
+    if (!pMain || !pMain->HasAura(pDot->Id))
+        return false;
+
+    Unit* pBest = nullptr;
+    float bestScore = -1.0f;
+    auto consider = [&](Unit* pEnemy)
+    {
+        if (!pEnemy || pEnemy == pMain || !IsValidHostileTarget(pEnemy))
+            return;
+        if (pEnemy->HasBreakableByDamageCrowdControlAura())
+            return;
+        if (pEnemy->GetHealthPercent() < 25.0f)
+            return;
+        if (!me->IsWithinDist(pEnemy, 30.0f))
+            return;
+        if (pEnemy->HasAura(pDot->Id) || !CanTryToCastSpell(pEnemy, pDot))
+            return;
+
+        float score = pEnemy->GetHealthPercent();
+        if (IsRangedEnemy(pEnemy))
+            score += 20.0f;
+        if (score > bestScore)
+        {
+            bestScore = score;
+            pBest = pEnemy;
+        }
+    };
+
+    for (Unit* pAttacker : me->GetAttackers())
+        consider(pAttacker);
+
+    if (Group* pGroup = me->GetGroup())
+    {
+        for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* pMember = itr->getSource();
+            if (!pMember)
+                continue;
+            for (Unit* pAttacker : pMember->GetAttackers())
+                consider(pAttacker);
+            if (Unit* pVictim = pMember->GetVictim())
+                if (pVictim->IsInCombat())
+                    consider(pVictim);
+        }
+    }
+
+    if (!pBest)
+        return false;
+    return DoCastSpell(pBest, pDot) == SPELL_CAST_OK;
+}
+
+void PartyBotAI::EnsureDefaultMarks()
+{
+    // Classic dungeon convention: skull = kill, moon = sheep / hibernate.
+    if (m_marksToFocus.empty())
+        m_marksToFocus.push_back(RAID_TARGET_ICON_SKULL);
+    if (m_marksToCC.empty())
+        m_marksToCC.push_back(RAID_TARGET_ICON_MOON);
+}
+
+bool PartyBotAI::IsAutoMarkController() const
+{
+    Group* pGroup = me->GetGroup();
+    if (!pGroup || IsInDuel())
+        return false;
+
+    Player* pBest = nullptr;
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember->GetObjectGuid() == m_leaderGuid)
+            continue;
+        PartyBotAI* pAI = dynamic_cast<PartyBotAI*>(pMember->AI());
+        if (!pAI)
+            continue;
+
+        if (!pBest)
+        {
+            pBest = pMember;
+            continue;
+        }
+
+        PartyBotAI* pBestAI = dynamic_cast<PartyBotAI*>(pBest->AI());
+        bool const amTank = pAI->m_role == ROLE_TANK;
+        bool const bestTank = pBestAI && pBestAI->m_role == ROLE_TANK;
+        if (amTank && !bestTank)
+            pBest = pMember;
+        else if (amTank == bestTank && pMember->GetObjectGuid() < pBest->GetObjectGuid())
+            pBest = pMember;
+    }
+    return pBest == me;
+}
+
+void PartyBotAI::UpdateAutoRaidMarks()
+{
+    if (!IsAutoMarkController())
+        return;
+
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return;
+
+    EnsureDefaultMarks();
+
+    // Skull on the focus-fire / kill target (not a sheeped add).
+    Unit* pKill = SelectFocusFireTarget();
+    if (!pKill)
+        pKill = me->GetVictim();
+    if (pKill && IsValidHostileTarget(pKill) && !pKill->HasBreakableByDamageCrowdControlAura())
+    {
+        if (pGroup->GetTargetWithIcon(RAID_TARGET_ICON_SKULL) != pKill->GetObjectGuid())
+            pGroup->SetTargetIcon(RAID_TARGET_ICON_SKULL, pKill->GetObjectGuid());
+    }
+
+    // Moon on an already-CCd add, else a spare caster worth parking.
+    Unit* pMoon = FindBreakableCrowdControlNear(40.0f);
+    if (!pMoon)
+    {
+        Unit* pMain = pKill ? pKill : me->GetVictim();
+        Unit* pBest = nullptr;
+        float bestScore = -1.0f;
+        auto consider = [&](Unit* pEnemy)
+        {
+            if (!pEnemy || pEnemy == pMain || !IsValidHostileTarget(pEnemy))
+                return;
+            if (pEnemy->GetHealthPercent() < 20.0f || !me->IsWithinDist(pEnemy, 40.0f))
+                return;
+            float score = IsRangedEnemy(pEnemy) ? 50.0f : 10.0f;
+            score += pEnemy->GetHealthPercent() * 0.1f;
+            if (score > bestScore)
+            {
+                bestScore = score;
+                pBest = pEnemy;
+            }
+        };
+        for (Unit* pAttacker : me->GetAttackers())
+            consider(pAttacker);
+        for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* pMember = itr->getSource();
+            if (!pMember)
+                continue;
+            for (Unit* pAttacker : pMember->GetAttackers())
+                consider(pAttacker);
+        }
+        pMoon = pBest;
+    }
+    if (pMoon)
+    {
+        if (pGroup->GetTargetWithIcon(RAID_TARGET_ICON_MOON) != pMoon->GetObjectGuid())
+            pGroup->SetTargetIcon(RAID_TARGET_ICON_MOON, pMoon->GetObjectGuid());
+    }
+}
+
+bool PartyBotAI::TryTankSnapThreat()
+{
+    if (m_role != ROLE_TANK || IsInDuel())
+        return false;
+
+    auto tryTaunt = [&](Unit* pEnemy) -> bool
+    {
+        if (!pEnemy || !IsValidHostileTarget(pEnemy) || !me->IsWithinDist(pEnemy, 30.0f))
+            return false;
+        if (pEnemy->GetVictim() == me)
+            return false;
+        for (SpellEntry const* pSpellEntry : m_spellListTaunt)
+        {
+            if (CanTryToCastSpell(pEnemy, pSpellEntry) &&
+                DoCastSpell(pEnemy, pSpellEntry) == SPELL_CAST_OK)
+                return true;
+        }
+        return false;
+    };
+
+    // Prefer peeling off the healer / player, then any loose add.
+    if (Unit* pPeel = SelectPartyPeelTarget())
+    {
+        if (tryTaunt(pPeel))
+            return true;
+        if (CanEngageTarget(pPeel) && AttackStart(pPeel))
+            return true;
+    }
+
+    if (Group* pGroup = me->GetGroup())
+    {
+        for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* pMember = itr->getSource();
+            if (!pMember || pMember == me)
+                continue;
+            for (Unit* pAttacker : pMember->GetAttackers())
+            {
+                if (tryTaunt(pAttacker))
+                    return true;
+            }
+        }
+    }
+
+    for (Unit* pAttacker : me->GetAttackers())
+    {
+        if (pAttacker->GetVictim() != me && tryTaunt(pAttacker))
+            return true;
+    }
+
+    return false;
+}
+
 bool PartyBotAI::CheckForDispelTargets()
 {
     if (me->GetShapeshiftForm() != FORM_NONE)
         return false;
 
+    auto tryFriendly = [&](SpellEntry const* pSpell) -> bool
+    {
+        if (!pSpell)
+            return false;
+        Player* pFriend = SelectDispelTarget(pSpell);
+        if (!pFriend || !IsAssignedToDispel(pFriend, pSpell))
+            return false;
+        if (!CanTryToCastSpell(pFriend, pSpell))
+            return false;
+        return DoCastSpell(pFriend, pSpell) == SPELL_CAST_OK;
+    };
+
     switch (me->GetClass())
     {
         case CLASS_PALADIN:
-        {
-            if (m_spells.paladin.pCleanse)
-            {
-                if (Unit* pFriend = SelectDispelTarget(m_spells.paladin.pCleanse))
-                {
-                    if (CanTryToCastSpell(pFriend, m_spells.paladin.pCleanse))
-                    {
-                        if (DoCastSpell(pFriend, m_spells.paladin.pCleanse) == SPELL_CAST_OK)
-                            return true;
-                    }
-                }
-            }
+            if (tryFriendly(m_spells.paladin.pCleanse))
+                return true;
             break;
-        }
         case CLASS_SHAMAN:
-        {
-            if (m_spells.shaman.pCureDisease)
-            {
-                if (Unit* pFriend = SelectDispelTarget(m_spells.shaman.pCureDisease))
-                {
-                    if (CanTryToCastSpell(pFriend, m_spells.shaman.pCureDisease))
-                    {
-                        if (DoCastSpell(pFriend, m_spells.shaman.pCureDisease) == SPELL_CAST_OK)
-                            return true;
-                    }
-                }
-            }
-
-            if (m_spells.shaman.pCurePoison)
-            {
-                if (Unit* pFriend = SelectDispelTarget(m_spells.shaman.pCurePoison))
-                {
-                    if (CanTryToCastSpell(pFriend, m_spells.shaman.pCurePoison))
-                    {
-                        if (DoCastSpell(pFriend, m_spells.shaman.pCurePoison) == SPELL_CAST_OK)
-                            return true;
-                    }
-                }
-            }
+            // Disease often hurts more than poison on dungeon trash — try it first.
+            if (tryFriendly(m_spells.shaman.pCureDisease))
+                return true;
+            if (tryFriendly(m_spells.shaman.pCurePoison))
+                return true;
             break;
-        }
         case CLASS_MAGE:
-        {
-            if (m_spells.mage.pRemoveLesserCurse)
-            {
-                if (Unit* pFriend = SelectDispelTarget(m_spells.mage.pRemoveLesserCurse))
-                {
-                    if (CanTryToCastSpell(pFriend, m_spells.mage.pRemoveLesserCurse))
-                    {
-                        if (DoCastSpell(pFriend, m_spells.mage.pRemoveLesserCurse) == SPELL_CAST_OK)
-                            return true;
-                    }
-                }
-            }
+            if (tryFriendly(m_spells.mage.pRemoveLesserCurse))
+                return true;
             break;
-        }
         case CLASS_PRIEST:
-        {
-            if (m_spells.priest.pDispelMagic)
-            {
-                if (Unit* pFriend = SelectDispelTarget(m_spells.priest.pDispelMagic))
-                {
-                    if (CanTryToCastSpell(pFriend, m_spells.priest.pDispelMagic))
-                    {
-                        if (DoCastSpell(pFriend, m_spells.priest.pDispelMagic) == SPELL_CAST_OK)
-                            return true;
-                    }
-                }
-                // Offensive: strip a magic buff off the kill target (Power Word: Shield, etc.).
-                if (Unit* pVictim = me->GetVictim())
-                {
-                    if (IsValidDispelTarget(pVictim, m_spells.priest.pDispelMagic) &&
-                        CanTryToCastSpell(pVictim, m_spells.priest.pDispelMagic) &&
-                        DoCastSpell(pVictim, m_spells.priest.pDispelMagic) == SPELL_CAST_OK)
-                        return true;
-                }
-            }
-            if (m_spells.priest.pAbolishDisease)
-            {
-                if (Unit* pFriend = SelectDispelTarget(m_spells.priest.pAbolishDisease))
-                {
-                    if (CanTryToCastSpell(pFriend, m_spells.priest.pAbolishDisease))
-                    {
-                        if (DoCastSpell(pFriend, m_spells.priest.pAbolishDisease) == SPELL_CAST_OK)
-                            return true;
-                    }
-                }
-            }
+            // Magic CC / DoTs before disease; offensive strip is TryStripEnemyBuffs.
+            if (tryFriendly(m_spells.priest.pDispelMagic))
+                return true;
+            if (tryFriendly(m_spells.priest.pAbolishDisease))
+                return true;
             break;
-        }
         case CLASS_DRUID:
         {
-            SpellEntry const* pDispelSpell = m_spells.druid.pAbolishPoison ?
-                m_spells.druid.pAbolishPoison :
-                m_spells.druid.pCurePoison;
-
-            if (pDispelSpell)
-            {
-                if (Unit* pFriend = SelectDispelTarget(pDispelSpell))
-                {
-                    if (CanTryToCastSpell(pFriend, pDispelSpell))
-                    {
-                        if (DoCastSpell(pFriend, pDispelSpell) == SPELL_CAST_OK)
-                            return true;
-                    }
-                }
-            }
-
-            if (m_spells.druid.pRemoveCurse)
-            {
-                if (Unit* pFriend = SelectDispelTarget(m_spells.druid.pRemoveCurse))
-                {
-                    if (CanTryToCastSpell(pFriend, m_spells.druid.pRemoveCurse))
-                    {
-                        if (DoCastSpell(pFriend, m_spells.druid.pRemoveCurse) == SPELL_CAST_OK)
-                            return true;
-                    }
-                }
-            }
+            SpellEntry const* pPoison = m_spells.druid.pAbolishPoison ?
+                m_spells.druid.pAbolishPoison : m_spells.druid.pCurePoison;
+            if (tryFriendly(pPoison))
+                return true;
+            if (tryFriendly(m_spells.druid.pRemoveCurse))
+                return true;
             break;
         }
+        default:
+            break;
     }
 
     return false;
@@ -2270,6 +4103,10 @@ void PartyBotAI::UpdateInCombatAI_Paladin()
 
     if (GetRole() == ROLE_HEALER)
     {
+        float directSelf, directGroup, hotSelf, hotGroup;
+        bool allowPreHeal = true;
+        GetHealerCareThresholds(directSelf, directGroup, hotSelf, hotGroup, allowPreHeal);
+
         if (m_spells.paladin.pHolyShock &&
             me->GetHealthPercent() < 50.0f &&
             CanTryToCastSpell(me, m_spells.paladin.pHolyShock))
@@ -2284,10 +4121,10 @@ void PartyBotAI::UpdateInCombatAI_Paladin()
                 return;
         }
 
-        if (FindAndHealInjuredAlly(80.0f, 90.0f))
+        if (FindAndHealInjuredAlly(directSelf, directGroup))
             return;
 
-        if (FindAndPreHealTarget())
+        if (allowPreHeal && FindAndPreHealTarget())
             return;
     }
     else
@@ -2378,13 +4215,7 @@ void PartyBotAI::UpdateInCombatAI_Paladin()
         }
     }
 
-    if (m_spells.paladin.pBlessingOfFreedom &&
-       (me->HasUnitState(UNIT_STATE_ROOT) || me->HasAuraType(SPELL_AURA_MOD_DECREASE_SPEED)) &&
-        CanTryToCastSpell(me, m_spells.paladin.pBlessingOfFreedom))
-    {
-        if (DoCastSpell(me, m_spells.paladin.pBlessingOfFreedom) == SPELL_CAST_OK)
-            return;
-    }
+    // Blessing of Freedom on allies is TryBlessingOfFreedom in the shared pipeline.
 
     if (GetRole() != ROLE_HEALER &&
         me->GetHealthPercent() < 30.0f)
@@ -2435,6 +4266,7 @@ void PartyBotAI::UpdateInCombatAI_Shaman()
         if (Unit* pVictim = me->GetVictim())
         {
             if (m_spells.shaman.pElementalMastery &&
+                ShouldBurnMajorCooldown(pVictim) &&
                 me->GetAttackers().empty() &&
                 CanTryToCastSpell(me, m_spells.shaman.pElementalMastery))
             {
@@ -2465,25 +4297,19 @@ void PartyBotAI::UpdateInCombatAI_Shaman()
                     return;
             }
 
-            if (m_spells.shaman.pChainLightning &&
-                CanTryToCastSpell(pVictim, m_spells.shaman.pChainLightning))
-            {
-                if (DoCastSpell(pVictim, m_spells.shaman.pChainLightning) == SPELL_CAST_OK)
-                    return;
-            }
-
-            if (m_spells.shaman.pPurge &&
-                IsValidDispelTarget(pVictim, m_spells.shaman.pPurge) &&
-                CanTryToCastSpell(pVictim, m_spells.shaman.pPurge))
-            {
-                if (DoCastSpell(pVictim, m_spells.shaman.pPurge) == SPELL_CAST_OK)
-                    return;
-            }
-
+            // Flame Shock DoT before filler; Chain Lightning only on a real pack.
             if (m_spells.shaman.pFlameShock &&
                 CanTryToCastSpell(pVictim, m_spells.shaman.pFlameShock))
             {
                 if (DoCastSpell(pVictim, m_spells.shaman.pFlameShock) == SPELL_CAST_OK)
+                    return;
+            }
+
+            if (m_spells.shaman.pChainLightning &&
+                me->GetEnemyCountInRadiusAround(pVictim, 10.0f) > 1 &&
+                CanTryToCastSpell(pVictim, m_spells.shaman.pChainLightning))
+            {
+                if (DoCastSpell(pVictim, m_spells.shaman.pChainLightning) == SPELL_CAST_OK)
                     return;
             }
 
@@ -2502,10 +4328,14 @@ void PartyBotAI::UpdateInCombatAI_Shaman()
 
     if (GetRole() == ROLE_HEALER)
     {
-        if (FindAndHealInjuredAlly(50.0f, 90.0f))
+        float directSelf, directGroup, hotSelf, hotGroup;
+        bool allowPreHeal = true;
+        GetHealerCareThresholds(directSelf, directGroup, hotSelf, hotGroup, allowPreHeal);
+        // Shaman defaults were generous on the group line; keep mana-aware floors.
+        if (FindAndHealInjuredAlly(std::min(directSelf, 50.0f), directGroup))
             return;
 
-        if (FindAndPreHealTarget())
+        if (allowPreHeal && FindAndPreHealTarget())
             return;
     }
     else if (me->GetHealthPercent() < 20.0f)
@@ -2567,6 +4397,22 @@ void PartyBotAI::UpdateInCombatAI_Hunter()
             }
         }
 
+        if (m_spells.hunter.pHuntersMark &&
+            CanTryToCastSpell(pVictim, m_spells.hunter.pHuntersMark))
+        {
+            if (DoCastSpell(pVictim, m_spells.hunter.pHuntersMark) == SPELL_CAST_OK)
+                return;
+        }
+
+        // Rapid Fire on elites / multi-pulls — not on gray trash.
+        if (m_spells.hunter.pRapidFire &&
+            ShouldBurnMajorCooldown(pVictim) &&
+            CanTryToCastSpell(me, m_spells.hunter.pRapidFire))
+        {
+            if (DoCastSpell(me, m_spells.hunter.pRapidFire) == SPELL_CAST_OK)
+                return;
+        }
+
         if (m_spells.hunter.pVolley &&
            (me->GetEnemyCountInRadiusAround(pVictim, 10.0f) > 2) &&
             CanTryToCastSpell(pVictim, m_spells.hunter.pVolley))
@@ -2624,7 +4470,9 @@ void PartyBotAI::UpdateInCombatAI_Hunter()
                 return;
         }
 
+        // Multi-Shot only when a second mob sits in the cone (sheep-safe via CanTry).
         if (m_spells.hunter.pMultiShot &&
+            me->GetEnemyCountInRadiusAround(pVictim, 8.0f) > 1 &&
             CanTryToCastSpell(pVictim, m_spells.hunter.pMultiShot))
         {
             if (DoCastSpell(pVictim, m_spells.hunter.pMultiShot) == SPELL_CAST_OK)
@@ -2657,6 +4505,7 @@ void PartyBotAI::UpdateInCombatAI_Hunter()
                     return;
             }
 
+            // Feign on high threat is TryThreatDump; here only as a last-stand.
             if (m_spells.hunter.pFeignDeath &&
                (me->GetHealthPercent() < 20.0f) &&
                 CanTryToCastSpell(me, m_spells.hunter.pFeignDeath))
@@ -2749,6 +4598,15 @@ void PartyBotAI::UpdateOutOfCombatAI_Mage()
         }
     }
 
+    // Restock the mana gem between pulls so combat pots prefer it.
+    if (m_spells.mage.pConjureManaGem &&
+        !HasConjuredConsumable(SPELL_EFFECT_ENERGIZE) &&
+        CanTryToCastSpell(me, m_spells.mage.pConjureManaGem))
+    {
+        if (DoCastSpell(me, m_spells.mage.pConjureManaGem) == SPELL_CAST_OK)
+            return;
+    }
+
     if (m_isBuffing &&
        (!m_spells.mage.pArcaneIntellect ||
         !me->HasGCD(m_spells.mage.pArcaneIntellect)))
@@ -2764,7 +4622,9 @@ void PartyBotAI::UpdateInCombatAI_Mage()
 {
     if (Unit* pVictim = me->GetVictim())
     {
+        // Combustion is a long CD — save it for elites / packed pulls, not gray trash.
         if (m_spells.mage.pCombustion &&
+            ShouldBurnMajorCooldown(pVictim) &&
             CanTryToCastSpell(me, m_spells.mage.pCombustion))
         {
             if (DoCastSpell(me, m_spells.mage.pCombustion) == SPELL_CAST_OK)
@@ -2895,6 +4755,7 @@ void PartyBotAI::UpdateInCombatAI_Mage()
         }
 
         if (m_spells.mage.pArcanePower &&
+            ShouldBurnMajorCooldown(pVictim) &&
             (me->GetPowerPercent(POWER_MANA) > 50.0f) &&
             CanTryToCastSpell(me, m_spells.mage.pArcanePower))
         {
@@ -2903,6 +4764,7 @@ void PartyBotAI::UpdateInCombatAI_Mage()
         }
 
         if (m_spells.mage.pPresenceOfMind &&
+            ShouldBurnMajorCooldown(pVictim) &&
            (me->GetPowerPercent(POWER_MANA) > 50.0f) &&
             CanTryToCastSpell(me, m_spells.mage.pPresenceOfMind))
         {
@@ -2910,11 +4772,30 @@ void PartyBotAI::UpdateInCombatAI_Mage()
                 return;
         }
 
-        if (m_spells.mage.pScorch &&
-           (pVictim->GetHealthPercent() < 20.0f) &&
+        // Fire talent tree (Combustion / Pyro / Blast Wave): stack Improved Scorch, then Fireball.
+        bool const fireSpec = m_spells.mage.pCombustion || m_spells.mage.pPyroblast ||
+                              m_spells.mage.pBlastWave;
+        if (fireSpec && m_spells.mage.pScorch &&
+            pVictim->GetHealthPercent() > 15.0f &&
+            GetAuraStackCount(pVictim, PB_SPELL_FIRE_VULNERABILITY) < 5 &&
             CanTryToCastSpell(pVictim, m_spells.mage.pScorch))
         {
             if (DoCastSpell(pVictim, m_spells.mage.pScorch) == SPELL_CAST_OK)
+                return;
+        }
+
+        if (m_spells.mage.pFireBlast &&
+            (pVictim->GetHealthPercent() < 25.0f || fireSpec) &&
+            CanTryToCastSpell(pVictim, m_spells.mage.pFireBlast))
+        {
+            if (DoCastSpell(pVictim, m_spells.mage.pFireBlast) == SPELL_CAST_OK)
+                return;
+        }
+
+        if (fireSpec && m_spells.mage.pFireball &&
+            CanTryToCastSpell(pVictim, m_spells.mage.pFireball))
+        {
+            if (DoCastSpell(pVictim, m_spells.mage.pFireball) == SPELL_CAST_OK)
                 return;
         }
 
@@ -2925,17 +4806,19 @@ void PartyBotAI::UpdateInCombatAI_Mage()
                 return;
         }
 
-        if (m_spells.mage.pFireBlast &&
-            CanTryToCastSpell(pVictim, m_spells.mage.pFireBlast))
-        {
-            if (DoCastSpell(pVictim, m_spells.mage.pFireBlast) == SPELL_CAST_OK)
-                return;
-        }
-
         if (m_spells.mage.pFireball &&
             CanTryToCastSpell(pVictim, m_spells.mage.pFireball))
         {
             if (DoCastSpell(pVictim, m_spells.mage.pFireball) == SPELL_CAST_OK)
+                return;
+        }
+
+        // Execute-range Scorch when Frostbolt / Fireball did not fire.
+        if (m_spells.mage.pScorch &&
+           (pVictim->GetHealthPercent() < 20.0f) &&
+            CanTryToCastSpell(pVictim, m_spells.mage.pScorch))
+        {
+            if (DoCastSpell(pVictim, m_spells.mage.pScorch) == SPELL_CAST_OK)
                 return;
         }
 
@@ -3076,31 +4959,25 @@ void PartyBotAI::UpdateInCombatAI_Priest()
             return;
     }
 
+    // Fade is handled by TryThreatDump when threat is high; here only emergency
+    // shackle when something is already hitting the priest.
     if (!me->GetAttackers().empty() &&
-        m_role != ROLE_TANK)
+        m_role != ROLE_TANK &&
+        m_spells.priest.pShackleUndead)
     {
-        if (m_spells.priest.pFade &&
-            CanTryToCastSpell(me, m_spells.priest.pFade))
+        Unit* pAttacker = *me->GetAttackers().begin();
+        if ((pAttacker->GetHealth() > me->GetHealth()) &&
+            CanTryToCastSpell(pAttacker, m_spells.priest.pShackleUndead) &&
+            CanUseCrowdControl(m_spells.priest.pShackleUndead, pAttacker))
         {
-            if (DoCastSpell(me, m_spells.priest.pFade) == SPELL_CAST_OK)
+            if (DoCastSpell(pAttacker, m_spells.priest.pShackleUndead) == SPELL_CAST_OK)
                 return;
-        }
-
-        if (m_spells.priest.pShackleUndead)
-        {
-            Unit* pAttacker = *me->GetAttackers().begin();
-            if ((pAttacker->GetHealth() > me->GetHealth()) &&
-                CanTryToCastSpell(pAttacker, m_spells.priest.pShackleUndead) &&
-                CanUseCrowdControl(m_spells.priest.pShackleUndead, pAttacker))
-            {
-                if (DoCastSpell(pAttacker, m_spells.priest.pShackleUndead) == SPELL_CAST_OK)
-                    return;
-            }
         }
     }
 
+    // Inner Focus before a triage heal, or when mana is already thin.
     if (m_spells.priest.pInnerFocus &&
-       (me->GetPowerPercent(POWER_MANA) < 50.0f) &&
+       (PartyMemberBelow(45.0f) || me->GetPowerPercent(POWER_MANA) < 50.0f) &&
         CanTryToCastSpell(me, m_spells.priest.pInnerFocus))
     {
         DoCastSpell(me, m_spells.priest.pInnerFocus);
@@ -3121,17 +4998,22 @@ void PartyBotAI::UpdateInCombatAI_Priest()
             }
         }
 
+        float directSelf = 60.0f, directGroup = 80.0f, hotSelf = 80.0f, hotGroup = 90.0f;
+        bool allowPreHeal = true;
+        if (GetRole() == ROLE_HEALER)
+            GetHealerCareThresholds(directSelf, directGroup, hotSelf, hotGroup, allowPreHeal);
+
         // Direct heal more seriously injured.
-        if (Unit* pTarget = SelectHealTarget(60.0f, 80.0f))
+        if (Unit* pTarget = SelectHealTarget(directSelf, directGroup))
             if (HealInjuredTargetDirect(pTarget))
                 return;
 
         // Apply HoT aura for small injuries.
-        if (Unit* pTarget = SelectPeriodicHealTarget(80.0f, 90.0f))
+        if (Unit* pTarget = SelectPeriodicHealTarget(hotSelf, hotGroup))
             if (HealInjuredTargetPeriodic(pTarget))
                 return;
 
-        if (GetRole() == ROLE_HEALER && FindAndPreHealTarget())
+        if (GetRole() == ROLE_HEALER && allowPreHeal && FindAndPreHealTarget())
             return;
 
         // Healer with nothing to heal: fall through and wand the kill target.
@@ -3201,6 +5083,8 @@ void PartyBotAI::UpdateInCombatAI_Priest()
 
         if (m_spells.priest.pManaBurn &&
            (pVictim->GetPowerType() == POWER_MANA) &&
+            pVictim->GetPowerPercent(POWER_MANA) > 20.0f &&
+            IsRangedEnemy(pVictim) &&
             CanTryToCastSpell(pVictim, m_spells.priest.pManaBurn))
         {
             if (DoCastSpell(pVictim, m_spells.priest.pManaBurn) == SPELL_CAST_OK)
@@ -3231,6 +5115,13 @@ void PartyBotAI::UpdateInCombatAI_Priest()
                     return;
             }
 
+            if (m_spells.priest.pHolyFire &&
+                CanTryToCastSpell(pVictim, m_spells.priest.pHolyFire))
+            {
+                if (DoCastSpell(pVictim, m_spells.priest.pHolyFire) == SPELL_CAST_OK)
+                    return;
+            }
+
             if (m_spells.priest.pSmite &&
                 CanTryToCastSpell(pVictim, m_spells.priest.pSmite))
             {
@@ -3238,6 +5129,15 @@ void PartyBotAI::UpdateInCombatAI_Priest()
                     return;
             }
         }
+    }
+    else if (GetRole() == ROLE_HEALER && m_spells.priest.pHolyFire &&
+             me->GetPowerPercent(POWER_MANA) > 85.0f &&
+             IsDangerousFight(pVictim) &&
+             CanTryToCastSpell(pVictim, m_spells.priest.pHolyFire))
+    {
+        // Only burn mana on filler during hard fights when nearly full.
+        if (DoCastSpell(pVictim, m_spells.priest.pHolyFire) == SPELL_CAST_OK)
+            return;
     }
 
     // Healer idle filler (saves mana); DPS last resort when spells did not fire.
@@ -3276,6 +5176,15 @@ void PartyBotAI::UpdateOutOfCombatAI_Warlock()
             me->ClearTarget();
             return;
         }
+    }
+
+    // Restock a healthstone between pulls (soul shard comes from AddAllSpellReagents).
+    if (m_spells.warlock.pCreateHealthstone &&
+        !HasConjuredConsumable(SPELL_EFFECT_HEAL) &&
+        CanTryToCastSpell(me, m_spells.warlock.pCreateHealthstone))
+    {
+        if (DoCastSpell(me, m_spells.warlock.pCreateHealthstone) == SPELL_CAST_OK)
+            return;
     }
 
     if (m_isBuffing &&
@@ -3401,6 +5310,14 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
                 return;
         }
 
+        if (m_spells.warlock.pShadowWard &&
+            me->GetHealthPercent() < 80.0f &&
+            CanTryToCastSpell(me, m_spells.warlock.pShadowWard))
+        {
+            if (DoCastSpell(me, m_spells.warlock.pShadowWard) == SPELL_CAST_OK)
+                return;
+        }
+
         if (m_spells.warlock.pFear &&
             pVictim->GetVictim() == me &&
             CanTryToCastSpell(pVictim, m_spells.warlock.pFear))
@@ -3409,12 +5326,8 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
                 return;
         }
 
-        if (m_spells.warlock.pCurseofAgony &&
-            CanTryToCastSpell(pVictim, m_spells.warlock.pCurseofAgony))
-        {
-            if (DoCastSpell(pVictim, m_spells.warlock.pCurseofAgony) == SPELL_CAST_OK)
-                return;
-        }
+        if (TryApplyWarlockCurse(pVictim))
+            return;
 
         if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE
             && me->GetDistance(pVictim) > 30.0f)
@@ -3509,6 +5422,23 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
             DoCastSpell(me, m_spells.warrior.pBerserkerStance);
         }
 
+        if (m_spells.warrior.pBattleShout &&
+            !me->HasAura(m_spells.warrior.pBattleShout->Id) &&
+            CanTryToCastSpell(me, m_spells.warrior.pBattleShout))
+        {
+            if (DoCastSpell(me, m_spells.warrior.pBattleShout) == SPELL_CAST_OK)
+                return;
+        }
+
+        // Open the rage faucet at the start of a pull.
+        if (m_spells.warrior.pBloodrage &&
+            me->GetPower(POWER_RAGE) < 200 &&
+            CanTryToCastSpell(me, m_spells.warrior.pBloodrage))
+        {
+            if (DoCastSpell(me, m_spells.warrior.pBloodrage) == SPELL_CAST_OK)
+                return;
+        }
+
         if (pVictim->IsNonMeleeSpellCasted(false, false, true))
         {
             if (m_spells.warrior.pPummel &&
@@ -3579,6 +5509,14 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
                 }
             }
 
+            // Revenge procs after dodge/parry/block (CasterAuraState gates CanTry).
+            if (m_spells.warrior.pRevenge &&
+                CanTryToCastSpell(pVictim, m_spells.warrior.pRevenge))
+            {
+                if (DoCastSpell(pVictim, m_spells.warrior.pRevenge) == SPELL_CAST_OK)
+                    return;
+            }
+
             if (m_spells.warrior.pShieldSlam &&
                 CanTryToCastSpell(pVictim, m_spells.warrior.pShieldSlam))
             {
@@ -3595,12 +5533,19 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
                 return;
         }
 
+        // Build to 5 Sunders, then refresh only when stacks drop (CanTryToCastSpell
+        // already allows stackable auras below max).
         if (m_spells.warrior.pSunderArmor &&
             m_role == ROLE_TANK &&
             CanTryToCastSpell(pVictim, m_spells.warrior.pSunderArmor))
         {
-            if (DoCastSpell(pVictim, m_spells.warrior.pSunderArmor) == SPELL_CAST_OK)
-                return;
+            uint32 const stacks = GetAuraStackCount(pVictim, m_spells.warrior.pSunderArmor->Id);
+            uint32 const maxStacks = m_spells.warrior.pSunderArmor->GetStackAmount();
+            if (stacks < maxStacks)
+            {
+                if (DoCastSpell(pVictim, m_spells.warrior.pSunderArmor) == SPELL_CAST_OK)
+                    return;
+            }
         }
 
         if (m_spells.warrior.pHamstring &&
@@ -3610,6 +5555,15 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
             CanTryToCastSpell(pVictim, m_spells.warrior.pHamstring))
         {
             if (DoCastSpell(pVictim, m_spells.warrior.pHamstring) == SPELL_CAST_OK)
+                return;
+        }
+
+        // AoE snare when several runners are on us (cheaper than Hamstring each).
+        if (m_spells.warrior.pPiercingHowl &&
+            GetAttackersInRangeCount(10.0f) > 1 &&
+            CanTryToCastSpell(me, m_spells.warrior.pPiercingHowl))
+        {
+            if (DoCastSpell(me, m_spells.warrior.pPiercingHowl) == SPELL_CAST_OK)
                 return;
         }
 
@@ -3646,7 +5600,8 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
         }
 
         if (m_role != ROLE_TANK &&
-           (me->GetHealthPercent() > 60.0f) && (pVictim->GetHealthPercent() > 40.0f) &&
+            ShouldBurnMajorCooldown(pVictim) &&
+           (me->GetHealthPercent() > 60.0f) &&
            !me->HasUnitState(UNIT_STATE_ROOT) &&
            !me->IsImmuneToMechanic(MECHANIC_FEAR))
         {
@@ -3679,6 +5634,16 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
                 return;
         }
 
+        // Arms filler: Slam when MS is down and we are not mid-HS dump as tank.
+        if (m_role != ROLE_TANK &&
+            m_spells.warrior.pSlam &&
+            !m_spells.warrior.pBloodthirst &&
+            CanTryToCastSpell(pVictim, m_spells.warrior.pSlam))
+        {
+            if (DoCastSpell(pVictim, m_spells.warrior.pSlam) == SPELL_CAST_OK)
+                return;
+        }
+
         if (m_spells.warrior.pIntercept &&
             CanTryToCastSpell(pVictim, m_spells.warrior.pIntercept))
         {
@@ -3687,6 +5652,7 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
         }
 
         if (m_spells.warrior.pWhirlwind &&
+            me->GetEnemyCountInRadiusAround(pVictim, 8.0f) > 1 &&
             CanTryToCastSpell(me, m_spells.warrior.pWhirlwind))
         {
             if (DoCastSpell(me, m_spells.warrior.pWhirlwind) == SPELL_CAST_OK)
@@ -3701,8 +5667,10 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
                 return;
         }
 
+        // Demo on the pack once; skip while the current target already has it.
         if (m_spells.warrior.pDemoralizingShout &&
             m_role == ROLE_TANK &&
+            !pVictim->HasAura(m_spells.warrior.pDemoralizingShout->Id) &&
             CanTryToCastSpell(me, m_spells.warrior.pDemoralizingShout))
         {
             if (DoCastSpell(me, m_spells.warrior.pDemoralizingShout) == SPELL_CAST_OK)
@@ -3715,7 +5683,9 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
             BeginChasing(pVictim);
         }
 
-        if (me->GetPower(POWER_RAGE) > 300)
+        // Tank: queue HS/Cleave earlier for threat. DPS: dump rage above 30.
+        uint32 const rageLine = (m_role == ROLE_TANK) ? 150 : 300;
+        if (me->GetPower(POWER_RAGE) > rageLine)
         {
             if (m_spells.warrior.pCleave && me->GetEnemyCountInRadiusAround(pVictim, 8.0f) > 1)
             {
@@ -3725,14 +5695,11 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
                         return;
                 }
             }
-            else
+            else if (m_spells.warrior.pHeroicStrike &&
+                     CanTryToCastSpell(pVictim, m_spells.warrior.pHeroicStrike))
             {
-                if (m_spells.warrior.pHeroicStrike &&
-                    CanTryToCastSpell(pVictim, m_spells.warrior.pHeroicStrike))
-                {
-                    if (DoCastSpell(pVictim, m_spells.warrior.pHeroicStrike) == SPELL_CAST_OK)
-                        return;
-                }
+                if (DoCastSpell(pVictim, m_spells.warrior.pHeroicStrike) == SPELL_CAST_OK)
+                    return;
             }
         }
     }
@@ -3879,34 +5846,39 @@ void PartyBotAI::UpdateInCombatAI_Rogue()
 
         if (me->GetComboPoints() > 4)
         {
-            std::vector<SpellEntry const*> vSpells;
-
-            // Give priority to Slice and Dice over other finishing moves.
+            // SnD uptime first; Kidney to lock a caster; Expose on long elite fights;
+            // Rupture; Eviscerate to finish. No random finishers.
+            SpellEntry const* pFinisher = nullptr;
             if (m_spells.rogue.pSliceAndDice &&
                !me->HasAura(m_spells.rogue.pSliceAndDice->Id) &&
                 pVictim->GetHealthPercent() > 10.0f)
-                vSpells.push_back(m_spells.rogue.pSliceAndDice);
-            else
-            {
-                if (m_spells.rogue.pEviscerate)
-                    vSpells.push_back(m_spells.rogue.pEviscerate);
-                if (m_spells.rogue.pKidneyShot && !pVictim->IsImmuneToMechanic(MECHANIC_STUN))
-                    vSpells.push_back(m_spells.rogue.pKidneyShot);
-                if (m_spells.rogue.pExposeArmor)
-                    vSpells.push_back(m_spells.rogue.pExposeArmor);
-                if (m_spells.rogue.pRupture)
-                    vSpells.push_back(m_spells.rogue.pRupture);
-            }
+                pFinisher = m_spells.rogue.pSliceAndDice;
+            else if (m_spells.rogue.pKidneyShot &&
+                     !pVictim->IsImmuneToMechanic(MECHANIC_STUN) &&
+                     (pVictim->IsNonMeleeSpellCasted(false, false, true) || IsRangedEnemy(pVictim)))
+                pFinisher = m_spells.rogue.pKidneyShot;
+            else if (m_spells.rogue.pExposeArmor &&
+                     IsDangerousFight(pVictim) &&
+                     pVictim->GetHealthPercent() > 50.0f &&
+                     CanTryToCastSpell(pVictim, m_spells.rogue.pExposeArmor))
+                pFinisher = m_spells.rogue.pExposeArmor;
+            else if (m_spells.rogue.pRupture &&
+                     pVictim->GetHealthPercent() > 40.0f &&
+                     CanTryToCastSpell(pVictim, m_spells.rogue.pRupture))
+                pFinisher = m_spells.rogue.pRupture;
+            else if (m_spells.rogue.pEviscerate)
+                pFinisher = m_spells.rogue.pEviscerate;
 
-            if (!vSpells.empty())
-            {
-                SpellEntry const* pComboSpell = SelectRandomContainerElement(vSpells);
-                if (CanTryToCastSpell(pVictim, pComboSpell))
-                {
-                    if (DoCastSpell(pVictim, pComboSpell) == SPELL_CAST_OK)
-                        return;
-                }
-            }
+            if (pFinisher && CanTryToCastSpell(pVictim, pFinisher) &&
+                DoCastSpell(pVictim, pFinisher) == SPELL_CAST_OK)
+                return;
+        }
+
+        if (m_spells.rogue.pRiposte &&
+            CanTryToCastSpell(pVictim, m_spells.rogue.pRiposte))
+        {
+            if (DoCastSpell(pVictim, m_spells.rogue.pRiposte) == SPELL_CAST_OK)
+                return;
         }
 
         if (m_spells.rogue.pBlind)
@@ -3927,6 +5899,7 @@ void PartyBotAI::UpdateInCombatAI_Rogue()
         }
 
         if (m_spells.rogue.pAdrenalineRush &&
+            ShouldBurnMajorCooldown(pVictim) &&
            !me->GetPower(POWER_ENERGY) &&
             CanTryToCastSpell(me, m_spells.rogue.pAdrenalineRush))
         {
@@ -3962,13 +5935,17 @@ void PartyBotAI::UpdateInCombatAI_Rogue()
                     return;
             }
 
+            // Cold Blood right before a finisher window / Ambush — not on every GCD.
             if (m_spells.rogue.pColdBlood &&
+                me->GetComboPoints() >= 4 &&
+                ShouldBurnMajorCooldown(pVictim) &&
                 CanTryToCastSpell(me, m_spells.rogue.pColdBlood))
             {
                 DoCastSpell(me, m_spells.rogue.pColdBlood);
             }
 
             if (m_spells.rogue.pBladeFlurry &&
+                me->GetEnemyCountInRadiusAround(pVictim, 8.0f) > 1 &&
                 CanTryToCastSpell(me, m_spells.rogue.pBladeFlurry))
             {
                 if (DoCastSpell(me, m_spells.rogue.pBladeFlurry) == SPELL_CAST_OK)
@@ -4145,26 +6122,38 @@ void PartyBotAI::UpdateInCombatAI_Druid()
             }
         }
 
+        // Nature's Swiftness + big heal when someone is about to die.
+        if (m_spells.druid.pNaturesSwiftness &&
+            CanTryToCastSpell(me, m_spells.druid.pNaturesSwiftness))
+        {
+            if (Unit* pCritical = SelectHealTarget(25.0f, 30.0f))
+            {
+                if (DoCastSpell(me, m_spells.druid.pNaturesSwiftness) == SPELL_CAST_OK)
+                {
+                    HealInjuredTargetDirect(pCritical);
+                    return;
+                }
+            }
+        }
+
+        float directSelf = 60.0f, directGroup = 70.0f, hotSelf = 80.0f, hotGroup = 90.0f;
+        bool allowPreHeal = true;
+        if (GetRole() == ROLE_HEALER)
+            GetHealerCareThresholds(directSelf, directGroup, hotSelf, hotGroup, allowPreHeal);
+
         // Prioritize applying HoTs.
-        if (Unit* pTarget = SelectPeriodicHealTarget(80.0f, 90.0f))
+        if (Unit* pTarget = SelectPeriodicHealTarget(hotSelf, hotGroup))
             if (HealInjuredTargetPeriodic(pTarget))
                 return;
 
         // Direct heal.
-        if (Unit* pTarget = SelectHealTarget(60.0f, 70.0f))
+        if (Unit* pTarget = SelectHealTarget(directSelf, directGroup))
             if (HealInjuredTargetDirect(pTarget))
                 return;
 
-        if (m_spells.druid.pInnervate &&
-           (me->GetHealthPercent() > 40.0f) &&
-           (me->GetPowerPercent(POWER_MANA) < 10.0f) &&
-            CanTryToCastSpell(me, m_spells.druid.pInnervate))
-        {
-            if (DoCastSpell(me, m_spells.druid.pInnervate) == SPELL_CAST_OK)
-                return;
-        }
+        // Party Innervate is TryInnervate in the shared combat pipeline.
 
-        if (GetRole() == ROLE_HEALER && FindAndPreHealTarget())
+        if (GetRole() == ROLE_HEALER && allowPreHeal && FindAndPreHealTarget())
             return;
 
         if (EnterCombatDruidForm())
@@ -4220,16 +6209,7 @@ void PartyBotAI::UpdateInCombatAI_Druid()
                 return;
             }
 
-            if (m_spells.druid.pCower &&
-                GetAttackersInRangeCount(8.0f))
-            {
-                Unit* pAttacker = *me->GetAttackers().begin();
-                if (CanTryToCastSpell(me, m_spells.druid.pCower))
-                {
-                    if (DoCastSpell(me, m_spells.druid.pCower) == SPELL_CAST_OK)
-                        return;
-                }
-            }
+            // Cower on high threat is TryThreatDump; skip the unconditional cast.
 
             if (me->GetComboPoints() > 4)
             {
@@ -4323,6 +6303,15 @@ void PartyBotAI::UpdateInCombatAI_Druid()
                     return;
             }
 
+            if (m_spells.druid.pEnrage &&
+                me->GetPower(POWER_RAGE) < 200 &&
+                me->GetHealthPercent() > 40.0f &&
+                CanTryToCastSpell(me, m_spells.druid.pEnrage))
+            {
+                if (DoCastSpell(me, m_spells.druid.pEnrage) == SPELL_CAST_OK)
+                    return;
+            }
+
             if (m_spells.druid.pFaerieFireFeral &&
                 CanTryToCastSpell(pVictim, m_spells.druid.pFaerieFireFeral))
             {
@@ -4341,6 +6330,7 @@ void PartyBotAI::UpdateInCombatAI_Druid()
                 }
 
                 if (m_spells.druid.pSwipe &&
+                    me->GetEnemyCountInRadiusAround(pVictim, 8.0f) > 1 &&
                     CanTryToCastSpell(pVictim, m_spells.druid.pSwipe))
                 {
                     if (DoCastSpell(pVictim, m_spells.druid.pSwipe) == SPELL_CAST_OK)

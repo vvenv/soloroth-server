@@ -9,6 +9,7 @@
 #include "Chat.h"
 #include "Player.h"
 #include "Group.h"
+#include "MotionMaster.h"
 #include "PlayerBotAI.h"
 #include "PartyBotAI.h"
 #include "BattleBotAI.h"
@@ -1532,7 +1533,10 @@ bool HandlePartyBotComeToMeHelper(Player* pBot, Player* pPlayer)
                 pBot->SetStandState(UNIT_STAND_STATE_STAND);
 
             pBot->InterruptSpellsWithInterruptFlags(SPELL_INTERRUPT_FLAG_MOVEMENT);
-            pBot->MonsterMove(pPlayer->GetPositionX(), pPlayer->GetPositionY(), pPlayer->GetPositionZ());
+            // Straight MonsterMove flies through air on multi-level towns; walk the mesh.
+            pBot->GetMotionMaster()->MovePoint(0,
+                pPlayer->GetPositionX(), pPlayer->GetPositionY(), pPlayer->GetPositionZ(),
+                MOVE_PATHFINDING | MOVE_EXCLUDE_STEEP_SLOPES);
             return true;
         }
     }
@@ -1799,23 +1803,12 @@ bool ChatHandler::HandlePartyBotPullCommand(char* args)
         }
     }
 
-    bool rangedPull = pPuller && pPullerAI && bestScore >= 0;
-    if (rangedPull)
+    if (pPuller && pPullerAI && bestScore >= 0 &&
+        pPullerAI->StartPartyRangedPull(pTarget, duration))
     {
-        // Puller may open from range even in calm mode.
-        pPullerAI->AllowForcedEngage(pTarget->GetObjectGuid(), duration);
-
-        bool opened = false;
-        if (pPuller->GetClass() == CLASS_ROGUE)
-            opened = pPullerAI->TryThrowPull(pTarget);
-        else if (pPuller->IsValidAttackTarget(pTarget))
-            opened = pPullerAI->AttackStart(pTarget);
-
-        if (!opened)
-            rangedPull = false;
-        else if (pPuller->GetClass() == CLASS_ROGUE)
-            // Stay put after the throw so the tank can pick up at the party.
-            HandlePartyBotPauseApplyHelper(pPuller, std::min(duration, 4u * IN_MILLISECONDS));
+        PSendSysMessage("%s is pulling %s from range; tank waits until the mob is close. DPS paused %d s.",
+            pPuller->GetName(), pTarget->GetName(), (duration / IN_MILLISECONDS));
+        return true;
     }
 
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
@@ -1825,41 +1818,25 @@ bool ChatHandler::HandlePartyBotPullCommand(char* args)
             if (pMember == pPlayer)
                 continue;
 
-            if (pMember->AI())
+            if (PartyBotAI* pAI = dynamic_cast<PartyBotAI*>(pMember->AI()))
             {
-                if (PartyBotAI* pAI = dynamic_cast<PartyBotAI*>(pMember->AI()))
+                if (pAI->m_role == ROLE_MELEE_DPS || pAI->m_role == ROLE_RANGE_DPS)
                 {
-                    if (rangedPull && pMember == pPuller)
-                        continue;
+                    HandlePartyBotPauseApplyHelper(pMember, duration);
+                    continue;
+                }
 
-                    if (pAI->m_role == ROLE_MELEE_DPS || pAI->m_role == ROLE_RANGE_DPS)
-                    {
-                        HandlePartyBotPauseApplyHelper(pMember, duration);
-                        continue;
-                    }
-
-                    if (pAI->m_role == ROLE_TANK && pMember->IsValidAttackTarget(pTarget))
-                    {
-                        if (rangedPull)
-                            pAI->BeginRangedPullHold(pTarget->GetObjectGuid(),
-                                pPuller->GetObjectGuid(), duration);
-                        else
-                        {
-                            pAI->AllowForcedEngage(pTarget->GetObjectGuid(), duration);
-                            pAI->AttackStart(pTarget);
-                        }
-                    }
+                if (pAI->m_role == ROLE_TANK && pMember->IsValidAttackTarget(pTarget))
+                {
+                    pAI->AllowForcedEngage(pTarget->GetObjectGuid(), duration);
+                    pAI->AttackStart(pTarget);
                 }
             }
         }
     }
 
-    if (rangedPull)
-        PSendSysMessage("%s is pulling %s from range; tank waits until the mob is close. DPS paused %d s.",
-            pPuller->GetName(), pTarget->GetName(), (duration / IN_MILLISECONDS));
-    else
-        PSendSysMessage("Tank party bots are pulling %s, DPS party bots are paused for %d seconds.",
-            pTarget->GetName(), (duration / IN_MILLISECONDS));
+    PSendSysMessage("Tank party bots are pulling %s, DPS party bots are paused for %d seconds.",
+        pTarget->GetName(), (duration / IN_MILLISECONDS));
     return true;
 }
 

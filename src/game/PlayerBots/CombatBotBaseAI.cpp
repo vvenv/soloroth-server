@@ -662,6 +662,11 @@ void CombatBotBaseAI::PopulateSpellData()
                     if (IsHigherRankSpell(m_spells.hunter.pVolley))
                         m_spells.hunter.pVolley = pSpellEntry;
                 }
+                else if (pSpellEntry->SpellName[0].find("Rapid Fire") != std::string::npos)
+                {
+                    if (IsHigherRankSpell(m_spells.hunter.pRapidFire))
+                        m_spells.hunter.pRapidFire = pSpellEntry;
+                }
                 break;
             }
             case CLASS_MAGE:
@@ -805,6 +810,11 @@ void CombatBotBaseAI::PopulateSpellData()
                 {
                     if (IsHigherRankSpell(m_spells.mage.pCombustion))
                         m_spells.mage.pCombustion = pSpellEntry;
+                }
+                else if (pSpellEntry->SpellName[0].find("Conjure Mana") != std::string::npos)
+                {
+                    if (IsHigherRankSpell(m_spells.mage.pConjureManaGem))
+                        m_spells.mage.pConjureManaGem = pSpellEntry;
                 }
                 break;
             }
@@ -1059,6 +1069,11 @@ void CombatBotBaseAI::PopulateSpellData()
                     if (IsHigherRankSpell(m_spells.warlock.pLifeTap))
                         m_spells.warlock.pLifeTap = pSpellEntry;
                 }
+                else if (pSpellEntry->SpellName[0].find("Create Healthstone") != std::string::npos)
+                {
+                    if (IsHigherRankSpell(m_spells.warlock.pCreateHealthstone))
+                        m_spells.warlock.pCreateHealthstone = pSpellEntry;
+                }
                 break;
             }
             case CLASS_WARRIOR:
@@ -1232,6 +1247,17 @@ void CombatBotBaseAI::PopulateSpellData()
                 {
                     if (IsHigherRankSpell(m_spells.warrior.pPiercingHowl))
                         m_spells.warrior.pPiercingHowl = pSpellEntry;
+                }
+                else if (pSpellEntry->SpellName[0].find("Revenge") != std::string::npos)
+                {
+                    if (IsHigherRankSpell(m_spells.warrior.pRevenge))
+                        m_spells.warrior.pRevenge = pSpellEntry;
+                }
+                // Exact "Slam" — Shield Slam is matched above.
+                else if (pSpellEntry->SpellName[0] == "Slam")
+                {
+                    if (IsHigherRankSpell(m_spells.warrior.pSlam))
+                        m_spells.warrior.pSlam = pSpellEntry;
                 }
                 break;
             }
@@ -1992,6 +2018,70 @@ bool CombatBotBaseAI::IsValidHealTarget(Unit const* pTarget, float healthPercent
             me->IsWithinDist(pTarget, 30.0f);
 }
 
+bool CombatBotBaseAI::IsPartyTank(Player const* pMember) const
+{
+    if (!pMember)
+        return false;
+    // Player::AI() is non-const; role does not change mid-call.
+    if (CombatBotBaseAI const* pAI = dynamic_cast<CombatBotBaseAI const*>(const_cast<Player*>(pMember)->AI()))
+        return pAI->m_role == ROLE_TANK;
+    // Human leader: shield / tank class is the best guess.
+    return IsTankClass(pMember->GetClass()) || IsWearingShield(const_cast<Player*>(pMember));
+}
+
+bool CombatBotBaseAI::IsPartyHealer(Player const* pMember) const
+{
+    if (!pMember)
+        return false;
+    if (CombatBotBaseAI const* pAI = dynamic_cast<CombatBotBaseAI const*>(const_cast<Player*>(pMember)->AI()))
+        return pAI->m_role == ROLE_HEALER;
+    return IsHealerClass(pMember->GetClass());
+}
+
+uint32 CombatBotBaseAI::GetAuraStackCount(Unit const* pTarget, uint32 spellId) const
+{
+    if (!pTarget || !spellId)
+        return 0;
+    if (SpellAuraHolder const* pHolder = pTarget->GetSpellAuraHolder(spellId))
+        return pHolder->GetStackAmount();
+    return 0;
+}
+
+float CombatBotBaseAI::GetThreatRatio(Unit* pEnemy) const
+{
+    if (!pEnemy || !pEnemy->CanHaveThreatList() || m_role == ROLE_TANK)
+        return 0.0f;
+
+    ThreatManager& threat = pEnemy->GetThreatManager();
+    float const myThreat = threat.getThreat(const_cast<Player*>(me));
+    if (myThreat <= 0.0f)
+        return 0.0f;
+
+    float tankThreat = 0.0f;
+    if (Unit* pVictim = pEnemy->GetVictim())
+        tankThreat = threat.getThreat(pVictim);
+
+    if (Group* pGroup = me->GetGroup())
+    {
+        for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* pMember = itr->getSource();
+            if (!pMember || pMember == me || !IsPartyTank(pMember))
+                continue;
+            tankThreat = std::max(tankThreat, threat.getThreat(pMember));
+        }
+    }
+
+    if (tankThreat <= 1.0f)
+        return myThreat > 0.0f ? 1.0f : 0.0f;
+    return myThreat / tankThreat;
+}
+
+bool CombatBotBaseAI::IsNearTankThreat(Unit* pEnemy, float ratio) const
+{
+    return GetThreatRatio(pEnemy) >= ratio;
+}
+
 Unit* CombatBotBaseAI::SelectHealTarget(float selfHealPercent, float groupHealPercent) const
 {
     if (me->GetHealthPercent() < selfHealPercent)
@@ -2001,38 +2091,45 @@ Unit* CombatBotBaseAI::SelectHealTarget(float selfHealPercent, float groupHealPe
         return nullptr;
 
     Unit* pTarget = nullptr;
-    float healthPercent = 100.0f;
+    float bestScore = 1000.0f;
 
     if (Group* pGroup = me->GetGroup())
     {
         for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
         {
-            if (Unit* pMember = itr->getSource())
+            Player* pMember = itr->getSource();
+            if (!pMember || pMember == me)
+                continue;
+
+            // Avoid all healers picking same non-tank target.
+            if (pTarget && !IsPartyTank(pMember) && AreOthersOnSameTarget(pMember->GetObjectGuid(), false, true))
+                continue;
+
+            if (IsValidHealTarget(pMember, groupHealPercent))
             {
-                // We already checked self.
-                if (pMember == me)
-                    continue;
-
-                // Avoid all healers picking same target.
-                if (pTarget && !IsTankClass(pMember->GetClass()) && AreOthersOnSameTarget(pMember->GetObjectGuid(), false, true))
-                    continue;
-
-                // Check if we should heal party member.
-                if ((IsValidHealTarget(pMember, groupHealPercent) &&
-                    healthPercent > pMember->GetHealthPercent()) ||
-                    // Or a pet if there are no injured players.
-                    (!pTarget && (pMember = pMember->GetPet()) &&
-                      IsValidHealTarget(pMember, groupHealPercent)))
+                // Lower is worse: tank HP counts as ~25% lower so they win triage ties.
+                float score = pMember->GetHealthPercent();
+                if (IsPartyTank(pMember))
+                    score -= 25.0f;
+                if (score < bestScore)
                 {
-                    healthPercent = pMember->GetHealthPercent();
+                    bestScore = score;
                     pTarget = pMember;
+                }
+            }
+            else if (!pTarget)
+            {
+                if (Pet* pPet = pMember->GetPet())
+                {
+                    if (IsValidHealTarget(pPet, groupHealPercent))
+                    {
+                        pTarget = pPet;
+                        bestScore = pPet->GetHealthPercent();
+                    }
                 }
             }
         }
     }
-
-    if (healthPercent == 100.0f)
-        return nullptr;
 
     return pTarget;
 }
@@ -2135,61 +2232,129 @@ bool CombatBotBaseAI::IsValidHostileTarget(Unit const* pTarget) const
 
 bool CombatBotBaseAI::IsValidDispelTarget(Unit const* pTarget, SpellEntry const* pSpellEntry) const
 {
+    return GetFriendlyDispelScore(pTarget, pSpellEntry) > 0 ||
+           GetEnemyBuffStripScore(pTarget, pSpellEntry) > 0;
+}
+
+static uint32 CombatBotDispelMask(SpellEntry const* pSpellEntry)
+{
     uint32 dispelMask = 0;
-    bool bFoundOneDispell = false;
-    // Compute Dispel Mask
     for (uint8 i = 0; i < MAX_EFFECT_INDEX; ++i)
     {
         if (pSpellEntry->Effect[i] != SPELL_EFFECT_DISPEL)
             continue;
-
-        // Create dispel mask by dispel type
-        uint32 dispel_type = pSpellEntry->EffectMiscValue[i];
-        dispelMask |= Spells::GetDispellMask(DispelType(dispel_type));
+        dispelMask |= Spells::GetDispellMask(DispelType(pSpellEntry->EffectMiscValue[i]));
     }
-    bool friendly_dispel = pTarget && pTarget->IsFriendlyTo(me);
+    return dispelMask;
+}
 
-    if (pTarget &&
-        // Check immune for offensive dispel
-        (!pTarget->IsImmuneToSchoolMask(pSpellEntry->GetSpellSchoolMask()) ||
-            friendly_dispel))
+int CombatBotBaseAI::GetFriendlyDispelScore(Unit const* pTarget, SpellEntry const* pSpellEntry) const
+{
+    if (!pTarget || !pSpellEntry || !pTarget->IsFriendlyTo(me))
+        return 0;
+
+    uint32 const dispelMask = CombatBotDispelMask(pSpellEntry);
+    if (!dispelMask)
+        return 0;
+
+    int score = 0;
+    for (auto const& aura : pTarget->GetSpellAuraHolderMap())
     {
-        if (!friendly_dispel && !me->IsValidAttackTarget(pTarget))
-            return false;
+        SpellAuraHolder* holder = aura.second;
+        SpellEntry const* proto = holder->GetSpellProto();
+        if (!((1 << proto->Dispel) & dispelMask))
+            continue;
+        // Friendly dispel only strips harmful auras.
+        if (holder->IsPositive())
+            continue;
 
-        auto const& auras = pTarget->GetSpellAuraHolderMap();
-        for (const auto& aura : auras)
-        {
-            SpellAuraHolder* holder = aura.second;
-            if ((1 << holder->GetSpellProto()->Dispel) & dispelMask)
-            {
-                if (holder->GetSpellProto()->Dispel == DISPEL_MAGIC ||
-                    holder->GetSpellProto()->Dispel == DISPEL_DISEASE ||
-                    holder->GetSpellProto()->Dispel == DISPEL_POISON)
-                {
-                    bool positive = holder->IsPositive();
-                    // do not remove positive auras if friendly target
-                    // do not remove negative auras if non-friendly target
-                    // when removing charm auras ignore hostile reaction from the charm
-                    if (!friendly_dispel && !positive && holder->GetSpellProto()->IsCharmSpell())
-                        if (CharmInfo *charm = pTarget->GetCharmInfo())
-                            if (FactionTemplateEntry const* ft = charm->GetOriginalFactionTemplate())
-                                if (FactionTemplateEntry const* ft2 = me->GetFactionTemplateEntry())
-                                    if (charm->GetOriginalFactionTemplate()->IsFriendlyTo(*ft2))
-                                        bFoundOneDispell = true;
-                    if (positive == friendly_dispel)
-                        continue;
-                }
-                bFoundOneDispell = true;
-                break;
-            }
-        }
+        uint32 const mech = proto->GetAllSpellMechanicMask();
+        // Crowd control / lockouts first — a feared tank wipes the party.
+        if (mech & ((1 << (MECHANIC_FEAR - 1)) | (1 << (MECHANIC_CHARM - 1)) |
+                    (1 << (MECHANIC_HORROR - 1)) | (1 << (MECHANIC_SLEEP - 1)) |
+                    (1 << (MECHANIC_POLYMORPH - 1)) | (1 << (MECHANIC_BANISH - 1))))
+            score += 100;
+        else if (mech & ((1 << (MECHANIC_SILENCE - 1)) | (1 << (MECHANIC_PACIFY - 1)) |
+                         (1 << (MECHANIC_STUN - 1)) | (1 << (MECHANIC_ROOT - 1)) |
+                         (1 << (MECHANIC_FREEZE - 1))))
+            score += 80;
+        else if (mech & (1 << (MECHANIC_SNARE - 1)))
+            score += 25;
+        else if (proto->HasAura(SPELL_AURA_PERIODIC_DAMAGE) ||
+                 proto->HasAura(SPELL_AURA_PERIODIC_DAMAGE_PERCENT) ||
+                 proto->HasAura(SPELL_AURA_PERIODIC_LEECH))
+            score += 50;
+        else
+            score += 10;
     }
 
-    if (!bFoundOneDispell)
-        return false;
+    if (score <= 0)
+        return 0;
 
-    return true;
+    if (Player const* pPlayer = pTarget->ToPlayer())
+    {
+        if (IsPartyTank(pPlayer))
+            score += 40;
+        else if (IsPartyHealer(pPlayer))
+            score += 25;
+    }
+    // Nearly dead allies get cleansed sooner so the next heal lands.
+    if (pTarget->GetHealthPercent() < 40.0f)
+        score += 15;
+    return score;
+}
+
+int CombatBotBaseAI::GetEnemyBuffStripScore(Unit const* pTarget, SpellEntry const* pSpellEntry) const
+{
+    if (!pTarget || !pSpellEntry || pTarget->IsFriendlyTo(me))
+        return 0;
+    if (pTarget->IsImmuneToSchoolMask(pSpellEntry->GetSpellSchoolMask()))
+        return 0;
+    if (!me->IsValidAttackTarget(pTarget))
+        return 0;
+
+    uint32 const dispelMask = CombatBotDispelMask(pSpellEntry);
+    if (!dispelMask)
+        return 0;
+
+    int score = 0;
+    for (auto const& aura : pTarget->GetSpellAuraHolderMap())
+    {
+        SpellAuraHolder* holder = aura.second;
+        SpellEntry const* proto = holder->GetSpellProto();
+        if (!((1 << proto->Dispel) & dispelMask))
+            continue;
+        // Offensive dispel only strips beneficial enemy auras.
+        if (!holder->IsPositive())
+        {
+            // Charm edge case from the original IsValidDispelTarget logic.
+            if (proto->IsCharmSpell())
+                if (CharmInfo* charm = pTarget->GetCharmInfo())
+                    if (FactionTemplateEntry const* ft = charm->GetOriginalFactionTemplate())
+                        if (FactionTemplateEntry const* ft2 = me->GetFactionTemplateEntry())
+                            if (ft->IsFriendlyTo(*ft2))
+                                score += 90;
+            continue;
+        }
+
+        uint32 const mech = proto->GetAllSpellMechanicMask();
+        // Ice Block / Divine Shield / bubble — strip if we can (magic).
+        if (mech & ((1 << (MECHANIC_INVULNERABILITY - 1)) | (1 << (MECHANIC_IMMUNE_SHIELD - 1))))
+            score += 120;
+        else if (mech & (1 << (MECHANIC_SHIELD - 1)))
+            score += 90;
+        else if (proto->HasAura(SPELL_AURA_SCHOOL_ABSORB) ||
+                 proto->HasAura(SPELL_AURA_MANA_SHIELD))
+            score += 80;
+        else if (proto->HasAura(SPELL_AURA_MOD_DAMAGE_DONE) ||
+                 proto->HasAura(SPELL_AURA_MOD_DAMAGE_PERCENT_DONE) ||
+                 proto->HasAura(SPELL_AURA_MOD_ATTACKSPEED) ||
+                 proto->HasAura(SPELL_AURA_MOD_INCREASE_SPEED))
+            score += 60;
+        else
+            score += 20;
+    }
+    return score;
 }
 
 uint8 CombatBotBaseAI::GetAttackersInRangeCount(float range) const
@@ -2322,26 +2487,34 @@ Player* CombatBotBaseAI::SelectBuffTarget(SpellEntry const* pSingleSpellEntry, S
 
 Player* CombatBotBaseAI::SelectDispelTarget(SpellEntry const* pSpellEntry) const
 {
-    Group* pGroup = me->GetGroup();
-    if (pGroup)
+    Player* pBest = nullptr;
+    int bestScore = 0;
+
+    auto consider = [&](Player* pMember)
+    {
+        if (!pMember || pMember->IsGameMaster())
+            return;
+        if (!me->IsValidHelpfulTarget(pMember) ||
+            !me->IsWithinLOSInMap(pMember) ||
+            !me->IsWithinDist(pMember, 30.0f))
+            return;
+        int const score = GetFriendlyDispelScore(pMember, pSpellEntry);
+        if (score > bestScore)
+        {
+            bestScore = score;
+            pBest = pMember;
+        }
+    };
+
+    if (Group* pGroup = me->GetGroup())
     {
         for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
-        {
-            if (Player* pMember = itr->getSource())
-            {
-                if (me->IsValidHelpfulTarget(pMember) &&
-                   !pMember->IsGameMaster() &&
-                    IsValidDispelTarget(pMember, pSpellEntry) &&
-                    me->IsWithinLOSInMap(pMember) &&
-                    me->IsWithinDist(pMember, 30.0f))
-                    return pMember;
-            }
-        }
+            consider(itr->getSource());
     }
-    else if (IsValidDispelTarget(me, pSpellEntry))
-        return me;
+    else
+        consider(me);
 
-    return nullptr;
+    return pBest;
 }
 
 void CombatBotBaseAI::SummonPetIfNeeded()
@@ -2970,7 +3143,20 @@ bool CombatBotBaseAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* p
         return false;
 
     if (pSpellEntry->IsSpellAppliesAura() && pTarget->HasAura(pSpellEntry->Id))
-        return false;
+    {
+        // Sunder Armor and other stackable auras: keep applying until max stacks.
+        uint32 const maxStacks = pSpellEntry->GetStackAmount();
+        if (maxStacks > 1)
+        {
+            if (SpellAuraHolder const* pHolder = pTarget->GetSpellAuraHolder(pSpellEntry->Id))
+            {
+                if (pHolder->GetStackAmount() >= maxStacks)
+                    return false;
+            }
+        }
+        else
+            return false;
+    }
 
     SpellRangeEntry const* srange = sSpellRangeStore.LookupEntry(pSpellEntry->rangeIndex);
     if (me != pTarget && pSpellEntry->EffectImplicitTargetA[0] != TARGET_UNIT_CASTER)
@@ -2981,8 +3167,46 @@ bool CombatBotBaseAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* p
             return false;
         if (srange->minRange && dist < srange->minRange)
             return false;
+
+        // Next-swing melee abilities do not need LOS the way projectiles / casts do.
+        // Waste a Scorch into a wall and a pro player walks; bots should wait too.
+        if (!pSpellEntry->IsNextMeleeSwingSpell() && !me->IsWithinLOSInMap(pTarget))
+            return false;
     }
 
+    return true;
+}
+
+bool CombatBotBaseAI::IsDangerousFight(Unit const* pVictim) const
+{
+    if (!pVictim)
+        return false;
+
+    if (pVictim->IsCreature())
+    {
+        Creature const* pCreature = static_cast<Creature const*>(pVictim);
+        if (pCreature->IsWorldBoss() || pCreature->IsElite())
+            return true;
+    }
+
+    if (me->GetAttackers().size() >= 3)
+        return true;
+
+    // Long remaining fight on a near-level target — not a quick execute on trash.
+    if (pVictim->GetHealthPercent() > 40.0f &&
+        pVictim->GetLevel() + 2 >= me->GetLevel())
+        return true;
+
+    return false;
+}
+
+bool CombatBotBaseAI::ShouldBurnMajorCooldown(Unit const* pVictim) const
+{
+    if (!IsDangerousFight(pVictim))
+        return false;
+    // Do not dump Recklessness / Combustion on a mob that is already dying.
+    if (pVictim->GetHealthPercent() < 20.0f)
+        return false;
     return true;
 }
 
@@ -3096,6 +3320,122 @@ void CombatBotBaseAI::EnsureCombatPotions()
         AddItemToInventory(healId, keep - me->GetItemCount(healId));
     if (me->GetPowerType() == POWER_MANA && me->GetItemCount(manaId) < keep)
         AddItemToInventory(manaId, keep - me->GetItemCount(manaId));
+
+    // Utility pots a veteran keeps for roots and panic moments.
+    // Free Action (5634, req 20), Limited Invulnerability (3387, req 45).
+    if (level >= 20 && me->GetItemCount(5634) < 2)
+        AddItemToInventory(5634, 2 - me->GetItemCount(5634));
+    if (level >= 45 && me->GetItemCount(3387) < 1)
+        AddItemToInventory(3387, 1);
+
+    // A few bandages for post-fight topping (Heavy Runecloth → Linen by level).
+    struct BandageTier { uint8 reqLevel; uint32 itemId; };
+    static BandageTier const bandages[] = {
+        { 58, 14530 }, // Heavy Runecloth
+        { 52, 14529 }, // Runecloth
+        { 40, 8545  }, // Heavy Mageweave
+        { 36, 8544  }, // Mageweave
+        { 30, 6451  }, // Heavy Silk
+        { 20, 6450  }, // Silk
+        { 10, 3531  }, // Heavy Wool
+        { 1,  1251  }, // Linen
+    };
+    for (BandageTier const& tier : bandages)
+    {
+        if (level >= tier.reqLevel)
+        {
+            if (me->GetItemCount(tier.itemId) < 3)
+                AddItemToInventory(tier.itemId, 3 - me->GetItemCount(tier.itemId));
+            break;
+        }
+    }
+}
+
+bool CombatBotBaseAI::TryUtilityConsumable()
+{
+    if (me->IsNonMeleeSpellCasted(false, false, true))
+        return false;
+
+    bool const rooted = me->HasUnitState(UNIT_STATE_ROOT) || me->HasAuraType(SPELL_AURA_MOD_ROOT);
+    bool const snared = me->HasAuraType(SPELL_AURA_MOD_DECREASE_SPEED);
+    bool const stunned = me->HasUnitState(UNIT_STATE_STUNNED) || me->HasAuraType(SPELL_AURA_MOD_STUN);
+    bool const panicked = me->GetHealthPercent() < 25.0f && me->GetAttackers().size() >= 2;
+
+    // Known classic utility potion item IDs.
+    uint32 wantId = 0;
+    if ((rooted || snared || stunned) && me->GetLevel() >= 20)
+        wantId = 5634; // Free Action Potion
+    else if (panicked && me->GetLevel() >= 45)
+        wantId = 3387; // Limited Invulnerability Potion
+    else
+        return false;
+
+    auto tryItem = [&](Item* pItem) -> bool
+    {
+        if (!pItem || pItem->GetEntry() != wantId)
+            return false;
+        return UseItemEffect(pItem, false);
+    };
+
+    for (int slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        if (tryItem(me->GetItemByPos(INVENTORY_SLOT_BAG_0, slot)))
+            return true;
+    for (int bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+    {
+        Item* pBagItem = me->GetItemByPos(INVENTORY_SLOT_BAG_0, bag);
+        if (!pBagItem || !pBagItem->IsBag())
+            continue;
+        Bag* pBag = static_cast<Bag*>(pBagItem);
+        for (uint32 slot = 0; slot < pBag->GetBagSize(); ++slot)
+            if (tryItem(pBag->GetItemByPos(uint8(slot))))
+                return true;
+    }
+    return false;
+}
+
+bool CombatBotBaseAI::HasConjuredConsumable(uint32 effect) const
+{
+    if (!effect)
+        return false;
+
+    auto matchItem = [&](Item const* pItem) -> bool
+    {
+        if (!pItem)
+            return false;
+        ItemPrototype const* pProto = pItem->GetProto();
+        if (!pProto || !pProto->IsConjuredConsumable())
+            return false;
+        for (auto const& itemSpell : pProto->Spells)
+        {
+            if (!itemSpell.SpellId || itemSpell.SpellTrigger != ITEM_SPELLTRIGGER_ON_USE)
+                continue;
+            SpellEntry const* pSpell = sSpellMgr.GetSpellEntry(itemSpell.SpellId);
+            if (!pSpell)
+                continue;
+            for (uint32 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            {
+                if (pSpell->Effect[i] == effect &&
+                    (effect != SPELL_EFFECT_ENERGIZE || pSpell->EffectMiscValue[i] == POWER_MANA))
+                    return true;
+            }
+        }
+        return false;
+    };
+
+    for (int slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        if (matchItem(me->GetItemByPos(INVENTORY_SLOT_BAG_0, slot)))
+            return true;
+    for (int bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+    {
+        Item* pBagItem = me->GetItemByPos(INVENTORY_SLOT_BAG_0, bag);
+        if (!pBagItem || !pBagItem->IsBag())
+            continue;
+        Bag* pBag = static_cast<Bag*>(pBagItem);
+        for (uint32 slot = 0; slot < pBag->GetBagSize(); ++slot)
+            if (matchItem(pBag->GetItemByPos(uint8(slot))))
+                return true;
+    }
+    return false;
 }
 
 bool CombatBotBaseAI::UseCombatConsumable(uint32 effect)
@@ -3487,6 +3827,10 @@ bool CombatBotBaseAI::UseItemEffect(Item* pItem, bool onlyToBreakCC)
 void CombatBotBaseAI::BreakCrowdControlEffects()
 {
     if (UseTrinketEffects(true))
+        return;
+
+    // Free Action before racials when rooted / snared / stunned.
+    if (TryUtilityConsumable())
         return;
 
     // Racials that purge fear / root / bleed before class cooldowns.

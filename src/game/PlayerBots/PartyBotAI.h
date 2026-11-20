@@ -56,6 +56,8 @@ public:
     // Leader's engage style (calm = wait for the pack; aggressive = charge in).
     bool IsEngageAggressive() const;
     bool IsInCalmEngageRange(Unit const* pTarget) const;
+    // Leader already swung / cast / got hit by this mob — party may open from any range.
+    bool IsLeaderCommittedTo(Unit const* pTarget) const;
     bool CanEngageTarget(Unit const* pTarget) const;
     // `.partybot pull` / `attackstart`: allow opening this guid from any range for a while.
     void AllowForcedEngage(ObjectGuid targetGuid, uint32 durationMs);
@@ -68,6 +70,10 @@ public:
     void BeginRangedPullHold(ObjectGuid targetGuid, ObjectGuid pullerGuid, uint32 durationMs);
     void ClearRangedPullHold();
     bool UpdateRangedPullHold();
+    // Leader stands still with a far hostile selected: best ranged bot opens, tank holds.
+    bool PartyAlreadyPulling(ObjectGuid targetGuid) const;
+    bool StartPartyRangedPull(Unit* pTarget, uint32 durationMs);
+    bool TryAssistLeaderPull(Player* pLeader);
     Unit* SelectAttackTarget(Player* pLeader) const;
     Unit* SelectPartyAttackTarget() const;
     // A different mob on the healer/player — peel without thrashing every add.
@@ -82,6 +88,8 @@ public:
     Unit* GetMarkedTarget(RaidTargetIcon mark) const;
     virtual bool CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget) const;
     bool DrinkAndEat();
+    // Player bots have no client fall packets; snap down if left hanging in air.
+    bool UnstickIfFloating();
     bool IsValidDistancingTarget(Unit* pTarget, Unit* pEnemy);
     Unit* GetDistancingTarget(Unit* pEnemy);
     virtual bool RunAwayFromTarget(Unit* pEnemy);
@@ -106,10 +114,76 @@ public:
     // Priest: Fear Ward the tank (or the player) before and during scary pulls.
     Player* SelectFearWardTarget() const;
     bool TryFearWard();
+    // Among interrupters in range, only one acts (closest; guid breaks ties).
+    bool CanInterruptTarget(Unit const* pEnemy) const;
+    bool IsAssignedToInterrupt(Unit const* pEnemy) const;
+    // Druid: Innervate the driest healer (or self); Rebirth a dead ally mid-fight.
+    Player* SelectInnervateTarget() const;
+    bool TryInnervate();
+    bool TryBattleResurrection();
+    // Warlock: Tongues on casters, Elements on elites, Agony on trash.
+    bool TryApplyWarlockCurse(Unit* pVictim);
     // Sheep / blind / hibernate a spare add once the kill target is locked.
     bool TryCrowdControlExtra();
     // Lowest-HP engaged add: finish one before opening the next.
     Unit* SelectFocusFireTarget() const;
+    // Fade / Feign / Cower / Vanish when threat is about to rip.
+    bool TryThreatDump();
+    // True when our threat is so high that the next cast would pull — skip damage.
+    bool ShouldHoldFire() const;
+    // Healer mana / party HP still recovering: stay put and drink instead of pulling.
+    bool PartyNeedsRest() const;
+    // Fresh pull: a patrol is walking into the party — wait instead of chaining packs.
+    bool ShouldWaitForPatrol(Unit const* pTarget) const;
+    // Party tank player (bot ROLE_TANK or human with shield / tank class).
+    Player* FindPartyTank() const;
+    // True when every combat hostile in radius is already on the tank (safe for Blizzard / Volley).
+    bool AreAllHostilesOnTank(Unit const* pAround, float radius) const;
+    // Ranged: step toward the tank/leader when a pillar ate the cast.
+    bool TryRegainLineOfSight(Unit* pVictim);
+    // Tank: early in a far pull, drag the pack back to the party (LoS corner).
+    bool TryDragPackToParty();
+    // Hunter / Warlock: keep the pet on the kill target.
+    bool EnsurePetAttacks(Unit* pVictim);
+    // Mana pot right as an elite / hard pull opens (classic pre-pot window).
+    bool TryPrePullConsumable(Unit* pTarget);
+    // Step out of hostile Rain of Fire / Blizzard / Consecration ticks.
+    bool TryAvoidGroundDamage();
+    // Healer: hold an 8–18 yd band on the tank (cleave-safe heal range).
+    bool TryHealerStackWithTank();
+    // Ranged: step apart when stacked on another party member (cleave / rain).
+    bool TryRangedSpread();
+    // Paladin: Blessing of Freedom on a rooted/snared ally (tank/healer first).
+    bool TryBlessingOfFreedom();
+    // Step out of a hostile AoE cast (Blizzard / Rain of Fire / …) before it lands.
+    bool TryScatterFromDangerousCast();
+    // Tank: stand opposite the party so boss cleave faces the wall, not the healers.
+    bool TryTankFaceAwayFromParty();
+    // Melee: step out while a boss Whirlwind / Blade Flurry aura is up.
+    bool TryKiteWhirlwind();
+    // Encounter table flags for the current victim (0 = none).
+    uint32 GetEncounterFlags() const;
+    bool ChaseFromBehind(Unit* pVictim) const override;
+    // OOC: bandage when still hurt after food is not enough / not started.
+    bool TryBandage();
+    // Healer care lines: tighter on trash / low mana, looser on elites / triage.
+    void GetHealerCareThresholds(float& directSelf, float& directGroup,
+                                 float& hotSelf, float& hotGroup,
+                                 bool& allowPreHeal) const;
+    // Among bots that can dispel this ally, only the closest one acts.
+    bool IsAssignedToDispel(Player const* pFriend, SpellEntry const* pSpellEntry) const;
+    // Taunt every loose mob on the party (post-fear / multi-pull), not only current target.
+    bool TryTankSnapThreat();
+    // Any living party member (or self) below the HP line — healers drop utility for triage.
+    bool PartyMemberBelow(float hpPercent) const;
+    // Shaman Purge / Priest Dispel Magic on enemy magic buffs (shields, enrages).
+    bool TryStripEnemyBuffs();
+    // Spread Corruption / SW:P / Serpent Sting to spare engaged adds.
+    bool TrySpreadDots();
+    // Default skull=kill / moon=CC; tank bot keeps icons on the right mobs.
+    void EnsureDefaultMarks();
+    bool IsAutoMarkController() const;
+    void UpdateAutoRaidMarks();
     void UpdateInCombatAI() final;
     void UpdateOutOfCombatAI() final;
     void UpdateInCombatAI_Paladin() final;
@@ -156,6 +230,10 @@ public:
     // Forced open (pull / attackstart) until this time.
     ObjectGuid m_forceEngageGuid;
     uint32 m_forceEngageUntil = 0;
+    // After breaking fear / stun: tank snaps threat for a few seconds.
+    uint32 m_snapThreatUntil = 0;
+    // Pre-pot lockout so we do not chug every tick on the same pull.
+    uint32 m_prePotUntil = 0;
 };
 
 #endif
