@@ -13,6 +13,8 @@
 #include "SpellAuras.h"
 #include "Chat.h"
 #include "CharacterDatabaseCache.h"
+#include "Database/DatabaseEnv.h"
+#include "Pet.h"
 #include "MoveSpline.h"
 #include "Utilities/Random.h"
 
@@ -2521,10 +2523,18 @@ void CombatBotBaseAI::SummonPetIfNeeded()
 {
     if (m_ownCharacter)
     {
-        // Call Pet only: a dead pet, or a hunter with none, is the player's to sort out.
+        // Call Pet only when a living pet is on file. Dead pets refuse Call Pet
+        // (PETTAME_DEAD); the player revives or retames those.
         if (me->GetClass() == CLASS_HUNTER && !me->GetPetGuid() && !me->GetCharmGuid() &&
-            me->HasSpell(SPELL_CALL_PET) && sCharacterDatabaseCache.GetCharacterPetByOwner(me->GetGUIDLow()))
-            me->CastSpell(me, SPELL_CALL_PET, false);
+            me->HasSpell(SPELL_CALL_PET))
+        {
+            if (CharacterPetCache const* petCache =
+                    sCharacterDatabaseCache.GetCharacterPetByOwner(me->GetGUIDLow()))
+            {
+                if (petCache->currentHealth > 0)
+                    me->CastSpell(me, SPELL_CALL_PET, false);
+            }
+        }
         return;
     }
 
@@ -2536,17 +2546,28 @@ void CombatBotBaseAI::SummonPetIfNeeded()
         if (me->GetLevel() < 10)
             return;
 
-        if (me->GetPetGuid() || sCharacterDatabaseCache.GetCharacterPetByOwner(me->GetGUIDLow()))
+        if (Pet* pPet = me->GetPet())
         {
-            if (Pet* pPet = me->GetPet())
+            if (!pPet->IsAlive())
+                me->CastSpell(pPet, SPELL_REVIVE_PET, true);
+            return;
+        }
+
+        if (CharacterPetCache* petCache =
+                sCharacterDatabaseCache.GetCharacterPetByOwner(me->GetGUIDLow()))
+        {
+            // Call Pet rejects currentHealth==0. Dead hunter pets are saved as
+            // PET_SAVE_NOT_IN_SLOT with 0 HP, so bots would spam Call Pet forever.
+            // Drop the corpse record and fall through to tame a fresh one.
+            if (petCache->currentHealth == 0)
             {
-                if (!pPet->IsAlive())
-                    me->CastSpell(pPet, SPELL_REVIVE_PET, true);
+                Pet::DeleteFromDB(petCache->id);
             }
             else
+            {
                 me->CastSpell(me, SPELL_CALL_PET, true);
-
-            return;
+                return;
+            }
         }
 
         uint32 petId = PickRandomValue( PET_WOLF, PET_CAT, PET_BEAR, PET_CRAB, PET_GORILLA, PET_BIRD,
