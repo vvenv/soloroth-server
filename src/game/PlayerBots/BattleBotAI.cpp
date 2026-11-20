@@ -2924,6 +2924,13 @@ void BattleBotAI::UpdateInCombatAI_Rogue()
             if (DoCastSpell(me, m_spells.rogue.pSprint) == SPELL_CAST_OK)
                 return;
         }
+
+        // Same as PartyBot warrior/rogue: resume chase after DoCastSpell StopMoving.
+        if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE
+            && !me->CanReachWithMeleeAutoAttack(pVictim))
+        {
+            BeginChasing(pVictim);
+        }
     }
 }
 

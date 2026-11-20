@@ -445,6 +445,22 @@ bool PartyBotAI::TryRegainLineOfSight(Unit* pVictim)
     return true;
 }
 
+void PartyBotAI::ResumeMeleeChaseIfNeeded(Unit* pVictim)
+{
+    if (!pVictim)
+        return;
+    if (GetRole() != ROLE_MELEE_DPS && m_role != ROLE_TANK)
+        return;
+    // Calm hold: keep the target but do not run at a far pack.
+    if (!CanEngageTarget(pVictim))
+        return;
+    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != IDLE_MOTION_TYPE)
+        return;
+    if (me->CanReachWithMeleeAutoAttack(pVictim))
+        return;
+    BeginChasing(pVictim);
+}
+
 bool PartyBotAI::EnsurePetAttacks(Unit* pVictim)
 {
     if (!pVictim || !IsValidHostileTarget(pVictim))
@@ -1645,6 +1661,33 @@ bool PartyBotAI::PartyAlreadyPulling(ObjectGuid targetGuid) const
     return false;
 }
 
+bool PartyBotAI::IsTankHoldingRangedPull(Unit const* pTarget) const
+{
+    if (!pTarget)
+        return false;
+
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return false;
+
+    ObjectGuid const targetGuid = pTarget->GetObjectGuid();
+    uint32 const now = WorldTimer::getMSTime();
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember)
+            continue;
+        PartyBotAI* pAI = dynamic_cast<PartyBotAI*>(pMember->AI());
+        if (!pAI || pAI->m_role != ROLE_TANK)
+            continue;
+        if (!pAI->m_pullHoldTargetGuid.IsEmpty() &&
+            pAI->m_pullHoldTargetGuid == targetGuid &&
+            now < pAI->m_pullHoldDeadline)
+            return true;
+    }
+    return false;
+}
+
 bool PartyBotAI::StartPartyRangedPull(Unit* pTarget, uint32 durationMs)
 {
     if (!pTarget || !me->IsValidAttackTarget(pTarget))
@@ -2473,8 +2516,52 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         }
     }
 
+    // Mid-cast: no second spell, but still kick / abandon a non-heal for LoS or chase.
     if (me->IsNonMeleeSpellCasted(false, false, true))
+    {
+        if (TryInterruptEnemyCast())
+            return;
+
+        bool castingHeal = false;
+        if (Spell const* pSpell = me->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+            castingHeal = pSpell->m_spellInfo->IsHealSpell();
+        else if (Spell const* pSpell = me->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
+            castingHeal = pSpell->m_spellInfo->IsHealSpell();
+
+        if (!castingHeal)
+        {
+            if (Unit* pVictim = me->GetVictim())
+            {
+                // TryRegainLineOfSight refuses while casting; walk the corner anyway.
+                if (m_role != ROLE_TANK && !IsInDuel() && !me->IsWithinLOSInMap(pVictim) &&
+                    me->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
+                {
+                    Unit* pPivot = FindPartyTank();
+                    if (!pPivot)
+                        pPivot = pLeader;
+                    if (pPivot && pPivot != me && me->GetDistance(pPivot) > 3.0f &&
+                        me->GetDistance(pPivot) < me->GetDistance(pVictim))
+                        BeginChasing(pPivot);
+                    else
+                        BeginChasing(pVictim);
+                }
+                else
+                    ResumeMeleeChaseIfNeeded(pVictim);
+            }
+
+            if (GetRole() == ROLE_HEALER && !PartyMemberBelow(50.0f))
+            {
+                if (Player* pTank = FindPartyTank())
+                {
+                    float const dist = me->GetDistance(pTank);
+                    if (dist > 28.0f &&
+                        me->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
+                        BeginChasing(pTank);
+                }
+            }
+        }
         return;
+    }
 
     if (me->GetTargetGuid() == me->GetObjectGuid())
         me->ClearTarget();
@@ -2545,11 +2632,11 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
     Unit* pVictim = me->GetVictim();
 
-    // Calm mode: do not run at a far pack — release and wait by the leader.
-    // Leader-committed targets pass CanEngageTarget and are not released.
+    // Calm mode: do not run at a far pack — wait by the leader.
+    // Leader-committed targets pass CanEngageTarget and are not held.
+    // Already in combat: keep the target (kite/drag) instead of AttackStop.
     if (pVictim && IsValidHostileTarget(pVictim) && !CanEngageTarget(pVictim))
     {
-        me->AttackStop(true);
         if (!me->IsStopped())
             me->StopMoving();
         if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
@@ -2557,7 +2644,18 @@ void PartyBotAI::UpdateAI(uint32 const diff)
             me->GetMotionMaster()->Clear(false, true);
             me->GetMotionMaster()->MoveIdle();
         }
-        pVictim = nullptr;
+        if (me->IsInCombat())
+        {
+            if (!me->IsMoving() &&
+                me->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
+                me->GetMotionMaster()->MoveFollow(pLeader, urand(PB_MIN_FOLLOW_DIST, PB_MAX_FOLLOW_DIST),
+                    frand(PB_MIN_FOLLOW_ANGLE, PB_MAX_FOLLOW_ANGLE));
+        }
+        else
+        {
+            me->AttackStop(true);
+            pVictim = nullptr;
+        }
     }
 
     // Healer still drinking: nobody opens a fresh pull.
@@ -2575,19 +2673,29 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         return;
     }
 
-    // Priests (including healers) assist so they can wand when nothing needs a heal.
-    // Other healers stay on heal-only targeting.
-    if (GetRole() != ROLE_HEALER || me->GetClass() == CLASS_PRIEST)
+    // Healers assist when nobody needs care (priests always may wand). Class AI
+    // still heals first once in combat.
     {
-        if (!pVictim || !IsValidHostileTarget(pVictim))
+        bool canAssist = true;
+        if (GetRole() == ROLE_HEALER && me->GetClass() != CLASS_PRIEST)
         {
-            if (pVictim)
-                me->AttackStop();
-
-            if (Unit* pNew = SelectAttackTarget(pLeader))
+            float directSelf, directGroup, hotSelf, hotGroup;
+            bool allowPreHeal = true;
+            GetHealerCareThresholds(directSelf, directGroup, hotSelf, hotGroup, allowPreHeal);
+            canAssist = !PartyMemberBelow(directGroup);
+        }
+        if (canAssist)
+        {
+            if (!pVictim || !IsValidHostileTarget(pVictim))
             {
-                if (CanEngageTarget(pNew) && AttackStart(pNew))
-                    return;
+                if (pVictim)
+                    me->AttackStop();
+
+                if (Unit* pNew = SelectAttackTarget(pLeader))
+                {
+                    if (CanEngageTarget(pNew) && AttackStart(pNew))
+                        return;
+                }
             }
         }
     }
@@ -2777,6 +2885,13 @@ void PartyBotAI::UpdateInCombatAI()
                     }
                 }
             }
+            else if (pVictim && !snapWindow && !dragging)
+            {
+                // Skull is held: taunt adds chewing hunters/DPS without leaving it
+                // (SelectPartyPeelTarget still ignores DPS so we do not run laps).
+                if (TryTankSnapThreat())
+                    return;
+            }
 
             if (dragging)
                 return;
@@ -2833,9 +2948,11 @@ void PartyBotAI::UpdateInCombatAI()
         return;
 
     // Pet on the kill target; casters step out when a wall ate their last cast.
+    // Skip the pet while holding fire — it otherwise keeps climbing threat alone.
     if (Unit* pVictim = me->GetVictim())
     {
-        EnsurePetAttacks(pVictim);
+        if (!(ShouldHoldFire() && GetRole() != ROLE_HEALER))
+            EnsurePetAttacks(pVictim);
         if (TryRegainLineOfSight(pVictim))
         {
             // Keep moving this tick; spells stay gated by LOS in CanTryToCastSpell.
@@ -2925,8 +3042,12 @@ void PartyBotAI::UpdateInCombatAI()
             break;
     }
 
-    if (me->GetVictim())
+    if (Unit* pVictim = me->GetVictim())
+    {
+        // Enhancement shamans (and any melee) after DoCastSpell left them IDLE.
+        ResumeMeleeChaseIfNeeded(pVictim);
         UseTrinketEffects();
+    }
 }
 
 Player* PartyBotAI::SelectFearWardTarget() const
@@ -3243,8 +3364,10 @@ bool PartyBotAI::ShouldHoldFire() const
     Unit* pVictim = me->GetVictim();
     if (!pVictim)
         return false;
+    // Hunters climb with Auto Shot + pet; hold earlier than casters.
+    float const ratio = (me->GetClass() == CLASS_HUNTER) ? 0.70f : 0.90f;
     // About to rip: stop damaging so the tank can catch up.
-    return IsNearTankThreat(pVictim, 0.90f);
+    return IsNearTankThreat(pVictim, ratio);
 }
 
 bool PartyBotAI::TryThreatDump()
@@ -3253,13 +3376,16 @@ bool PartyBotAI::TryThreatDump()
         return false;
 
     Unit* pVictim = me->GetVictim();
-    bool const highThreat = pVictim && IsNearTankThreat(pVictim, 0.80f);
+    // Hunter Feign is the main brake; dump earlier than Fade / Cower classes.
+    float const warnRatio = (me->GetClass() == CLASS_HUNTER) ? 0.65f : 0.80f;
+    float const dumpRatio = (me->GetClass() == CLASS_HUNTER) ? 0.70f : 0.85f;
+    bool const highThreat = pVictim && IsNearTankThreat(pVictim, warnRatio);
     bool const gotAggro = !me->GetAttackers().empty();
     if (!highThreat && !gotAggro)
         return false;
 
     // Only dump when we are in real danger of a rip or already tanking.
-    if (!gotAggro && !IsNearTankThreat(pVictim, 0.85f))
+    if (!gotAggro && !IsNearTankThreat(pVictim, dumpRatio))
         return false;
 
     switch (me->GetClass())
@@ -4550,6 +4676,12 @@ void PartyBotAI::UpdateOutOfCombatAI_Hunter()
 
     if (Unit* pVictim = me->GetVictim())
     {
+        // Same brakes as UpdateInCombatAI — pull used to skip them and dump Aimed Shot.
+        if (TryThreatDump())
+            return;
+        if (ShouldHoldFire())
+            return;
+
         if (m_spells.hunter.pHuntersMark &&
             CanTryToCastSpell(pVictim, m_spells.hunter.pHuntersMark))
         {
@@ -4557,12 +4689,16 @@ void PartyBotAI::UpdateOutOfCombatAI_Hunter()
                 return;
         }
 
-        if (Pet* pPet = me->GetPet())
+        // Pet waits until the tank has picked up — otherwise it wins the race in.
+        if (!IsTankHoldingRangedPull(pVictim))
         {
-            if (!pPet->GetVictim())
+            if (Pet* pPet = me->GetPet())
             {
-                pPet->GetCharmInfo()->SetIsCommandAttack(true);
-                pPet->AI()->AttackStart(pVictim);
+                if (!pPet->GetVictim())
+                {
+                    pPet->GetCharmInfo()->SetIsCommandAttack(true);
+                    pPet->AI()->AttackStart(pVictim);
+                }
             }
         }
 
@@ -4639,8 +4775,12 @@ void PartyBotAI::UpdateInCombatAI_Hunter()
                 return;
         }
 
+        // Soft open while the tank is still holding: Mark + Auto (+ Concussive if
+        // already on us). Aimed / Multi / pet would out-threat the pickup.
+        bool const softPull = IsTankHoldingRangedPull(pVictim);
+
         // Rapid Fire on elites / multi-pulls — not on gray trash.
-        if (m_spells.hunter.pRapidFire &&
+        if (!softPull && m_spells.hunter.pRapidFire &&
             ShouldBurnMajorCooldown(pVictim) &&
             CanTryToCastSpell(me, m_spells.hunter.pRapidFire))
         {
@@ -4648,7 +4788,7 @@ void PartyBotAI::UpdateInCombatAI_Hunter()
                 return;
         }
 
-        if (m_spells.hunter.pVolley &&
+        if (!softPull && m_spells.hunter.pVolley &&
            (me->GetEnemyCountInRadiusAround(pVictim, 10.0f) > 2) &&
             CanTryToCastSpell(pVictim, m_spells.hunter.pVolley))
         {
@@ -4683,6 +4823,9 @@ void PartyBotAI::UpdateInCombatAI_Hunter()
             if (DoCastSpell(pVictim, m_spells.hunter.pConcussiveShot) == SPELL_CAST_OK)
                 return;
         }
+
+        if (softPull)
+            return;
 
         if (m_spells.hunter.pAimedShot &&
             CanTryToCastSpell(pVictim, m_spells.hunter.pAimedShot))
@@ -6151,6 +6294,14 @@ void PartyBotAI::UpdateInCombatAI_Rogue()
         {
             if (DoCastSpell(me, m_spells.rogue.pSprint) == SPELL_CAST_OK)
                 return;
+        }
+
+        // DoCastSpell StopMoving can leave melee idle out of reach; warriors
+        // restart chase here — without it the rogue stands after a GCD.
+        if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE
+            && !me->CanReachWithMeleeAutoAttack(pVictim))
+        {
+            BeginChasing(pVictim);
         }
     }
 }

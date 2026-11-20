@@ -72,6 +72,8 @@ public:
     bool UpdateRangedPullHold();
     // Leader stands still with a far hostile selected: best ranged bot opens, tank holds.
     bool PartyAlreadyPulling(ObjectGuid targetGuid) const;
+    // True while a tank bot is still waiting to pick up this ranged-pull target.
+    bool IsTankHoldingRangedPull(Unit const* pTarget) const;
     bool StartPartyRangedPull(Unit* pTarget, uint32 durationMs);
     bool TryAssistLeaderPull(Player* pLeader);
     Unit* SelectAttackTarget(Player* pLeader) const;
@@ -141,6 +143,8 @@ public:
     bool AreAllHostilesOnTank(Unit const* pAround, float radius) const;
     // Ranged: step toward the tank/leader when a pillar ate the cast.
     bool TryRegainLineOfSight(Unit* pVictim);
+    // DoCastSpell StopMoving can leave melee IDLE out of reach — restart chase.
+    void ResumeMeleeChaseIfNeeded(Unit* pVictim);
     // Tank: early in a far pull, drag the pack back to the party (LoS corner).
     bool TryDragPackToParty();
     // Hunter / Warlock: keep the pet on the kill target.
