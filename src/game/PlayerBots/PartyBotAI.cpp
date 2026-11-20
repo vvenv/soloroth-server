@@ -454,10 +454,23 @@ void PartyBotAI::ResumeMeleeChaseIfNeeded(Unit* pVictim)
     // Calm hold: keep the target but do not run at a far pack.
     if (!CanEngageTarget(pVictim))
         return;
-    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != IDLE_MOTION_TYPE)
-        return;
     if (me->CanReachWithMeleeAutoAttack(pVictim))
         return;
+
+    MovementGeneratorType const mt = me->GetMotionMaster()->GetCurrentMovementGeneratorType();
+    // DoCastSpell → StopMoving kills the spline but leaves CHASE on the stack.
+    // An IDLE-only check missed that; the rogue stood still after every GCD.
+    bool const stuckChase = mt == CHASE_MOTION_TYPE &&
+        me->movespline->Finalized() && !me->IsMoving();
+    if (mt != IDLE_MOTION_TYPE && !stuckChase)
+        return;
+
+    if (stuckChase)
+    {
+        // Behind-angle chase often has no path in dungeon corridors; walk straight in.
+        me->GetMotionMaster()->MoveChase(pVictim, 1.0f, 0.0f);
+        return;
+    }
     BeginChasing(pVictim);
 }
 
@@ -1424,6 +1437,23 @@ bool PartyBotAI::CanEngageTarget(Unit const* pTarget) const
             return true;
     if (me->GetVictim() == pTarget && me->IsInCombat())
         return true;
+
+    // Tank: always chase whatever is chewing the healer / player — calm range
+    // must not leave a priest kiting a pack the warrior refuses to pick up.
+    if (m_role == ROLE_TANK)
+    {
+        if (Unit* pHit = pTarget->GetVictim())
+        {
+            if (Player* pPlayer = pHit->ToPlayer())
+            {
+                if (pPlayer == GetPartyLeader())
+                    return true;
+                if (PartyBotAI const* pAI = dynamic_cast<PartyBotAI const*>(pPlayer->AI()))
+                    if (pAI->m_role == ROLE_HEALER)
+                        return true;
+            }
+        }
+    }
 
     // Commanded pull / attackstart may open from any range for a short window.
     if (!m_forceEngageGuid.IsEmpty() &&
@@ -2771,6 +2801,10 @@ void PartyBotAI::UpdateAI(uint32 const diff)
                     else
                         BeginChasing(pVictim);
                     break;
+                case CHASE_MOTION_TYPE:
+                    // StopMoving left CHASE with a dead spline — resume closes again.
+                    ResumeMeleeChaseIfNeeded(pVictim);
+                    break;
             }
         }
     }
@@ -2829,48 +2863,48 @@ void PartyBotAI::UpdateInCombatAI()
     {
         if (m_role == ROLE_TANK)
         {
+            Unit* pPeel = SelectPartyPeelTarget();
+
+            // Healer / player peel first — before drag or face-away. Otherwise the
+            // priest Psychic Screams and kites while we walk the pack to the corner.
+            if (pPeel)
+            {
+                if (TryTankSnapThreat())
+                    return;
+                if (me->GetVictim() != pPeel && CanEngageTarget(pPeel))
+                {
+                    me->AttackStop(true);
+                    if (AttackStart(pPeel))
+                        return;
+                }
+            }
+
             Unit* pVictim = me->GetVictim();
 
-            // Defend party members — but stick to the current target. The old
-            // "always SelectPartyAttackTarget while tanking" swapped every tick
-            // in a multi-pull and the warrior ran between every add.
+            // No victim: pick up any party attacker. Do not retarget every tick
+            // once locked — that used to send the warrior laps across a multi-pull.
             if (!pVictim)
             {
                 if (Unit* pLoose = SelectPartyAttackTarget())
                     if (CanEngageTarget(pLoose))
                         AttackStart(pLoose);
             }
-            else if (pVictim->GetVictim() == me)
-            {
-                if (Unit* pPeel = SelectPartyPeelTarget())
-                {
-                    if (CanEngageTarget(pPeel))
-                    {
-                        me->AttackStop(true);
-                        AttackStart(pPeel);
-                    }
-                }
-            }
 
             // Player (or a bot) sheeped an add: drag the rest clear so AoE does not open it.
             bool const dragging = PullFightAwayFromCrowdControl();
 
             // Far open: walk the pack back to the party so casters keep LoS at the corner.
-            if (!dragging && TryDragPackToParty())
+            if (!dragging && !pPeel && TryDragPackToParty())
                 return;
 
             // Elite/boss: stand opposite the party so cleave hits the wall.
-            if (!dragging && TryTankFaceAwayFromParty())
+            if (!dragging && !pPeel && TryTankFaceAwayFromParty())
                 return;
 
-            // Post-fear / multi-pull: taunt every loose mob, not only the current target.
-            bool const snapWindow = m_snapThreatUntil &&
-                WorldTimer::getMSTime() < m_snapThreatUntil;
-            if (snapWindow || dragging)
-            {
-                if (TryTankSnapThreat())
-                    return;
-            }
+            // Taunt every loose mob (healer adds, post-fear, multi-pull) — not only
+            // the current target, and not only inside the post-fear snap window.
+            if (TryTankSnapThreat())
+                return;
 
             // Taunt current target if it is attacking someone else.
             pVictim = me->GetVictim();
@@ -2884,13 +2918,6 @@ void PartyBotAI::UpdateInCombatAI()
                             return;
                     }
                 }
-            }
-            else if (pVictim && !snapWindow && !dragging)
-            {
-                // Skull is held: taunt adds chewing hunters/DPS without leaving it
-                // (SelectPartyPeelTarget still ignores DPS so we do not run laps).
-                if (TryTankSnapThreat())
-                    return;
             }
 
             if (dragging)
@@ -3760,6 +3787,30 @@ bool PartyBotAI::TryKeepRangedDistance()
         IsAttackSpeedOverridenForm(me->GetShapeshiftForm()))
         return false;
 
+    // Healer with a tank: Fade and stack on the tank. Psychic Scream / kiting
+    // scatters the pack and the warrior cannot pick it up.
+    if (m_role == ROLE_HEALER)
+    {
+        if (GetAttackersInRangeCount(10.0f) == 0)
+            return false;
+        if (Player* pTank = FindPartyTank())
+        {
+            if (TryThreatDump())
+                return true;
+            if (me->IsNonMeleeSpellCasted())
+                return false;
+            float const dist = me->GetDistance(pTank);
+            MovementGeneratorType const mt = me->GetMotionMaster()->GetCurrentMovementGeneratorType();
+            if (dist > 10.0f)
+            {
+                if (mt != CHASE_MOTION_TYPE && mt != POINT_MOTION_TYPE)
+                    BeginChasing(pTank);
+                return true;
+            }
+            return false;
+        }
+    }
+
     Unit* pEnemy = nullptr;
     float best = 999.0f;
     for (Unit* pAttacker : me->GetAttackers())
@@ -3787,11 +3838,6 @@ bool PartyBotAI::TryKeepRangedDistance()
         }
     }
     if (!pEnemy)
-        return false;
-
-    // Healers only leave when something is actually hitting them — otherwise
-    // stay in heal range of the tank.
-    if (m_role == ROLE_HEALER && GetAttackersInRangeCount(10.0f) == 0)
         return false;
 
     bool const inMelee = pEnemy->CanReachWithMeleeAutoAttack(me);
@@ -4235,7 +4281,7 @@ bool PartyBotAI::TryTankSnapThreat()
     {
         if (tryTaunt(pPeel))
             return true;
-        if (CanEngageTarget(pPeel) && AttackStart(pPeel))
+        if (me->GetVictim() != pPeel && CanEngageTarget(pPeel) && AttackStart(pPeel))
             return true;
     }
 
@@ -6294,14 +6340,6 @@ void PartyBotAI::UpdateInCombatAI_Rogue()
         {
             if (DoCastSpell(me, m_spells.rogue.pSprint) == SPELL_CAST_OK)
                 return;
-        }
-
-        // DoCastSpell StopMoving can leave melee idle out of reach; warriors
-        // restart chase here — without it the rogue stands after a GCD.
-        if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE
-            && !me->CanReachWithMeleeAutoAttack(pVictim))
-        {
-            BeginChasing(pVictim);
         }
     }
 }
