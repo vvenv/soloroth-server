@@ -303,13 +303,13 @@ bool SoloFarmAI::Start(Player* pPlayer, SoloFarmMode mode, float radius)
                 uint32(radius));
             break;
         case SOLO_FARM_GATHER:
-            chat.PSendSysMessage(zh ? "开始自动采集：身边 %u 码内采药、挖矿、剥皮（有技能和工具才做）。这一圈没有点，就朝下一处矿或草药跑；再没有就往前跑，偶尔随机换向。不进主城和敌对城镇。输入 .solo stop，或在角色站定时按移动键即可停止。"
-                                    : "Auto gathering within %u yards: herbs, ore and skinning (only with the skill and tools). When nothing is that close it runs to the next node, or ahead in a random direction. It stays out of capital cities and enemy towns. Type .solo stop, or press a movement key while standing, to stop.",
+            chat.PSendSysMessage(zh ? "开始自动采集：身边 %u 码内采药、挖矿、剥皮（有技能和工具才做）。这一圈没有点，就朝下一处矿或草药跑；再没有就往前跑，偶尔随机换向。不进主城、敌对城镇和副本入口。输入 .solo stop，或在角色站定时按移动键即可停止。"
+                                    : "Auto gathering within %u yards: herbs, ore and skinning (only with the skill and tools). When nothing is that close it runs to the next node, or ahead in a random direction. It stays out of capital cities, enemy towns, and dungeon entrances. Type .solo stop, or press a movement key while standing, to stop.",
                 uint32(radius));
             break;
         case SOLO_FARM_ALL:
-            chat.PSendSysMessage(zh ? "开始自动挂机：身边 %u 码内能打就打、能采就采、能钓就钓（有技能才做）。这一圈没有事，就朝下一处怪或采集点跑；再没有就往前跑，偶尔随机换向。不进主城和敌对城镇。输入 .solo stop，或在角色站定时按移动键即可停止。"
-                                    : "Auto farming within %u yards: fights, gathers and fishes when you can. When nothing is that close it runs to the next camp, or ahead in a random direction. It stays out of capital cities and enemy towns. Type .solo stop, or press a movement key while standing, to stop.",
+            chat.PSendSysMessage(zh ? "开始自动挂机：身边 %u 码内能打就打、能采就采、能钓就钓（有技能才做）。这一圈没有事，就朝下一处怪或采集点跑；再没有就往前跑，偶尔随机换向。不进主城、敌对城镇和副本入口。输入 .solo stop，或在角色站定时按移动键即可停止。"
+                                    : "Auto farming within %u yards: fights, gathers and fishes when you can. When nothing is that close it runs to the next camp, or ahead in a random direction. It stays out of capital cities, enemy towns, and dungeon entrances. Type .solo stop, or press a movement key while standing, to stop.",
                 uint32(radius));
             break;
         case SOLO_FARM_FIGHT:
@@ -317,8 +317,8 @@ bool SoloFarmAI::Start(Player* pPlayer, SoloFarmMode mode, float radius)
                                    : "Assist on: you walk. It fights anything that attacks you, and a mob you target while standing still within 30 yards: chase and spells. It drinks a potion when health or mana is low; out of mana it wands if equipped, else melees. Standing still with nothing selected, it sits to eat or drink when low. It backs off or blinks after a root, and crowd-controls an extra mob. It does not wander. Walking does not stop it; .solo stop does.");
             break;
         default:
-            chat.PSendSysMessage(zh ? "开始自动打怪：身边 %u 码内找怪、战斗、拾取；血蓝低了会坐下吃喝休息。这一圈没有合适的怪，就朝下一处怪跑；再没有就往前跑，偶尔随机换向。不进主城和敌对城镇。战斗中血量或法力过低会喝药水；法力耗尽时有魔杖就继续射击，否则上去近战；定身后会后撤或闪现；多只怪会控住一只。输入 .solo stop，或在角色站定时按移动键即可停止。"
-                                    : "Auto grinding within %u yards: picks fights, loots, and sits to eat or drink when low. When nothing is that close it runs to the next camp, or ahead in a random direction. It stays out of capital cities and enemy towns. In a fight it drinks a potion when health or mana is low; out of mana it wands if equipped, else melees. It backs off or blinks after a root, and crowd-controls an extra mob. Type .solo stop, or press a movement key while standing, to stop.",
+            chat.PSendSysMessage(zh ? "开始自动打怪：身边 %u 码内找怪、战斗、拾取；血蓝低了会坐下吃喝休息。这一圈没有合适的怪，就朝下一处怪跑；再没有就往前跑，偶尔随机换向。不进主城、敌对城镇和副本入口。战斗中血量或法力过低会喝药水；法力耗尽时有魔杖就继续射击，否则上去近战；定身后会后撤或闪现；多只怪会控住一只。输入 .solo stop，或在角色站定时按移动键即可停止。"
+                                    : "Auto grinding within %u yards: picks fights, loots, and sits to eat or drink when low. When nothing is that close it runs to the next camp, or ahead in a random direction. It stays out of capital cities, enemy towns, and dungeon entrances. In a fight it drinks a potion when health or mana is low; out of mana it wands if equipped, else melees. It backs off or blinks after a root, and crowd-controls an extra mob. Type .solo stop, or press a movement key while standing, to stop.",
                 uint32(radius));
             break;
     }
@@ -820,13 +820,20 @@ void SoloFarmAI::UpdateAI(uint32 const diff)
 
     Pet* pPet = me->GetPet();
     bool const attacked = !me->GetAttackers().empty() || (pPet && !pPet->GetAttackers().empty());
-    if (attacked || me->GetVictim())
+    if (attacked || me->GetVictim() || me->IsInCombat())
     {
         if (DoesFish() && me->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
             me->InterruptSpell(CURRENT_CHANNELED_SPELL);
         if (DoesFish())
             RestoreWeapons();
         if (UpdateCombat())
+            return;
+        // No engageable target left, but the sword is still red (combat linger, or a party
+        // fight we will not run to): cut any roam leg. Fall through so FindTarget can open
+        // the next pull; Wander itself refuses while IsInCombat.
+        if (m_wandering || !me->movespline->Finalized())
+            HaltRoam();
+        if (attacked || me->GetVictim())
             return;
     }
 
@@ -1092,10 +1099,30 @@ bool SoloFarmAI::TryStepForSight(Unit* pVictim)
     return false;
 }
 
+void SoloFarmAI::HaltRoam()
+{
+    m_wandering = false;
+    m_seekingSight = false;
+    switch (me->GetMotionMaster()->GetCurrentMovementGeneratorType())
+    {
+        case POINT_MOTION_TYPE:
+        case FOLLOW_MOTION_TYPE:
+            me->GetMotionMaster()->Clear(false, true);
+            me->GetMotionMaster()->MoveIdle();
+            break;
+        default:
+            break;
+    }
+    if (!me->movespline->Finalized() || me->IsMoving())
+        me->StopMoving();
+}
+
 bool SoloFarmAI::UpdateCombat()
 {
     Unit* pVictim = me->GetVictim();
-    if (pVictim && !IsValidHostileTarget(pVictim))
+    // IsValidHostileTarget rejects breakable CC (sheep, blind, …). Keep that target so the
+    // drink / step-back block below can use the window; dropping it falls into Wander.
+    if (pVictim && !IsValidHostileTarget(pVictim) && !IsBreakableControl(pVictim))
     {
         me->AttackStop();
         pVictim = nullptr;
@@ -1104,7 +1131,8 @@ bool SoloFarmAI::UpdateCombat()
     // Party combat flags us too (1.12). A pull that has not turned to us yet is dropped
     // so a mob already hitting a party member is the one we run to.
     Unit* pAlly = SelectAllyAttacker();
-    if (pVictim && pAlly && pVictim != pAlly && !FightingAlly(pVictim->ToCreature()))
+    if (pVictim && pAlly && pVictim != pAlly && !FightingAlly(pVictim->ToCreature()) &&
+        !IsBreakableControl(pVictim))
     {
         me->AttackStop();
         pVictim = nullptr;
@@ -1113,22 +1141,34 @@ bool SoloFarmAI::UpdateCombat()
     if (!pVictim)
     {
         float best = 0.0f;
+        Unit* pControlled = nullptr;
+        float controlledBest = 0.0f;
         for (auto const pAttacker : me->GetAttackers())
         {
-            if (!IsValidHostileTarget(pAttacker))
+            if (!pAttacker->IsAlive())
                 continue;
             float const distance = me->GetDistance(pAttacker);
-            if (!pVictim || distance < best)
+            if (IsValidHostileTarget(pAttacker))
             {
-                pVictim = pAttacker;
-                best = distance;
+                if (!pVictim || distance < best)
+                {
+                    pVictim = pAttacker;
+                    best = distance;
+                }
+            }
+            else if (IsBreakableControl(pAttacker) && (!pControlled || distance < controlledBest))
+            {
+                pControlled = pAttacker;
+                controlledBest = distance;
             }
         }
+        if (!pVictim)
+            pVictim = pControlled;
 
         if (!pVictim)
             if (Pet* pPet = me->GetPet())
                 if (Unit* pPetAttacker = pPet->GetAttackerForHelper())
-                    if (IsValidHostileTarget(pPetAttacker))
+                    if (IsValidHostileTarget(pPetAttacker) || IsBreakableControl(pPetAttacker))
                         pVictim = pPetAttacker;
 
         if (!pVictim && pAlly)
@@ -1136,12 +1176,12 @@ bool SoloFarmAI::UpdateCombat()
             pVictim = pAlly;
             m_pullGuid = pAlly->GetObjectGuid();
             m_pullStart = m_now;
-            m_wandering = false;
         }
 
         if (!pVictim && !m_pullGuid.IsEmpty())
             if (Unit* pPull = me->GetMap()->GetUnit(m_pullGuid))
-                if (pPull->IsAlive() && IsValidHostileTarget(pPull))
+                if (pPull->IsAlive() &&
+                    (IsValidHostileTarget(pPull) || IsBreakableControl(pPull)))
                     pVictim = pPull;
 
         if (!pVictim)
@@ -1151,6 +1191,8 @@ bool SoloFarmAI::UpdateCombat()
             return false;
         }
 
+        // Player MoveChase does not interrupt an active Point spline; cut the roam first.
+        HaltRoam();
         AttackStart(pVictim);
         return true;
     }
@@ -1196,6 +1238,15 @@ bool SoloFarmAI::UpdateCombat()
         me->SetStandState(UNIT_STAND_STATE_STAND);
     if (m_resting)
         m_resting = false;
+
+    // A roam Point under Chase (player MoveChase does not expire it) keeps the old leg alive.
+    if (m_wandering ||
+        me->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+    {
+        HaltRoam();
+        BeginChasing(pVictim);
+        return true;
+    }
 
     // Wand Shoot is autorepeat: moving (including a chase tick) cancels it. Keep shooting.
     if (me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) && me->GetClass() != CLASS_HUNTER)
@@ -1714,10 +1765,16 @@ void SoloFarmAI::UpdateGrind()
             }
             m_pullGuid = pTarget->GetObjectGuid();
             m_pullStart = m_now;
-            m_wandering = false;
+            HaltRoam();
             AttackStart(pTarget);
             return;
         }
+    }
+
+    if (me->IsInCombat())
+    {
+        HaltRoam();
+        return;
     }
 
     Wander();
@@ -1770,6 +1827,8 @@ Creature* SoloFarmAI::FindTarget(uint32& adds)
             continue;
         // No line of sight required: the path check below is what decides we can walk there.
         // A mob behind a barn is a camp to run to, not a reason to stand.
+        if (!ours && !PlaceOk(pCreature->GetPositionX(), pCreature->GetPositionY(), pCreature->GetPositionZ()))
+            continue;
 
         (ours ? engaged : picks).emplace_back(me->GetDistance(pCreature), pCreature);
     }
@@ -1839,6 +1898,12 @@ uint32 SoloFarmAI::CountAdds(std::vector<Threat> const& threats, float x, float 
     float const limit = maxLength > 0.0f ? maxLength : m_radius * 3.0f;
     if (!(path.getPathType() & PATHFIND_NORMAL) || path.Length() > limit)
         return NO_PATH;
+    // Never finish inside a portal. Intermediate points are only blocked when we are
+    // already outside: a leg that starts in the volume must be allowed to walk out.
+    if (NearInstanceEntrance(x, y, z))
+        return NO_PATH;
+    bool const leavingEntrance =
+        NearInstanceEntrance(me->GetPositionX(), me->GetPositionY(), me->GetPositionZ());
 
     std::set<Creature*> adds;
     PointsArray const& points = path.getPath();
@@ -1846,6 +1911,8 @@ uint32 SoloFarmAI::CountAdds(std::vector<Threat> const& threats, float x, float 
     {
         G3D::Vector3 const& a = points[i - 1];
         G3D::Vector3 const& b = points[i];
+        if (!leavingEntrance && NearInstanceEntrance(b.x, b.y, b.z))
+            return NO_PATH;
         if (Dist2d(a.x, a.y, x, y) <= stopShort)
             break;
         for (Threat const& threat : threats)
@@ -1954,8 +2021,52 @@ void SoloFarmAI::NoteCamp()
     m_z = me->GetPositionZ();
 }
 
+bool SoloFarmAI::NearInstanceEntrance(float x, float y, float z) const
+{
+    // Inside a dungeon the exit AT is intentional; a map change already ends the farm.
+    if (me->GetMap()->IsDungeon())
+        return false;
+
+    uint32 const mapId = me->GetMapId();
+    // Same slack MiscHandler allows when the client reports CMSG_AREATRIGGER.
+    float const delta = 5.0f;
+
+    auto tooClose = [&](AreaTriggerEntry const* at) -> bool
+    {
+        if (!at || at->map_id != mapId)
+            return false;
+        float extent = at->radius > 0.0f ? at->radius
+            : std::max(at->box_x, std::max(at->box_y, at->box_z)) * 0.5f;
+        float const cull = extent + delta + 2.0f;
+        float const dx = x - at->x;
+        float const dy = y - at->y;
+        if (dx * dx + dy * dy > cull * cull)
+            return false;
+        return IsPointInAreaTriggerZone(at, mapId, x, y, z, delta);
+    };
+
+    for (auto const& itr : sObjectMgr.GetAreaTriggerTeleportMap())
+    {
+        MapEntry const* dest = sMapStorage.LookupEntry<MapEntry>(itr.second.destination.mapId);
+        if (!dest || !dest->Instanceable())
+            continue;
+        if (tooClose(sObjectMgr.GetAreaTrigger(itr.first)))
+            return true;
+    }
+
+    for (auto const& itr : sObjectMgr.GetBattlegroundEntranceTriggersMap())
+    {
+        if (tooClose(sObjectMgr.GetAreaTrigger(itr.first)))
+            return true;
+    }
+    return false;
+}
+
 bool SoloFarmAI::PlaceOk(float x, float y, float z) const
 {
+    if (NearInstanceEntrance(x, y, z))
+        return false;
+
     TerrainInfo const* pTerrain = me->GetTerrain();
     if (!pTerrain)
         return true;
@@ -2137,6 +2248,17 @@ bool SoloFarmAI::RandomRoamPoint(float& x, float& y, float& z) const
 
 void SoloFarmAI::Wander()
 {
+    // Red sword (linger after a kill, or a party fight): never start or keep a roam leg.
+    if (me->IsInCombat() || me->GetVictim() || !me->GetAttackers().empty())
+    {
+        HaltRoam();
+        return;
+    }
+
+    // Standing in an entrance volume: stop the spline so the client does not keep walking deeper.
+    if (NearInstanceEntrance(me->GetPositionX(), me->GetPositionY(), me->GetPositionZ()))
+        HaltRoam();
+
     // A winding tunnel is longer than the leash. Slide the camp while we are on a leg
     // we chose; a chase still stops if it runs away from where the pull started.
     if (!me->movespline->Finalized())
@@ -2516,6 +2638,8 @@ GameObject* SoloFarmAI::FindGatherNode()
     for (GameObject* pGo : objects)
     {
         if (IsBlacklisted(pGo->GetObjectGuid()) || !GatherLockType(pGo))
+            continue;
+        if (!PlaceOk(pGo->GetPositionX(), pGo->GetPositionY(), pGo->GetPositionZ()))
             continue;
         picks.emplace_back(me->GetDistance(pGo), pGo);
     }
@@ -2934,6 +3058,8 @@ bool SoloFarmAI::FindFishingSpot()
     {
         if (++tries > 8)
             break;
+        if (!PlaceOk(spot.x, spot.y, spot.z))
+            continue;
 
         float z = spot.z;
         if (!spot.here)
@@ -2942,6 +3068,11 @@ bool SoloFarmAI::FindFishingSpot()
             path.calculate(spot.x, spot.y, spot.z, false);
             Vector3 const end = path.getActualEndPosition();
             if (!(path.getPathType() & PATHFIND_NORMAL) || Dist2d(end.x, end.y, spot.x, spot.y) > 1.5f)
+            {
+                m_badSpots.emplace_back(spot.x, spot.y);
+                continue;
+            }
+            if (NearInstanceEntrance(end.x, end.y, end.z))
             {
                 m_badSpots.emplace_back(spot.x, spot.y);
                 continue;

@@ -64,6 +64,9 @@ private:
     std::vector<SpellEntry const*> RunnerStopSpells(Unit const* pVictim) const;
     bool StopRunner(Unit* pVictim);
     bool UpdateCombat();
+    // Drop a roam / gather Point spline so combat chase is not stacked on top of it.
+    // Player MoveChase does not StopMoving (creatures do), so the old leg keeps running.
+    void HaltRoam();
     bool Rest();
     void BeginRest();
     void CancelRest();
@@ -153,8 +156,10 @@ private:
     // The leash is this far from where the leg started. A chase that exceeds it still stops.
     float RoamLeg() const;
     void NoteCamp();
-    // Capitals, and a city of the other faction.
+    // Capitals, a city of the other faction, and instance / battleground entrance volumes.
     bool PlaceOk(float x, float y, float z) const;
+    // Outdoor areatrigger_teleport / BG queue portals that leave this map for an instance.
+    bool NearInstanceEntrance(float x, float y, float z) const;
     WorldObject* FindRoamGoal();
     bool RandomRoamPoint(float& x, float& y, float& z) const;
 

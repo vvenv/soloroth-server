@@ -805,12 +805,22 @@ class ObjectMgr
             return m_AreaTriggersMap;
         }
 
+        AreaTriggerTeleportMap const& GetAreaTriggerTeleportMap() const
+        {
+            return m_AreaTriggerTeleportMap;
+        }
+
         BattlegroundEntranceTrigger const* GetBattlegroundEntranceTrigger(uint32 trigger) const
         {
             auto itr = m_BGEntranceTriggersMap.find(trigger);
             if (itr != m_BGEntranceTriggersMap.end())
                 return &itr->second;
             return nullptr;
+        }
+
+        BGEntranceTriggerMap const& GetBattlegroundEntranceTriggersMap() const
+        {
+            return m_BGEntranceTriggersMap;
         }
 
         RepRewardRate const* GetRepRewardRate(uint32 factionId) const
