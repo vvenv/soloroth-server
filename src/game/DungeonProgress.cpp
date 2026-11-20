@@ -65,7 +65,9 @@ namespace
         { 48, 0, 4887, false },   // Ghamoo-ra
         { 48, 0, 4831, false },   // Lady Sarevess
         { 48, 0, 6243, false },   // Gelihast
+        { 48, 0, 12876, false },  // Baron Aquanis, summoned
         { 48, 0, 4832, false },   // Twilight Lord Kelris
+        { 48, 0, 4830, false },   // Old Serra'kis
         { 48, 0, 4829, true  },   // Aku'mai
 
         { 34, 0, 1696, false },   // Targorr the Dread
