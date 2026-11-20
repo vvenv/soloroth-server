@@ -636,9 +636,9 @@ bool PartyBotAI::TryTankFaceAwayFromParty()
     Unit* pVictim = me->GetVictim();
     if (!pVictim || pVictim->GetVictim() != me)
         return false;
-    // Encounter table or elite/boss cleave — skip the dance on plain trash.
+    // Only named frontal bosses — not every elite (that danced the whole dungeon).
     uint32 const encFlags = PartyBotEncounter::GetFlags(pVictim);
-    if (!(encFlags & PB_ENC_FACE_AWAY) && !IsDangerousFight(pVictim))
+    if (!(encFlags & PB_ENC_FACE_AWAY))
         return false;
     if (me->IsNonMeleeSpellCasted() || !me->CanReachWithMeleeAutoAttack(pVictim))
         return false;
@@ -646,6 +646,8 @@ bool PartyBotAI::TryTankFaceAwayFromParty()
     if (FindBreakableCrowdControlNear(15.0f))
         return false;
     if (m_snapThreatUntil && WorldTimer::getMSTime() < m_snapThreatUntil)
+        return false;
+    if (m_repositionUntil && WorldTimer::getMSTime() < m_repositionUntil)
         return false;
 
     Group* pGroup = me->GetGroup();
@@ -673,24 +675,25 @@ bool PartyBotAI::TryTankFaceAwayFromParty()
     float const bossX = pVictim->GetPositionX();
     float const bossY = pVictim->GetPositionY();
 
-    // Angle boss→party vs boss→tank. Want ~180° (tank opposite the party).
+    // Angle boss→party vs boss→tank. Want roughly opposite the party.
     float const angParty = std::atan2(partyY - bossY, partyX - bossX);
     float const angTank = std::atan2(me->GetPositionY() - bossY, me->GetPositionX() - bossX);
     float diff = std::fabs(angParty - angTank);
     while (diff > M_PI_F)
         diff = std::fabs(diff - 2.0f * M_PI_F);
 
-    // Already opposite enough — just face the boss.
-    if (diff > 2.0f)
+    // ~90°+ from the party is good enough — do not micro-adjust every tick.
+    if (diff > 1.4f)
     {
         me->SetInFront(pVictim);
         me->SendMovementPacket(MSG_MOVE_SET_FACING, false);
         return false;
     }
 
+    // Already stepping — keep swinging / casting while the point finishes.
     MovementGeneratorType const mt = me->GetMotionMaster()->GetCurrentMovementGeneratorType();
     if (mt == POINT_MOTION_TYPE || mt == DISTANCING_MOTION_TYPE)
-        return true;
+        return false;
 
     float const melee = std::max(3.0f, pVictim->GetCombatReach() + me->GetCombatReach());
     float const targetAng = angParty + M_PI_F;
@@ -701,7 +704,8 @@ bool PartyBotAI::TryTankFaceAwayFromParty()
 
     me->GetMotionMaster()->Clear(false, true);
     me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING);
-    return true;
+    m_repositionUntil = WorldTimer::getMSTime() + 4 * IN_MILLISECONDS;
+    return false;
 }
 
 bool PartyBotAI::DrinkAndEat()
@@ -3506,7 +3510,10 @@ bool PartyBotAI::TryHealerStackWithTank()
 {
     if (m_role != ROLE_HEALER || IsInDuel() || !me->IsInCombat())
         return false;
+    // Never yank a heal mid-cast for soft spacing.
     if (me->IsNonMeleeSpellCasted() || PartyMemberBelow(50.0f))
+        return false;
+    if (m_repositionUntil && WorldTimer::getMSTime() < m_repositionUntil)
         return false;
 
     Player* pTank = FindPartyTank();
@@ -3514,56 +3521,57 @@ bool PartyBotAI::TryHealerStackWithTank()
         return false;
 
     uint32 const encFlags = GetEncounterFlags();
-    // STACK_TANK: hug the tank; otherwise hold the cleave-safe heal band.
     bool const stackHard = (encFlags & PB_ENC_STACK_TANK) != 0;
-    float const minDist = stackHard ? 2.0f : 8.0f;
-    float const maxDist = stackHard ? 8.0f : 18.0f;
-    float const stepOut = stackHard ? 5.0f : 12.0f;
+    // Wide dead zone — only correct when clearly wrong, not every 500ms.
+    float const minDist = stackHard ? 2.0f : 3.0f;
+    float const maxDist = stackHard ? 10.0f : 28.0f;
 
     float const dist = me->GetDistance(pTank);
     if (dist >= minDist && dist <= maxDist)
         return false;
 
     MovementGeneratorType const mt = me->GetMotionMaster()->GetCurrentMovementGeneratorType();
-    if (mt == DISTANCING_MOTION_TYPE || mt == POINT_MOTION_TYPE)
-        return true;
+    if (mt == DISTANCING_MOTION_TYPE || mt == POINT_MOTION_TYPE || mt == CHASE_MOTION_TYPE)
+        return false;
 
     if (dist < minDist)
     {
+        // Only step off the tank when standing in cleave (or soak asks for a band).
         if (!stackHard && pTank->GetAttackers().empty())
             return false;
-        return me->GetMotionMaster()->MoveDistance(pTank, stepOut);
+        if (me->GetMotionMaster()->MoveDistance(pTank, stackHard ? 6.0f : 10.0f))
+            m_repositionUntil = WorldTimer::getMSTime() + 3 * IN_MILLISECONDS;
+        return false;
     }
 
-    // Close the gap but keep healing this tick.
+    // Out of heal range — walk in, but keep this tick's heal/GCD free.
     BeginChasing(pTank);
+    m_repositionUntil = WorldTimer::getMSTime() + 3 * IN_MILLISECONDS;
     return false;
 }
 
 bool PartyBotAI::TryRangedSpread()
 {
-    if ((m_role != ROLE_RANGE_DPS && m_role != ROLE_HEALER) || IsInDuel())
+    // Healers do not unstack by default — it fights TryHealerStackWithTank.
+    if (m_role != ROLE_RANGE_DPS || IsInDuel())
         return false;
     if (!me->IsInCombat() || me->IsNonMeleeSpellCasted())
+        return false;
+    if (m_repositionUntil && WorldTimer::getMSTime() < m_repositionUntil)
         return false;
 
     uint32 const encFlags = GetEncounterFlags();
     bool const spreadHard = (encFlags & PB_ENC_SPREAD) != 0;
-    // STACK_TANK owns healer feet — do not unstack off the tank during soak.
-    if (m_role == ROLE_HEALER && (encFlags & PB_ENC_STACK_TANK))
-        return false;
-
-    // Only bother when the pack can cleave / rain, or the boss table asks for spread.
-    if (!spreadHard &&
-        me->GetEnemyCountInRadiusAround(me, 12.0f) < 2 && me->GetAttackers().size() < 2)
+    // Default: only when something is actually hitting us (not "2 mobs exist nearby").
+    if (!spreadHard && me->GetAttackers().size() < 2)
         return false;
 
     Group* pGroup = me->GetGroup();
     if (!pGroup)
         return false;
 
-    float const tooClose = spreadHard ? 6.0f : 2.5f;
-    float const stepOut = spreadHard ? 10.0f : 6.0f;
+    float const tooClose = spreadHard ? 5.0f : 1.5f;
+    float const stepOut = spreadHard ? 8.0f : 5.0f;
 
     Player* pTooClose = nullptr;
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
@@ -3573,8 +3581,8 @@ bool PartyBotAI::TryRangedSpread()
             continue;
         if (me->GetDistance(pMember) > tooClose)
             continue;
-        // Prefer unstacking from another caster / healer over melee.
-        if (IsRangedDamageClass(pMember->GetClass()) || IsPartyHealer(pMember))
+        // Prefer unstacking from another caster over melee.
+        if (IsRangedDamageClass(pMember->GetClass()))
         {
             pTooClose = pMember;
             break;
@@ -3585,9 +3593,17 @@ bool PartyBotAI::TryRangedSpread()
     if (!pTooClose)
         return false;
 
-    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == DISTANCING_MOTION_TYPE)
-        return true;
-    return me->GetMotionMaster()->MoveDistance(pTooClose, stepOut);
+    // Only the lower-guid bot steps — stops two casters chasing each other.
+    if (me->GetObjectGuid() > pTooClose->GetObjectGuid())
+        return false;
+
+    MovementGeneratorType const mt = me->GetMotionMaster()->GetCurrentMovementGeneratorType();
+    if (mt == DISTANCING_MOTION_TYPE || mt == POINT_MOTION_TYPE)
+        return false;
+
+    if (me->GetMotionMaster()->MoveDistance(pTooClose, stepOut))
+        m_repositionUntil = WorldTimer::getMSTime() + 3 * IN_MILLISECONDS;
+    return false;
 }
 
 bool PartyBotAI::TryKiteWhirlwind()

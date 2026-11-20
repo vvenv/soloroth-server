@@ -16120,6 +16120,32 @@ void Player::SaveDungeonResume()
     pos.y = GetPositionY();
     pos.z = GetPositionZ();
     pos.o = GetOrientation();
+
+    // Walking out the front door (or /gd hopping to the stock entrance) used to
+    // overwrite a deeper leave-spot. Keep the farther checkpoint when the new
+    // one sits on the map entrance.
+    if (AreaTriggerTeleport const* entr = sObjectMgr.GetMapEntranceTrigger(mapId))
+    {
+        auto itr = m_dungeonResume.find(mapId);
+        if (itr != m_dungeonResume.end() && itr->second.instanceId == pos.instanceId)
+        {
+            auto dist2 = [](float ax, float ay, float bx, float by)
+            {
+                float const dx = ax - bx;
+                float const dy = ay - by;
+                return dx * dx + dy * dy;
+            };
+            float const ex = entr->destination.x;
+            float const ey = entr->destination.y;
+            float const newD = dist2(pos.x, pos.y, ex, ey);
+            float const oldD = dist2(itr->second.x, itr->second.y, ex, ey);
+            constexpr float kEntranceR = 25.0f;
+            constexpr float kDeeperR = 40.0f;
+            if (newD <= kEntranceR * kEntranceR && oldD >= kDeeperR * kDeeperR)
+                return;
+        }
+    }
+
     m_dungeonResume[mapId] = pos;
 
     CharacterDatabase.PExecute(

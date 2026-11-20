@@ -234,6 +234,8 @@ public:
     uint32 m_snapThreatUntil = 0;
     // Pre-pot lockout so we do not chug every tick on the same pull.
     uint32 m_prePotUntil = 0;
+    // Soft reposition (spread / stack / face-away) lockout — stops combat thrashing.
+    uint32 m_repositionUntil = 0;
 };
 
 #endif
