@@ -4668,6 +4668,7 @@ void PartyBotAI::UpdateInCombatAI_Shaman()
 
             // Flame Shock DoT before filler; Chain Lightning only on a real pack.
             if (m_spells.shaman.pFlameShock &&
+                !pVictim->HasAura(m_spells.shaman.pFlameShock->Id) &&
                 CanTryToCastSpell(pVictim, m_spells.shaman.pFlameShock))
             {
                 if (DoCastSpell(pVictim, m_spells.shaman.pFlameShock) == SPELL_CAST_OK)
@@ -5468,6 +5469,7 @@ void PartyBotAI::UpdateInCombatAI_Priest()
             }
 
             if (m_spells.priest.pHolyFire &&
+                !pVictim->HasAura(m_spells.priest.pHolyFire->Id) &&
                 CanTryToCastSpell(pVictim, m_spells.priest.pHolyFire))
             {
                 if (DoCastSpell(pVictim, m_spells.priest.pHolyFire) == SPELL_CAST_OK)
@@ -5485,6 +5487,7 @@ void PartyBotAI::UpdateInCombatAI_Priest()
     else if (GetRole() == ROLE_HEALER && m_spells.priest.pHolyFire &&
              me->GetPowerPercent(POWER_MANA) > 85.0f &&
              IsDangerousFight(pVictim) &&
+             !pVictim->HasAura(m_spells.priest.pHolyFire->Id) &&
              CanTryToCastSpell(pVictim, m_spells.priest.pHolyFire))
     {
         // Only burn mana on filler during hard fights when nearly full.
@@ -5626,6 +5629,7 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
         }
 
         if (m_spells.warlock.pImmolate &&
+            !pVictim->HasAura(m_spells.warlock.pImmolate->Id) &&
             CanTryToCastSpell(pVictim, m_spells.warlock.pImmolate))
         {
             if (DoCastSpell(pVictim, m_spells.warlock.pImmolate) == SPELL_CAST_OK)
@@ -6749,6 +6753,7 @@ void PartyBotAI::UpdateInCombatAI_Druid()
             }
 
             if (m_spells.druid.pMoonfire &&
+                !pVictim->HasAura(m_spells.druid.pMoonfire->Id) &&
                 CanTryToCastSpell(pVictim, m_spells.druid.pMoonfire))
             {
                 if (DoCastSpell(pVictim, m_spells.druid.pMoonfire) == SPELL_CAST_OK)

@@ -3163,9 +3163,13 @@ bool CombatBotBaseAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* p
     if (pSpellEntry->GetErrorAtShapeshiftedCast(me->GetShapeshiftForm()) != SPELL_CAST_OK)
         return false;
 
-    if (pSpellEntry->IsSpellAppliesAura() && pTarget->HasAura(pSpellEntry->Id))
+    // Pure DoTs / debuffs: do not refresh while up (Sunder stacks to max).
+    // Filler nukes that leave a rider — Frostbolt chill, Fireball's tick — are still
+    // pressed every GCD the way a person plays. DoT openers with a direct hit
+    // (Immolate, Moonfire, Flame Shock, Holy Fire) are gated in the class AI.
+    if (pSpellEntry->IsSpellAppliesAura() && !pSpellEntry->IsDirectDamageSpell() &&
+        pTarget->HasAura(pSpellEntry->Id))
     {
-        // Sunder Armor and other stackable auras: keep applying until max stacks.
         uint32 const maxStacks = pSpellEntry->GetStackAmount();
         if (maxStacks > 1)
         {

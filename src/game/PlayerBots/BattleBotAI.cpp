@@ -1545,6 +1545,7 @@ void BattleBotAI::UpdateInCombatAI_Shaman()
         }
 
         if (m_spells.shaman.pFlameShock &&
+            !pVictim->HasAura(m_spells.shaman.pFlameShock->Id) &&
             CanTryToCastSpell(pVictim, m_spells.shaman.pFlameShock))
         {
             if (DoCastSpell(pVictim, m_spells.shaman.pFlameShock) == SPELL_CAST_OK)
@@ -2339,6 +2340,7 @@ void BattleBotAI::UpdateInCombatAI_Warlock()
         }
 
         if (m_spells.warlock.pImmolate &&
+            !pVictim->HasAura(m_spells.warlock.pImmolate->Id) &&
             CanTryToCastSpell(pVictim, m_spells.warlock.pImmolate))
         {
             if (DoCastSpell(pVictim, m_spells.warlock.pImmolate) == SPELL_CAST_OK)
@@ -3389,6 +3391,7 @@ void BattleBotAI::UpdateInCombatAI_Druid()
                     return;
 
                 if (m_spells.druid.pMoonfire &&
+                    !pVictim->HasAura(m_spells.druid.pMoonfire->Id) &&
                     CanTryToCastSpell(pVictim, m_spells.druid.pMoonfire))
                 {
                     if (DoCastSpell(pVictim, m_spells.druid.pMoonfire) == SPELL_CAST_OK)
