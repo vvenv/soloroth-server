@@ -13198,7 +13198,7 @@ void Player::RemoveQuestAtSlot(uint32 slot)
     }
 }
 
-void Player::RewardQuest(Quest const* pQuest, uint32 reward, WorldObject* questEnder, bool announce)
+void Player::RewardQuest(Quest const* pQuest, uint32 reward, WorldObject* questEnder, bool announce, bool giveItemRewards)
 {
     uint32 questId = pQuest->GetQuestId();
 
@@ -13216,46 +13216,50 @@ void Player::RewardQuest(Quest const* pQuest, uint32 reward, WorldObject* questE
 
     // A quest giver refuses a turn-in the bags cannot hold; one completed
     // without a giver (no-quest mode) mails what does not fit instead.
-    int const localeIndex = GetSession()->GetSessionDbLocaleIndex();
-    MailDraft overflow(localeIndex >= 0 && sObjectMgr.GetLocaleForIndex(localeIndex) == LOCALE_zhCN
-        ? "背包放不下的战利品" : "Spoils your bags could not hold");
-    bool overflowed = false;
-    auto giveItem = [&](uint32 itemId, uint32 count)
+    // Grey no-quest catch-up skips gear: only reputation and money matter then.
+    if (giveItemRewards)
     {
-        ItemPosCountVec dest;
-        if (CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, itemId, count) == EQUIP_ERR_OK)
+        int const localeIndex = GetSession()->GetSessionDbLocaleIndex();
+        MailDraft overflow(localeIndex >= 0 && sObjectMgr.GetLocaleForIndex(localeIndex) == LOCALE_zhCN
+            ? "背包放不下的战利品" : "Spoils your bags could not hold");
+        bool overflowed = false;
+        auto giveItem = [&](uint32 itemId, uint32 count)
         {
-            Item* item = StoreNewItem(dest, itemId, true, Item::GenerateItemRandomPropertyId(itemId));
-            SendNewItem(item, count, true, false, false, false);
-        }
-        else if (questEnder == this)
-        {
-            if (Item* item = Item::CreateItem(itemId, count, GetObjectGuid()))
+            ItemPosCountVec dest;
+            if (CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, itemId, count) == EQUIP_ERR_OK)
             {
-                item->SaveToDB();
-                overflow.AddItem(item);
-                overflowed = true;
+                Item* item = StoreNewItem(dest, itemId, true, Item::GenerateItemRandomPropertyId(itemId));
+                SendNewItem(item, count, true, false, false, false);
+            }
+            else if (questEnder == this)
+            {
+                if (Item* item = Item::CreateItem(itemId, count, GetObjectGuid()))
+                {
+                    item->SaveToDB();
+                    overflow.AddItem(item);
+                    overflowed = true;
+                }
+            }
+        };
+
+        if (pQuest->GetRewChoiceItemsCount() > 0)
+        {
+            if (uint32 itemId = pQuest->RewChoiceItemId[reward])
+                giveItem(itemId, pQuest->RewChoiceItemCount[reward]);
+        }
+
+        if (pQuest->GetRewItemsCount() > 0)
+        {
+            for (uint32 i = 0; i < pQuest->GetRewItemsCount(); ++i)
+            {
+                if (uint32 itemId = pQuest->RewItemId[i])
+                    giveItem(itemId, pQuest->RewItemCount[i]);
             }
         }
-    };
 
-    if (pQuest->GetRewChoiceItemsCount() > 0)
-    {
-        if (uint32 itemId = pQuest->RewChoiceItemId[reward])
-            giveItem(itemId, pQuest->RewChoiceItemCount[reward]);
+        if (overflowed)
+            overflow.SendMailTo(this, MailSender(this, MAIL_STATIONERY_GM), MAIL_CHECK_MASK_COPIED);
     }
-
-    if (pQuest->GetRewItemsCount() > 0)
-    {
-        for (uint32 i = 0; i < pQuest->GetRewItemsCount(); ++i)
-        {
-            if (uint32 itemId = pQuest->RewItemId[i])
-                giveItem(itemId, pQuest->RewItemCount[i]);
-        }
-    }
-
-    if (overflowed)
-        overflow.SendMailTo(this, MailSender(this, MAIL_STATIONERY_GM), MAIL_CHECK_MASK_COPIED);
 
     RewardReputation(pQuest);
 

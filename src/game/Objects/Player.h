@@ -1184,7 +1184,8 @@ class Player final: public Unit
         void RemoveQuest(uint32 questId);
         void RemoveQuestAtSlot(uint32 slot);
         void IncompleteQuest(uint32 questId);
-        void RewardQuest(Quest const* pQuest, uint32 reward, WorldObject* questGiver, bool announce = true);
+        // giveItemRewards false: reputation and money only (no-quest grey catch-up).
+        void RewardQuest(Quest const* pQuest, uint32 reward, WorldObject* questGiver, bool announce = true, bool giveItemRewards = true);
         void FailQuest(uint32 questId);
         bool SatisfyQuestSkill(Quest const* qInfo, bool msg) const;
         bool SatisfyQuestCondition(Quest const* qInfo, bool msg) const;

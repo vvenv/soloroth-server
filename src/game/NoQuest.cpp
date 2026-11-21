@@ -6,6 +6,11 @@
  * best fitting choice item, mail for what the bags cannot hold. Only those
  * gains show.
  *
+ * Repeatable kill/loot turn-ins (scourgestones, beads, badges, …) run the
+ * same way, so Classic reputation grinds still exist without a quest log.
+ * A grey quest that awards reputation still completes for that reputation
+ * and money, but skips gear so bags are not filled with outgrown rewards.
+ *
  * Earlier quests of a chain are not required (they are mostly talking and
  * carrying); class, race, level, skill, reputation and exclusive groups are.
  */
@@ -138,6 +143,19 @@ namespace
         }
         return best;
     }
+
+    bool QuestAwardsReputation(Quest const* pQuest)
+    {
+        for (int i = 0; i < QUEST_REPUTATIONS_COUNT; ++i)
+            if (pQuest->RewRepFaction[i] && pQuest->RewRepValue[i])
+                return true;
+        return false;
+    }
+
+    bool QuestIsGreyFor(Player const* pPlayer, Quest const* pQuest)
+    {
+        return pQuest->GetQuestLevel() && pQuest->GetQuestLevel() <= MaNGOS::XP::GetGrayLevel(pPlayer->GetLevel());
+    }
 }
 
 void NoQuest::LoadQuests()
@@ -161,7 +179,10 @@ void NoQuest::LoadQuests()
     for (auto const& itr : sObjectMgr.GetQuestTemplates())
     {
         Quest const* pQuest = itr.second.get();
-        if (pQuest->IsRepeatable() || pQuest->GetQuestMethod() == QUEST_METHOD_DISABLED || pQuest->GetType() == QUEST_TYPE_PVP ||
+        // Repeatable kill/loot turn-ins stay in: that is how Classic reputation
+        // grinds work. RepObjectiveFaction is a "reach this standing" objective,
+        // not a turn-in, so those stay out.
+        if (pQuest->GetQuestMethod() == QUEST_METHOD_DISABLED || pQuest->GetType() == QUEST_TYPE_PVP ||
             pQuest->HasSpecialFlag(QUEST_SPECIAL_FLAG_EXPLORATION_OR_EVENT) || pQuest->GetRepObjectiveFaction())
             continue;
 
@@ -217,13 +238,14 @@ bool Player::NoQuestOpen(Quest const* pQuest) const
     auto gq = g_quests.find(id);
     if (gq == g_quests.end() || !pQuest->IsActive())
         return false;
-    // Taken by hand, or done.
+    // Taken by hand, or done (repeatables stay open after each payout).
     if (GetQuestStatus(id) != QUEST_STATUS_NONE || GetQuestRewardStatus(id))
         return false;
     if (pQuest->GetMaxLevel() && pQuest->GetMaxLevel() < GetLevel())
         return false;
-    // A grey quest would only fill the bags with gear long outgrown.
-    if (pQuest->GetQuestLevel() && pQuest->GetQuestLevel() <= MaNGOS::XP::GetGrayLevel(GetLevel()))
+    // Grey quests only stay open when they still pay reputation; gear is skipped
+    // at payout so bags are not filled with rewards long outgrown.
+    if (QuestIsGreyFor(this, pQuest) && !QuestAwardsReputation(pQuest))
         return false;
     if (GetGroup() && GetGroup()->isRaidGroup() && !pQuest->IsAllowedInRaid() && !InBattleGround())
         return false;
@@ -340,7 +362,9 @@ static bool NoQuestTryComplete(Player* pPlayer, Quest const* pQuest)
 
     CharacterDatabase.PExecute("DELETE FROM `character_noquest_kills` WHERE `guid` = %u AND `quest` = %u", pPlayer->GetGUIDLow(), id);
     // Not announced: the experience and items show as gains, the quest not at all.
-    pPlayer->RewardQuest(pQuest, ChooseReward(pPlayer, pQuest), pPlayer, false);
+    // Grey catch-up: reputation and money only — no outgrown gear.
+    bool const giveItems = !QuestIsGreyFor(pPlayer, pQuest);
+    pPlayer->RewardQuest(pQuest, giveItems ? ChooseReward(pPlayer, pQuest) : 0, pPlayer, false, giveItems);
     return true;
 }
 
