@@ -33,6 +33,7 @@
 #if PLATFORM == PLATFORM_APPLE
 #include <sys/select.h>
 #endif
+#include <cerrno>
 
 void utf8print(void* /*arg*/, const char* str)
 {
@@ -110,6 +111,10 @@ void CliRunnable::operator()()
 
 #ifndef WIN32
 
+        // select() returns -1 on EINTR (any signal). Treating that as "shut the
+        // world down" made mangosd exit whenever launchd / the parent session
+        // delivered a harmless signal — the black login screen that follows
+        // when Soloroth.app still thinks the server is up.
         int retval;
         do
         {
@@ -122,6 +127,8 @@ void CliRunnable::operator()()
             FD_SET(0, &rfds);
 
             retval = select(1, &rfds, nullptr, nullptr, &tv);
+            if (retval == -1 && errno == EINTR)
+                continue;
         } while (!retval);
 
         if (retval == -1)
