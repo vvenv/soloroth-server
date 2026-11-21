@@ -69,6 +69,7 @@ public:
     // `removed` counts bots sent home to shrink the party.
     uint32 Fill(Player* pPlayer, std::string& who, std::string& why, uint32 target = 5, uint32* removed = nullptr);
     // Sends away the bots this player leads: only those filled in a dungeon, or all.
+    // Always clears their m_autoBots entries so a later fill is not short a seat.
     uint32 Dismiss(Player* pPlayer, bool autoOnly);
 
     static CombatBotRoles GuessRole(Player const* pPlayer);

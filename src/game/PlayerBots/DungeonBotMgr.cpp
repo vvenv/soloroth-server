@@ -22,6 +22,7 @@
 #include "CellImpl.h"
 #include <algorithm>
 #include <list>
+#include <set>
 #include <vector>
 
 namespace
@@ -479,12 +480,14 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
 
     ForgetGoneBots(pPlayer->GetGUIDLow());
 
-    // A saved group can hold companions that went offline with the server.
+    // A saved group can hold companions (or other stubs) that went offline
+    // with the server. Drop anyone not in the world at all so they do not
+    // take a fill slot.
     if (Group* pOld = pPlayer->GetGroup())
     {
         std::vector<ObjectGuid> gone;
         for (auto const& slot : pOld->GetMemberSlots())
-            if (!ObjectAccessor::FindPlayerNotInWorld(slot.guid) && IsCompanion(slot.guid.GetCounter()))
+            if (!ObjectAccessor::FindPlayerNotInWorld(slot.guid))
                 gone.push_back(slot.guid);
         for (ObjectGuid const& guid : gone)
             if (Group* pNow = pPlayer->GetGroup())
@@ -512,13 +515,18 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
         }
         for (auto const& slot : pGroup->GetMemberSlots())
         {
-            guids.push_back(slot.guid.GetCounter());
             Player* pMember = sObjectAccessor.FindPlayer(slot.guid);
             if (!pMember)
             {
+                // Still loading / between maps: count the seat. Truly gone
+                // members were stripped above.
+                if (!ObjectAccessor::FindPlayerNotInWorld(slot.guid))
+                    continue;
+                guids.push_back(slot.guid.GetCounter());
                 roles.push_back(ROLE_INVALID);
                 continue;
             }
+            guids.push_back(slot.guid.GetCounter());
             classes.push_back(pMember->GetClass());
             races.push_back(pMember->GetRace());
             names.push_back(pMember->GetName());
@@ -539,11 +547,15 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
     }
 
     // Bots still logging in count too, or a second fill would double them.
+    // Skip entries that are past the grace window and not in the world.
     auto& mine = m_autoBots[pPlayer->GetGUIDLow()];
     for (auto const& bot : mine)
     {
         ObjectGuid const guid(HIGHGUID_PLAYER, bot.first);
         if (pGroup && pGroup->IsMember(guid))
+            continue;
+        if (!ObjectAccessor::FindPlayerNotInWorld(guid) &&
+            m_now - bot.second.lastSeen > BOT_LOGIN_GRACE_MS)
             continue;
         guids.push_back(bot.first);
         roles.push_back(bot.second.role);
@@ -638,10 +650,15 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
     Team const team = pPlayer->GetTeam();
     uint32 const ownerLow = pPlayer->GetGUIDLow();
     auto slotOf = [](RosterBot const& r) { return uint32(&r - ROSTER); };
+    // Roster slots that failed to spawn this fill (stuck online session, etc.).
+    std::set<uint32> blocked;
     // Only this character's own companion can be out already.
     auto present = [&](RosterBot const& r)
     {
-        uint32 const botLow = GetCompanion(ownerLow, slotOf(r));
+        uint32 const slot = slotOf(r);
+        if (blocked.find(slot) != blocked.end())
+            return true;
+        uint32 const botLow = GetCompanion(ownerLow, slot);
         if (!botLow)
             return false;
         return std::find(guids.begin(), guids.end(), botLow) != guids.end() ||
@@ -689,30 +706,24 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
         return SelectRandomContainerElement(ofRace);
     };
 
-    uint32 const slots = target - uint32(roles.size());
+    // Keep trying until the party reaches `target`, or no roster left to try.
+    // A failed pick/AddBot must not burn a seat (that used to leave fill-5 at 3).
+    uint32 have = uint32(roles.size());
     uint32 added = 0;
-    for (uint32 i = 0; i < slots; ++i)
+    while (have < target)
     {
-        RosterBot const* r;
+        RosterBot const* r = nullptr;
         if (needTank)
-        {
             r = pick({ ROLE_TANK });
-            needTank = false;
-        }
-        else if (needHealer)
-        {
+        if (!r && needHealer)
             r = pick({ ROLE_HEALER });
-            needHealer = false;
-        }
-        else
+        if (!r)
         {
             // At most two melee, so the tank is not crowded and cleaves hit fewer.
             r = melee >= 2 ? pick({ ROLE_RANGE_DPS }) : pick({ ROLE_MELEE_DPS, ROLE_RANGE_DPS });
         }
         if (!r)
-            continue;
-        if (r->role == ROLE_MELEE_DPS)
-            ++melee;
+            break;
 
         float x, y, z;
         pPlayer->GetNearPoint(pPlayer, x, y, z, 0, 3.0f, frand(0.0f, 2 * M_PI_F));
@@ -736,6 +747,10 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
             if (!sPlayerBotMgr.AddBot(botLow, false, ai))
             {
                 delete ai;
+                // Account still online after a prior dismiss: clear it and
+                // try a different roster member for this seat.
+                sPlayerBotMgr.DeleteBot(botLow);
+                blocked.insert(slot);
                 continue;
             }
         }
@@ -751,12 +766,20 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
             if (!sPlayerBotMgr.AddBot(ai, true))
             {
                 delete ai;
+                blocked.insert(slot);
                 continue;
             }
             botLow = uint32(ai->botEntry->playerGUID);
             SetCompanion(ownerLow, slot, botLow);
         }
         ai->botEntry->persistent = true;
+
+        if (r->role == ROLE_TANK)
+            needTank = false;
+        else if (r->role == ROLE_HEALER)
+            needHealer = false;
+        else if (r->role == ROLE_MELEE_DPS)
+            ++melee;
 
         AutoBot& bot = mine[botLow];
         bot.role = r->role;
@@ -765,6 +788,7 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
         bot.name = name;
         bot.lastSeen = m_now;
         bot.dungeon = pMap->IsNonRaidDungeon();
+        roles.push_back(r->role);
         classes.push_back(r->botClass);
         races.push_back(r->race);
         names.push_back(name);
@@ -776,10 +800,13 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
         who += zh ? r->specZh : r->specEn;
         who += zh ? "）" : ")";
         ++added;
+        ++have;
     }
 
     if (!added)
         why = zh ? "机器人没能生成。" : "No bot could be spawned.";
+    else if (have < target)
+        why = zh ? "队伍没能补满。" : "The party could not be filled completely.";
     return added;
 }
 
@@ -787,8 +814,8 @@ uint32 DungeonBotMgr::Dismiss(Player* pPlayer, bool autoOnly)
 {
     uint32 count = 0;
 
-    // The bots this manager brought, wherever they are. One that is between
-    // two maps is not found now; it stays listed and goes on a later call.
+    // The bots this manager brought, wherever they are. Always drop the
+    // listing: a stuck login left in m_autoBots used to shrink the next fill.
     auto mine = m_autoBots.find(pPlayer->GetGUIDLow());
     if (mine != m_autoBots.end())
     {
@@ -799,15 +826,17 @@ uint32 DungeonBotMgr::Dismiss(Player* pPlayer, bool autoOnly)
                 ++bot;
                 continue;
             }
-            PartyBotAI* pAI = GetPartyBotAI(sObjectAccessor.FindPlayer(ObjectGuid(HIGHGUID_PLAYER, bot->first)));
+            ObjectGuid const guid(HIGHGUID_PLAYER, bot->first);
+            if (Group* pGroup = pPlayer->GetGroup())
+                if (pGroup->IsMember(guid))
+                    pGroup->RemoveMember(guid, 0);
+            PartyBotAI* pAI = GetPartyBotAI(sObjectAccessor.FindPlayer(guid));
             if (pAI && pAI->botEntry)
-            {
                 pAI->botEntry->requestRemoval = true;
-                ++count;
-                bot = mine->second.erase(bot);
-            }
             else
-                ++bot;
+                sPlayerBotMgr.DeleteBot(bot->first);
+            ++count;
+            bot = mine->second.erase(bot);
         }
         if (mine->second.empty())
             m_autoBots.erase(mine);
@@ -1234,6 +1263,8 @@ bool ChatHandler::HandleBotsFillCommand(char* args)
         return false;
     }
     PSendSysMessage(BotsZh(this) ? "队友正在赶来：%s。" : "On their way: %s.", who.c_str());
+    if (!why.empty())
+        SendSysMessage(why.c_str());
     return true;
 }
 
