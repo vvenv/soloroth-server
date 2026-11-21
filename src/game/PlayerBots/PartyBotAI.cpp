@@ -5085,13 +5085,30 @@ void PartyBotAI::UpdateInCombatAI_Mage()
                 return;
         }
 
-        // Only a pack already fighting — idle trash in range must not count or
-        // solo grind Blizzards a camp and drinks after every pull.
-        if (m_spells.mage.pBlizzard &&
-           (GetCombatEnemyCountInRadiusAround(pVictim, 10.0f) > 2) &&
-            CanTryToCastSpell(pVictim, m_spells.mage.pBlizzard))
+        // Blizzard vs frostbolt the way a person decides:
+        // outdoor solo — only a tight pack already on us, with mana to finish the
+        // channel (3 from social aggro is still bolted); dungeon/party — 3+ in
+        // combat on the kill target is enough.
+        if (m_spells.mage.pBlizzard)
         {
-            if (DoCastSpell(pVictim, m_spells.mage.pBlizzard) == SPELL_CAST_OK)
+            bool wantBlizzard = false;
+            if (m_ownCharacter && me->GetMap() && !me->GetMap()->IsDungeon())
+            {
+                if (me->GetPowerPercent(POWER_MANA) >= 50.0f)
+                {
+                    uint8 packed = 0;
+                    for (Unit const* pAtt : me->GetAttackers())
+                        if (pAtt && pVictim->GetDistance(pAtt) <= 8.0f)
+                            ++packed;
+                    wantBlizzard = packed >= 4;
+                }
+            }
+            else if (me->GetPowerPercent(POWER_MANA) >= 35.0f &&
+                     GetCombatEnemyCountInRadiusAround(pVictim, 10.0f) >= 3)
+                wantBlizzard = true;
+
+            if (wantBlizzard && CanTryToCastSpell(pVictim, m_spells.mage.pBlizzard) &&
+                DoCastSpell(pVictim, m_spells.mage.pBlizzard) == SPELL_CAST_OK)
                 return;
         }
 
