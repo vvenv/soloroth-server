@@ -144,6 +144,11 @@ public:
     bool ShouldBurnMajorCooldown(Unit const* pVictim) const;
 
     SpellCastResult DoCastSpell(Unit* pTarget, SpellEntry const* pSpellEntry);
+    // Right-drag / keyboard turn from the player: pause AI facing broadcasts briefly.
+    void NotePlayerFacing();
+    // Face pTarget when outside the front cone. Broadcasts MSG_MOVE_SET_FACING unless
+    // this is an own character whose player just looked away.
+    void EnsureFacing(Unit* pTarget);
     virtual bool CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const;
     bool IsWearingShield(Player* pPlayer) const;
     bool IsInDuel() const;
@@ -611,6 +616,8 @@ public:
     bool m_receivedBgInvite = false;
     // Drives a person's own character (`.solo grind`, `.solo fish`): no free items, reagents or pets.
     bool m_ownCharacter = false;
+    // Last MSG_MOVE_SET_FACING / turn the player sent (own character only).
+    uint32 m_playerFacingAt = 0;
     uint8 m_visualHonorRank = 0;
     CombatBotRoles m_role = ROLE_INVALID;
     // Part of a premade spec name (e.g. "frost") preferred among the role's

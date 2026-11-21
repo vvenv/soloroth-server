@@ -350,6 +350,19 @@ void WorldSession::HandleMovementOpcodes(WorldPackets::Movement::MovementPacket 
             default:
                 break;
         }
+
+        // Right-drag and keyboard turn: let mouse look win over AI facing for a beat.
+        // Plain WASD is not noted — otherwise walking into a pull would block the turn-to-face.
+        switch (opcode)
+        {
+            case MSG_MOVE_SET_FACING:
+            case MSG_MOVE_START_TURN_LEFT:
+            case MSG_MOVE_START_TURN_RIGHT:
+                SoloFarmAI::OnPlayerFacing(_player);
+                break;
+            default:
+                break;
+        }
     }
 
     if (pPlayerMover)

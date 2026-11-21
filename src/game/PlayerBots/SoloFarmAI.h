@@ -44,11 +44,15 @@ public:
     static void StopFor(Player* pPlayer, SoloFarmStop reason);
     // A movement key the player pressed while the body was theirs.
     static void OnManualMove(Player* pPlayer);
+    // Right-drag / Q-E turn: pause AI facing broadcasts so mouse look wins briefly.
+    static void OnPlayerFacing(Player* pPlayer);
     // Assist only: clear a leftover server spline so WASD is accepted again.
     static void YieldMotion(Player* pPlayer);
 
     void UpdateAI(uint32 const diff) override;
     void Remove() override;
+    // Face the pull once with a client-visible turn when combat engages.
+    bool AttackStart(Unit* pVictim);
 
     SoloFarmMode GetMode() const { return m_mode; }
     float GetRadius() const { return m_radius; }

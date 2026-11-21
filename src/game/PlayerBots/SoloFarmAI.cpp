@@ -340,6 +340,20 @@ void SoloFarmAI::OnManualMove(Player* pPlayer)
     StopFor(pPlayer, SOLO_STOP_MOVED);
 }
 
+void SoloFarmAI::OnPlayerFacing(Player* pPlayer)
+{
+    if (SoloFarmAI* pAI = Of(pPlayer))
+        pAI->NotePlayerFacing();
+}
+
+bool SoloFarmAI::AttackStart(Unit* pVictim)
+{
+    if (!PartyBotAI::AttackStart(pVictim))
+        return false;
+    EnsureFacing(pVictim);
+    return true;
+}
+
 void SoloFarmAI::YieldMotion(Player* pPlayer)
 {
     // Assist: a leftover Point / chase spline makes MovementHandler drop WASD.
@@ -1364,6 +1378,7 @@ bool SoloFarmAI::UpdateCombat()
                 me->GetMotionMaster()->Clear(false, true);
                 me->GetMotionMaster()->MoveIdle();
             }
+            EnsureFacing(pVictim);
             me->CastSpell(pVictim, SPELL_SHOOT_WAND, false);
             return true;
         }

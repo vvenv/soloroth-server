@@ -3256,6 +3256,47 @@ bool CombatBotBaseAI::ShouldBurnMajorCooldown(Unit const* pVictim) const
     return true;
 }
 
+namespace
+{
+    // After right-drag / Q-E, wait this long before AI facing packets resume.
+    uint32 const OWN_FACING_GRACE_MS = 800;
+}
+
+void CombatBotBaseAI::NotePlayerFacing()
+{
+    if (!m_ownCharacter)
+        return;
+    m_playerFacingAt = WorldTimer::getMSTime();
+}
+
+void CombatBotBaseAI::EnsureFacing(Unit* pTarget)
+{
+    if (!pTarget || me == pTarget)
+        return;
+
+    // Own character: only turn when well outside the front cone. Snapping on every
+    // cast fights right-drag mouse look (the body turns, then the next tick yanks it
+    // back onto the mob). Party bots always face — others must see them turn.
+    if (m_ownCharacter && me->HasInArc(pTarget, 2.0f * M_PI_F / 3.0f))
+        return;
+
+    // SetFacingToObject / SetFacingTo launch a facing spline with MOVEFLAG_FORWARD.
+    // Player::SetPosition then treats that as movement and cancels casts that have
+    // SPELL_INTERRUPT_FLAG_MOVEMENT (Aimed Shot's 3 s cast in 1.12) and leaves the
+    // hunter AI's Auto Shot gate (!IsMoving) stuck shut — the bot stands and poses.
+    // SetInFront only changes orientation, same as Spell.cpp does when a cast starts.
+    if (!me->movespline->Finalized() || me->IsMoving() || !me->IsStopped())
+        me->StopMoving();
+    me->SetInFront(pTarget);
+
+    // Broadcast so the client shows the turn. For an own character, skip while the
+    // player is still looking away; after a short grace the next cast syncs again.
+    bool const broadcast = !m_ownCharacter || !m_playerFacingAt ||
+        WorldTimer::getMSTimeDiffToNow(m_playerFacingAt) >= OWN_FACING_GRACE_MS;
+    if (broadcast)
+        me->SendMovementPacket(MSG_MOVE_SET_FACING, false);
+}
+
 SpellCastResult CombatBotBaseAI::DoCastSpell(Unit* pTarget, SpellEntry const* pSpellEntry)
 {
     if (m_preventCasting)
@@ -3267,25 +3308,7 @@ SpellCastResult CombatBotBaseAI::DoCastSpell(Unit* pTarget, SpellEntry const* pS
             if (pQueued->m_spellInfo->Id == pSpellEntry->Id)
                 return SPELL_FAILED_DONT_REPORT;
 
-    // A person's own character: only turn when the target is well outside the front cone.
-    // Forcing a face every cast fights the player's mouse look (right-drag turns the body;
-    // the next AI tick then snaps it back onto the mob).
-    //
-    // SetFacingToObject / SetFacingTo launch a facing spline with MOVEFLAG_FORWARD.
-    // Player::SetPosition then treats that as movement and cancels casts that have
-    // SPELL_INTERRUPT_FLAG_MOVEMENT (Aimed Shot's 3 s cast in 1.12) and leaves the
-    // hunter AI's Auto Shot gate (!IsMoving) stuck shut — the bot stands and poses.
-    // SetInFront only changes orientation, same as Spell.cpp does when a cast starts.
-    // Broadcast MSG_MOVE_SET_FACING so nearby clients see the turn (SetInFront alone
-    // is server-side); skip for an own character so we do not fight mouse look.
-    if (me != pTarget && (!m_ownCharacter || !me->HasInArc(pTarget, 2.0f * M_PI_F / 3.0f)))
-    {
-        if (!me->movespline->Finalized() || me->IsMoving() || !me->IsStopped())
-            me->StopMoving();
-        me->SetInFront(pTarget);
-        if (!m_ownCharacter)
-            me->SendMovementPacket(MSG_MOVE_SET_FACING, false);
-    }
+    EnsureFacing(pTarget);
 
     if (me->IsMounted())
         me->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
