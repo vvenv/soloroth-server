@@ -309,11 +309,21 @@ void WorldSession::HandleMovementOpcodes(WorldPackets::Movement::MovementPacket 
     if (pMover->HasPendingSplineDone())
         return;
 
+    Player* pPlayerMover = pMover->ToPlayer();
+
+    // Assist: drop leftover server motion before the Finalized gate, or WASD
+    // never reaches OnManualMove and the character stands planted.
+    bool const assistMoveStart = pPlayerMover == _player &&
+        (opcode == MSG_MOVE_START_FORWARD || opcode == MSG_MOVE_START_BACKWARD ||
+         opcode == MSG_MOVE_START_STRAFE_LEFT || opcode == MSG_MOVE_START_STRAFE_RIGHT ||
+         opcode == MSG_MOVE_START_TURN_LEFT || opcode == MSG_MOVE_START_TURN_RIGHT ||
+         opcode == MSG_MOVE_JUMP);
+    if (assistMoveStart)
+        SoloFarmAI::YieldMotion(_player);
+
     // currently being moved by server
     if (!pMover->movespline->Finalized())
         return;
-
-    Player* pPlayerMover = pMover->ToPlayer();
 
     // ignore, waiting processing in WorldSession::HandleMoveWorldportAckOpcode and WorldSession::HandleMoveTeleportAck
     if (pPlayerMover && pPlayerMover->IsBeingTeleported())

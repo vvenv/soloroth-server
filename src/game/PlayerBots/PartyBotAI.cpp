@@ -459,14 +459,16 @@ void PartyBotAI::ResumeMeleeChaseIfNeeded(Unit* pVictim)
 
     MovementGeneratorType const mt = me->GetMotionMaster()->GetCurrentMovementGeneratorType();
     // DoCastSpell → StopMoving kills the spline but leaves CHASE on the stack.
-    // An IDLE-only check missed that; the rogue stood still after every GCD.
-    bool const stuckChase = mt == CHASE_MOTION_TYPE &&
+    // Drag / face-away can leave a dead POINT the same way — tank never moves again.
+    bool const stuckServerMove =
+        (mt == CHASE_MOTION_TYPE || mt == POINT_MOTION_TYPE || mt == DISTANCING_MOTION_TYPE) &&
         me->movespline->Finalized() && !me->IsMoving();
-    if (mt != IDLE_MOTION_TYPE && !stuckChase)
+    if (mt != IDLE_MOTION_TYPE && !stuckServerMove)
         return;
 
-    if (stuckChase)
+    if (stuckServerMove)
     {
+        me->GetMotionMaster()->Clear(false, true);
         // Behind-angle chase often has no path in dungeon corridors; walk straight in.
         me->GetMotionMaster()->MoveChase(pVictim, 1.0f, 0.0f);
         return;
@@ -518,7 +520,14 @@ bool PartyBotAI::TryDragPackToParty()
 
     MovementGeneratorType const mt = me->GetMotionMaster()->GetCurrentMovementGeneratorType();
     if (mt == POINT_MOTION_TYPE || mt == DISTANCING_MOTION_TYPE)
-        return true;
+    {
+        // Still walking the pack back — claim the tick. A finished / aborted
+        // point with the generator left on must not freeze the tank forever.
+        if (!me->movespline->Finalized() || me->IsMoving())
+            return true;
+        me->GetMotionMaster()->Clear(false, true);
+        me->GetMotionMaster()->MoveIdle();
+    }
 
     me->GetMotionMaster()->Clear(false, true);
     me->GetMotionMaster()->MovePoint(0,
@@ -1339,7 +1348,12 @@ bool PartyBotAI::PullFightAwayFromCrowdControl()
         return false;
 
     if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == DISTANCING_MOTION_TYPE)
-        return true;
+    {
+        if (!me->movespline->Finalized() || me->IsMoving())
+            return true;
+        me->GetMotionMaster()->Clear(false, true);
+        me->GetMotionMaster()->MoveIdle();
+    }
 
     // Drag the pack away from the sheep. Try a few bearings so a wall or pit
     // does not strand the tank (Ragefire lava etc.).

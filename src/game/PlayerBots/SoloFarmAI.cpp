@@ -340,6 +340,15 @@ void SoloFarmAI::OnManualMove(Player* pPlayer)
     StopFor(pPlayer, SOLO_STOP_MOVED);
 }
 
+void SoloFarmAI::YieldMotion(Player* pPlayer)
+{
+    // Assist: a leftover Point / chase spline makes MovementHandler drop WASD.
+    // Force-clear before the Finalized gate so the player can take the body again.
+    if (SoloFarmAI* pAI = Of(pPlayer))
+        if (pAI->PlayerSteers())
+            pAI->ReleaseBody(true);
+}
+
 void SoloFarmAI::Remove()
 {
     Player* pPlayer = me;
@@ -1646,9 +1655,15 @@ void SoloFarmAI::ReleaseBody(bool force)
     if (!force && (me->GetVictim() || !me->GetAttackers().empty()))
         return;
 
+    // Match Stop(): LOS sidesteps are POINT, and a stuck Point leaves the
+    // character planted while MovementHandler rejects every move packet.
+    m_seekingSight = false;
+    m_wandering = false;
     switch (me->GetMotionMaster()->GetCurrentMovementGeneratorType())
     {
         case CHASE_MOTION_TYPE:
+        case POINT_MOTION_TYPE:
+        case FOLLOW_MOTION_TYPE:
         case DISTANCING_MOTION_TYPE:
             me->GetMotionMaster()->Clear(false, true);
             me->GetMotionMaster()->MoveIdle();
@@ -1656,6 +1671,8 @@ void SoloFarmAI::ReleaseBody(bool force)
                 me->StopMoving();
             break;
         default:
+            if (!me->movespline->Finalized())
+                me->StopMoving();
             break;
     }
 }

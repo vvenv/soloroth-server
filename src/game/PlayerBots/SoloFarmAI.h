@@ -44,6 +44,8 @@ public:
     static void StopFor(Player* pPlayer, SoloFarmStop reason);
     // A movement key the player pressed while the body was theirs.
     static void OnManualMove(Player* pPlayer);
+    // Assist only: clear a leftover server spline so WASD is accepted again.
+    static void YieldMotion(Player* pPlayer);
 
     void UpdateAI(uint32 const diff) override;
     void Remove() override;
