@@ -9160,6 +9160,17 @@ InventoryResult Player::_CanStoreItem(uint8 bag, uint8 slot, ItemPosCountVec &de
         return swap ? EQUIP_ERR_ITEMS_CANT_BE_SWAPPED : EQUIP_ERR_ITEM_NOT_FOUND;
     }
 
+    // Companion tokens unlock as spells in Store*; bag fullness must not block them.
+    // Skip while loading inventory so items land in slots for MigrateCompanionTokens.
+    if (!swap && IsInWorld() && CompanionUnlockSpell(pProto))
+    {
+        dest.clear();
+        dest.push_back(ItemPosCount(uint16(INVENTORY_SLOT_BAG_0) << 8 | INVENTORY_SLOT_ITEM_START, uint8(count > 255 ? 255 : count)));
+        if (no_space_count)
+            *no_space_count = 0;
+        return EQUIP_ERR_OK;
+    }
+
     if (pItem)
     {
         // item used
@@ -10284,6 +10295,7 @@ Item* Player::StoreNewItem(ItemPosCountVec const& dest, uint32 item, bool update
         ItemAddedQuestCheck(item, count);
         if (randomPropertyId)
             pItem->SetItemRandomProperties(randomPropertyId);
+        // AbsorbCompanionToken runs inside StoreItem (loot, mail, login, …).
         pItem = StoreItem(dest, pItem, update);
     }
     return pItem;
@@ -10292,6 +10304,11 @@ Item* Player::StoreNewItem(ItemPosCountVec const& dest, uint32 item, bool update
 Item* Player::StoreItem(ItemPosCountVec const& dest, Item* pItem, bool update)
 {
     if (!pItem)
+        return nullptr;
+
+    // In-world only: _LoadInventory still needs the pointer after StoreItem.
+    // Login leftovers are cleared by MigrateCompanionTokens after the load.
+    if (IsInWorld() && AbsorbCompanionToken(pItem, update))
         return nullptr;
 
     Item* lastItem = pItem;
@@ -15201,6 +15218,9 @@ bool Player::LoadFromDB(ObjectGuid guid, SqlQueryHolder* holder)
 
     if (!hasItems && m_playedTime[PLAYED_TIME_TOTAL] == 0)
         AddStartingItems();
+
+    // Tokens must not stay in bags; StoreItem only absorbs once IsInWorld.
+    MigrateCompanionTokens();
 
     _LoadItemLoot(holder->TakeResult(PLAYER_LOGIN_QUERY_LOADITEMLOOT));
 
@@ -20910,6 +20930,157 @@ void Player::SoloAutoLootCreature(Creature* creature)
     // Bots never auto-loot kills into their own bags; Unit::Kill redirects to a human.
     if (m_soloAutoLootOnKill && !IsBot())
         SoloLootCreature(creature);
+}
+
+uint32 Player::CompanionUnlockSpell(ItemPrototype const* proto, bool* isMount)
+{
+    if (isMount)
+        *isMount = false;
+    if (!proto)
+        return 0;
+
+    for (uint32 i = 0; i < MAX_ITEM_PROTO_SPELLS; ++i)
+    {
+        if (!proto->Spells[i].SpellId)
+            continue;
+        if (proto->Spells[i].SpellTrigger != ITEM_SPELLTRIGGER_ON_USE)
+            continue;
+
+        SpellEntry const* spell = sSpellMgr.GetSpellEntry(proto->Spells[i].SpellId);
+        if (!spell)
+            continue;
+
+        // Vanity / companion critter.
+        if (spell->HasEffect(SPELL_EFFECT_SUMMON_CRITTER))
+            return spell->Id;
+
+        // Mount cast directly from the item (most 1.12 mounts).
+        if (spell->HasAura(SPELL_AURA_MOUNTED))
+        {
+            if (isMount)
+                *isMount = true;
+            return spell->Id;
+        }
+
+        // Mount taught by LEARN_SPELL on use (keeps parity with later data).
+        if (spell->HasEffect(SPELL_EFFECT_LEARN_SPELL))
+        {
+            for (uint32 e = 0; e < MAX_EFFECT_INDEX; ++e)
+            {
+                if (spell->Effect[e] != SPELL_EFFECT_LEARN_SPELL)
+                    continue;
+                uint32 const trigger = spell->EffectTriggerSpell[e];
+                if (!trigger)
+                    continue;
+                SpellEntry const* taught = sSpellMgr.GetSpellEntry(trigger);
+                if (taught && taught->HasAura(SPELL_AURA_MOUNTED))
+                {
+                    if (isMount)
+                        *isMount = true;
+                    return trigger;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+bool Player::AbsorbCompanionToken(Item*& pItem, bool notify)
+{
+    if (!pItem)
+        return false;
+
+    bool isMount = false;
+    uint32 const spellId = CompanionUnlockSpell(pItem->GetProto(), &isMount);
+    if (!spellId)
+        return false;
+
+    bool const learned = !HasSpell(spellId);
+    if (learned)
+        LearnSpell(spellId, false);
+
+    if (notify && learned && IsInWorld())
+    {
+        bool zh = false;
+        if (GetSession())
+        {
+            int const index = GetSession()->GetSessionDbLocaleIndex();
+            zh = index >= 0 && sObjectMgr.GetLocaleForIndex(index) == LOCALE_zhCN;
+        }
+
+        std::string name = pItem->GetProto()->Name1 ? pItem->GetProto()->Name1 : "";
+        if (GetSession())
+        {
+            int const locIdx = GetSession()->GetSessionDbLocaleIndex();
+            if (ItemLocale const* il = sObjectMgr.GetItemLocale(pItem->GetEntry()))
+            {
+                if (locIdx >= 0 && size_t(locIdx) < il->Name.size() && !il->Name[locIdx].empty())
+                    name = il->Name[locIdx];
+            }
+        }
+
+        if (zh)
+            PSendSysMessage("已学会：%s。可在「宠物」面板使用，不占用背包。", name.c_str());
+        else
+            PSendSysMessage("Learned: %s. Use it from the Pets panel — it does not take bag space.", name.c_str());
+        (void)isMount;
+    }
+
+    // Already sitting in a bag / bank / equipment slot (migrate or re-store).
+    if (pItem->IsInBag() || GetItemByGuid(pItem->GetObjectGuid()) == pItem)
+    {
+        uint8 const bag = pItem->GetBagSlot();
+        uint8 const slot = pItem->GetSlot();
+        DestroyItem(bag, slot, true);
+        pItem = nullptr;
+        return true;
+    }
+
+    // Fresh CreateItem (ITEM_NEW): SetState(REMOVED) drops it from the update
+    // queue and deletes — FSetState+SaveToDB would leave a dangling queue entry.
+    pItem->SetState(ITEM_REMOVED, this);
+    pItem = nullptr;
+    return true;
+}
+
+void Player::MigrateCompanionTokens()
+{
+    std::vector<std::pair<uint8, uint8>> doomed;
+
+    auto consider = [&](uint8 bag, uint8 slot)
+    {
+        Item* it = GetItemByPos(bag, slot);
+        if (it && CompanionUnlockSpell(it->GetProto()))
+            doomed.emplace_back(bag, slot);
+    };
+
+    FOR_BACKPACK_SLOTS(slot)
+        consider(INVENTORY_SLOT_BAG_0, slot);
+
+    for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+    {
+        if (Bag* pBag = (Bag*)GetItemByPos(INVENTORY_SLOT_BAG_0, bag))
+            for (uint8 slot = 0; slot < pBag->GetBagSize(); ++slot)
+                consider(bag, slot);
+    }
+
+    for (uint8 slot = BANK_SLOT_ITEM_START; slot < BANK_SLOT_ITEM_END; ++slot)
+        consider(INVENTORY_SLOT_BAG_0, slot);
+
+    for (uint8 bag = BANK_SLOT_BAG_START; bag < BANK_SLOT_BAG_END; ++bag)
+    {
+        if (Bag* pBag = (Bag*)GetItemByPos(INVENTORY_SLOT_BAG_0, bag))
+            for (uint8 slot = 0; slot < pBag->GetBagSize(); ++slot)
+                consider(bag, slot);
+    }
+
+    // Destroy from the end so bag iteration stays valid.
+    for (auto it = doomed.rbegin(); it != doomed.rend(); ++it)
+    {
+        Item* pItem = GetItemByPos(it->first, it->second);
+        if (pItem)
+            AbsorbCompanionToken(pItem, false);
+    }
 }
 
 bool Player::SoloLootCreature(Creature* creature)

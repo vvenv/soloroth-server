@@ -1004,6 +1004,13 @@ class Player final: public Unit
         // Open a chest without the client Opening spell: fill loot, take it, release.
         bool SoloLootGameObject(GameObject* go);
         bool SoloTakeLoot(Loot& loot);
+        // Soloroth: vanity pets / mounts unlock as spells and never sit in bags.
+        // Returns the summon or mount spell id, or 0 if the item is not one.
+        static uint32 CompanionUnlockSpell(ItemPrototype const* proto, bool* isMount = nullptr);
+        // Learns the spell (if new), destroys the item, returns true when handled.
+        bool AbsorbCompanionToken(Item*& pItem, bool notify);
+        // After inventory load (while not yet in world): clear bag/bank tokens.
+        void MigrateCompanionTokens();
         void SetAmmo(uint32 item);
         void RemoveAmmo();
         void SendProficiency(ItemClass itemClass, uint32 itemSubclassMask) const;
