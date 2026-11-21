@@ -297,28 +297,29 @@ bool SoloFarmAI::Start(Player* pPlayer, SoloFarmMode mode, float radius)
     chat.PSendSysMessage("[solo] farm=%s %u", pAI ? pAI->ModeWire() : "grind", uint32(radius));
     switch (mode)
     {
+        // Keep these to one short chat line: a long wrap fills the 综合 panel and clips.
         case SOLO_FARM_FISH:
-            chat.PSendSysMessage(zh ? "开始自动钓鱼：在这里 %u 码内找鱼群或水面，自动下钩、收竿、拾取。输入 .solo stop，或在角色站定时按移动键即可停止。"
-                                    : "Auto fishing within %u yards of here: finds a school or open water, casts, reels in and loots. Type .solo stop, or press a movement key while standing, to stop.",
+            chat.PSendSysMessage(zh ? "开始自动钓鱼（%u 码）。停止：面板/按键，或站定时按移动键。"
+                                    : "Auto fishing (%u yd). Stop: panel/key, or a move key while standing.",
                 uint32(radius));
             break;
         case SOLO_FARM_GATHER:
-            chat.PSendSysMessage(zh ? "开始自动采集：身边 %u 码内采药、挖矿、剥皮（有技能和工具才做）。这一圈没有点，就朝下一处矿或草药跑；再没有就往前跑，偶尔随机换向。不进主城、敌对城镇和副本入口。输入 .solo stop，或在角色站定时按移动键即可停止。"
-                                    : "Auto gathering within %u yards: herbs, ore and skinning (only with the skill and tools). When nothing is that close it runs to the next node, or ahead in a random direction. It stays out of capital cities, enemy towns, and dungeon entrances. Type .solo stop, or press a movement key while standing, to stop.",
+            chat.PSendSysMessage(zh ? "开始自动采集（%u 码）。停止：面板/按键，或站定时按移动键。"
+                                    : "Auto gathering (%u yd). Stop: panel/key, or a move key while standing.",
                 uint32(radius));
             break;
         case SOLO_FARM_ALL:
-            chat.PSendSysMessage(zh ? "开始自动挂机：身边 %u 码内能打就打、能采就采、能钓就钓（有技能才做）。这一圈没有事，就朝下一处怪或采集点跑；再没有就往前跑，偶尔随机换向。不进主城、敌对城镇和副本入口。输入 .solo stop，或在角色站定时按移动键即可停止。"
-                                    : "Auto farming within %u yards: fights, gathers and fishes when you can. When nothing is that close it runs to the next camp, or ahead in a random direction. It stays out of capital cities, enemy towns, and dungeon entrances. Type .solo stop, or press a movement key while standing, to stop.",
+            chat.PSendSysMessage(zh ? "开始自动挂机（%u 码）。停止：面板/按键，或站定时按移动键。"
+                                    : "Auto farming (%u yd). Stop: panel/key, or a move key while standing.",
                 uint32(radius));
             break;
         case SOLO_FARM_FIGHT:
-            chat.SendSysMessage(zh ? "开始半自动打怪：你自己走路。怪物攻击你，或你停下来并选中 30 码内的怪时，自动追击、放技能。血量或法力过低会喝药水；法力耗尽时有魔杖就继续射击，否则上去近战；站着不动、没有选中目标时血蓝低了会坐下吃喝。定身后会后撤或闪现；多只怪会控住一只。不游荡找怪。走路不会停止；停止用 .solo stop。"
-                                   : "Assist on: you walk. It fights anything that attacks you, and a mob you target while standing still within 30 yards: chase and spells. It drinks a potion when health or mana is low; out of mana it wands if equipped, else melees. Standing still with nothing selected, it sits to eat or drink when low. It backs off or blinks after a root, and crowd-controls an extra mob. It does not wander. Walking does not stop it; .solo stop does.");
+            chat.SendSysMessage(zh ? "开始半自动打怪（你走路）。停止：面板/按键或 .solo stop（走路不停）。"
+                                   : "Assist on (you walk). Stop: panel/key or .solo stop (walking does not stop it).");
             break;
         default:
-            chat.PSendSysMessage(zh ? "开始自动打怪：身边 %u 码内找怪、战斗、拾取；血蓝低了会坐下吃喝休息。这一圈没有合适的怪，就朝下一处怪跑；再没有就往前跑，偶尔随机换向。不进主城、敌对城镇和副本入口。战斗中血量或法力过低会喝药水；法力耗尽时有魔杖就继续射击，否则上去近战；定身后会后撤或闪现；多只怪会控住一只。输入 .solo stop，或在角色站定时按移动键即可停止。"
-                                    : "Auto grinding within %u yards: picks fights, loots, and sits to eat or drink when low. When nothing is that close it runs to the next camp, or ahead in a random direction. It stays out of capital cities, enemy towns, and dungeon entrances. In a fight it drinks a potion when health or mana is low; out of mana it wands if equipped, else melees. It backs off or blinks after a root, and crowd-controls an extra mob. Type .solo stop, or press a movement key while standing, to stop.",
+            chat.PSendSysMessage(zh ? "开始自动打怪（%u 码）。停止：面板/按键，或站定时按移动键。"
+                                    : "Auto grinding (%u yd). Stop: panel/key, or a move key while standing.",
                 uint32(radius));
             break;
     }
