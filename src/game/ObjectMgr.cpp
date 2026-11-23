@@ -56,6 +56,7 @@
 #include "Utilities/Random.h"
 
 #include <limits>
+#include <unordered_set>
 
 INSTANTIATE_SINGLETON_1(ObjectMgr);
 
@@ -5408,6 +5409,9 @@ void ObjectMgr::LoadGroups()
     else
     {
         Group* group = nullptr;                                // used as cached pointer for avoid relookup group for each member
+        // One character in two groups used to leave a ghost seat that made
+        // party-bot GetPartyLeader fail and self-remove after login.
+        std::unordered_set<uint32> seenMembers;
 
         BarGoLink bar2(result->GetRowCount());
         do
@@ -5421,6 +5425,14 @@ void ObjectMgr::LoadGroups()
             bool   assistent     = fields[1].GetBool();
             uint8  subgroup      = fields[2].GetUInt8();
             uint32 groupId       = fields[3].GetUInt32();
+            if (!seenMembers.insert(memberGuidlow).second)
+            {
+                sLog.Out(LOG_DBERROR, LOG_LVL_MINIMAL, "Duplicate group_member for %s in group %u — removing.",
+                                memberGuid.GetString().c_str(), groupId);
+                CharacterDatabase.PExecute("DELETE FROM `group_member` WHERE `member_guid` = '%u' AND `group_id` = '%u'",
+                                           memberGuidlow, groupId);
+                continue;
+            }
             if (!group || group->GetId() != groupId)
             {
                 group = GetGroupById(groupId);

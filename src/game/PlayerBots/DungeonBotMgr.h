@@ -120,6 +120,9 @@ private:
     Settings& GetSettings(Player* pPlayer);
     void SaveSettings(Player* pPlayer);
     void ForgetGoneBots(uint32 leaderLow);
+    // Party size the leader last asked for (2/3/5). Update re-fills until it holds.
+    void SetWantSize(uint32 leaderLow, uint32 size);
+    void ClearWantSize(uint32 leaderLow);
     void LoadCompanions();
     uint32 GetCompanion(uint32 ownerLow, uint32 slot);
     void SetCompanion(uint32 ownerLow, uint32 slot, uint32 botLow);
@@ -128,6 +131,7 @@ private:
     std::unordered_map<uint32, Settings> m_settings;            // by character guid
     std::unordered_map<uint32, Watch> m_watch;                  // by character guid
     std::unordered_map<uint32, std::map<uint32, AutoBot>> m_autoBots; // leader -> bot guid -> bot
+    std::unordered_map<uint32, uint32> m_wantSize;                   // leader -> last fill target
     std::unordered_map<uint32, std::map<uint32, uint32>> m_companions; // owner -> roster slot -> bot guid
     std::unordered_map<uint32, uint32> m_companionOwner;              // bot guid -> owner
     bool m_companionsLoaded = false;

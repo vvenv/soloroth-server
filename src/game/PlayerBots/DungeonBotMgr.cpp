@@ -440,19 +440,60 @@ void DungeonBotMgr::ForgetGoneBots(uint32 leaderLow)
     if (itr == m_autoBots.end())
         return;
 
+    Player* leader = sObjectAccessor.FindPlayer(ObjectGuid(HIGHGUID_PLAYER, leaderLow));
+    Group* group = leader ? leader->GetGroup() : nullptr;
+
     for (auto bot = itr->second.begin(); bot != itr->second.end();)
     {
-        // A bot between two maps (following its leader) is briefly not in the
-        // world, so only one gone for a while is forgotten.
-        if (ObjectAccessor::FindPlayerNotInWorld(ObjectGuid(HIGHGUID_PLAYER, bot->first)))
-            bot->second.lastSeen = m_now;
-        if (m_now - bot->second.lastSeen > BOT_LOGIN_GRACE_MS)
-            bot = itr->second.erase(bot);
-        else
+        ObjectGuid const guid(HIGHGUID_PLAYER, bot->first);
+        bool const inGroup = group && group->IsMember(guid);
+        PlayerBotEntry* entry = sPlayerBotMgr.GetBotEntry(bot->first);
+        bool const loading = entry && entry->state == PB_STATE_LOADING;
+
+        // Still in the party, or mid-login: keep the seat.
+        if (inGroup || loading)
+        {
+            if (ObjectAccessor::FindPlayerNotInWorld(guid) || loading)
+                bot->second.lastSeen = m_now;
             ++bot;
+            continue;
+        }
+
+        // Between maps a bot is briefly not in the group list yet still online.
+        if (entry && entry->state == PB_STATE_ONLINE &&
+            ObjectAccessor::FindPlayerNotInWorld(guid) &&
+            m_now - bot->second.lastSeen <= BOT_LOGIN_GRACE_MS)
+        {
+            ++bot;
+            continue;
+        }
+
+        // Self-removed or never joined: free the seat now (was a 30s block).
+        if (entry)
+        {
+            if (entry->state != PB_STATE_OFFLINE)
+                entry->requestRemoval = true;
+            else
+                sPlayerBotMgr.DeleteBot(bot->first);
+        }
+        bot = itr->second.erase(bot);
     }
     if (itr->second.empty())
         m_autoBots.erase(itr);
+}
+
+void DungeonBotMgr::SetWantSize(uint32 leaderLow, uint32 size)
+{
+    if (size < 2)
+        size = 2;
+    if (size > PARTY_SIZE)
+        size = PARTY_SIZE;
+    m_wantSize[leaderLow] = size;
+}
+
+void DungeonBotMgr::ClearWantSize(uint32 leaderLow)
+{
+    m_wantSize.erase(leaderLow);
 }
 
 uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, uint32 target, uint32* removedOut)
@@ -478,7 +519,9 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
         return 0;
     }
 
-    ForgetGoneBots(pPlayer->GetGUIDLow());
+    uint32 const ownerLow = pPlayer->GetGUIDLow();
+    ForgetGoneBots(ownerLow);
+    SetWantSize(ownerLow, target);
 
     // A saved group can hold companions (or other stubs) that went offline
     // with the server. Drop anyone not in the world at all so they do not
@@ -547,15 +590,16 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
     }
 
     // Bots still logging in count too, or a second fill would double them.
-    // Skip entries that are past the grace window and not in the world.
-    auto& mine = m_autoBots[pPlayer->GetGUIDLow()];
+    // Only LOADING seats count here — offline / self-removed entries are
+    // dropped by ForgetGoneBots and must not report "already full".
+    auto& mine = m_autoBots[ownerLow];
     for (auto const& bot : mine)
     {
         ObjectGuid const guid(HIGHGUID_PLAYER, bot.first);
         if (pGroup && pGroup->IsMember(guid))
             continue;
-        if (!ObjectAccessor::FindPlayerNotInWorld(guid) &&
-            m_now - bot.second.lastSeen > BOT_LOGIN_GRACE_MS)
+        PlayerBotEntry* entry = sPlayerBotMgr.GetBotEntry(bot.first);
+        if (!entry || entry->state != PB_STATE_LOADING)
             continue;
         guids.push_back(bot.first);
         roles.push_back(bot.second.role);
@@ -648,7 +692,6 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
     uint32 melee = uint32(std::count(roles.begin(), roles.end(), ROLE_MELEE_DPS));
 
     Team const team = pPlayer->GetTeam();
-    uint32 const ownerLow = pPlayer->GetGUIDLow();
     auto slotOf = [](RosterBot const& r) { return uint32(&r - ROSTER); };
     // Roster slots that failed to spawn this fill (stuck online session, etc.).
     std::set<uint32> blocked;
@@ -746,12 +789,14 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
             ai->m_companion = true;
             if (!sPlayerBotMgr.AddBot(botLow, false, ai))
             {
-                delete ai;
-                // Account still online after a prior dismiss: clear it and
-                // try a different roster member for this seat.
-                sPlayerBotMgr.DeleteBot(botLow);
-                blocked.insert(slot);
-                continue;
+                // Stuck session from a prior fill: kick and retry once.
+                sPlayerBotMgr.KickBot(botLow);
+                if (!sPlayerBotMgr.AddBot(botLow, false, ai))
+                {
+                    delete ai;
+                    blocked.insert(slot);
+                    continue;
+                }
             }
         }
         else
@@ -813,10 +858,13 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
 uint32 DungeonBotMgr::Dismiss(Player* pPlayer, bool autoOnly)
 {
     uint32 count = 0;
+    uint32 const leaderLow = pPlayer->GetGUIDLow();
+    // Stop repair-fills (leaving a dungeon must not re-fill to five outdoors).
+    ClearWantSize(leaderLow);
 
     // The bots this manager brought, wherever they are. Always drop the
     // listing: a stuck login left in m_autoBots used to shrink the next fill.
-    auto mine = m_autoBots.find(pPlayer->GetGUIDLow());
+    auto mine = m_autoBots.find(leaderLow);
     if (mine != m_autoBots.end())
     {
         for (auto bot = mine->second.begin(); bot != mine->second.end();)
@@ -1087,6 +1135,44 @@ void DungeonBotMgr::Update(uint32 diff)
             ChatHandler(pPlayer).SendSysMessage(why.c_str());
     }
 
+    // Repair a short party: a companion that self-removed used to keep the
+    // seat for 30s and leave the player stuck at 3 with "already full".
+    for (ObjectGuid const& guid : players)
+    {
+        Player* pPlayer = sObjectAccessor.FindPlayer(guid);
+        if (!pPlayer || !pPlayer->IsInWorld() || pPlayer->IsBeingTeleported())
+            continue;
+        if (pPlayer->IsTaxiFlying() || pPlayer->InBattleGround() || !pPlayer->IsAlive())
+            continue;
+        uint32 const low = guid.GetCounter();
+        auto want = m_wantSize.find(low);
+        if (want == m_wantSize.end())
+            continue;
+        ForgetGoneBots(low);
+        Group* group = pPlayer->GetGroup();
+        uint32 have = group ? group->GetMembersCount() : 1;
+        auto mine = m_autoBots.find(low);
+        if (mine != m_autoBots.end())
+        {
+            for (auto const& bot : mine->second)
+            {
+                if (group && group->IsMember(ObjectGuid(HIGHGUID_PLAYER, bot.first)))
+                    continue;
+                PlayerBotEntry* entry = sPlayerBotMgr.GetBotEntry(bot.first);
+                if (entry && entry->state == PB_STATE_LOADING)
+                    ++have;
+            }
+        }
+        if (have >= want->second)
+            continue;
+        std::string who, why;
+        if (Fill(pPlayer, who, why, want->second) && !who.empty())
+        {
+            bool const zh = IsZh(pPlayer->GetSession());
+            ChatHandler(pPlayer).PSendSysMessage(zh ? "队友正在赶来：%s。" : "On their way: %s.", who.c_str());
+        }
+    }
+
     // Players who logged out: forget where they were, so logging back in
     // inside a dungeon counts as entering it (their bots left with them).
     // (A player between two maps is not in the world but still online.)
@@ -1102,7 +1188,10 @@ void DungeonBotMgr::Update(uint32 diff)
     for (auto itr = m_autoBots.begin(); itr != m_autoBots.end();)
     {
         if (!ObjectAccessor::FindPlayerNotInWorld(ObjectGuid(HIGHGUID_PLAYER, itr->first)))
+        {
+            ClearWantSize(itr->first);
             itr = m_autoBots.erase(itr);
+        }
         else
             ++itr;
     }

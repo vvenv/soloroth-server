@@ -47,7 +47,8 @@ public:
     void OnPacketReceived(WorldPacket const* packet) final;
 
     void CloneFromPlayer(Player const* pPlayer);
-    void AddToPlayerGroup();
+    // Joins the leader's party (creates one if needed). False until that works.
+    bool AddToPlayerGroup();
     void LevelUpTo(uint32 level);
 
     bool CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const override;
@@ -227,6 +228,7 @@ public:
     float m_o = 0.0f;
     bool m_resetSpellData = false;
     bool m_companion = false;   // a saved character that levels with its leader (DungeonBotMgr)
+    uint8 m_groupJoinTries = 0; // init ticks spent waiting to join the leader's party
     ObjectGuid m_rezTargetGuid;
     uint32 m_corpseSeconds = 0;
     // Active while a commanded ranged pull is in flight (tank only).

@@ -87,6 +87,10 @@ class PlayerBotMgr
         bool AddBot(uint32 playerGuid, bool chatBot = false, PlayerBotAI* pAI = nullptr);
         bool DeleteBot(std::map<uint64, std::shared_ptr<PlayerBotEntry>>::iterator iter);
         bool DeleteBot(uint32 playerGuid);
+        // Logs the bot out and drops its entry so AddBot can reuse the account.
+        // Used when a prior fill left a stuck session that blocked the seat.
+        bool KickBot(uint32 playerGuid);
+        PlayerBotEntry* GetBotEntry(uint32 playerGuid);
 
         bool AddRandomBot();
         bool DeleteRandomBot();

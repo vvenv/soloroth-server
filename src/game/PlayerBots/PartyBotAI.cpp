@@ -2177,32 +2177,39 @@ bool PartyBotAI::CrowdControlMarkedTargets()
     return false;
 }
 
-void PartyBotAI::AddToPlayerGroup()
+bool PartyBotAI::AddToPlayerGroup()
 {
-    Player* pPlayer = ObjectAccessor::FindPlayer(m_leaderGuid);
+    // NotInWorld: the leader may be mid-teleport when several bots log in together.
+    Player* pPlayer = ObjectAccessor::FindPlayerNotInWorld(m_leaderGuid);
     if (!pPlayer)
-        return;
+        return false;
 
     Group* group = pPlayer->GetGroup();
     if (!group)
     {
         group = new Group;
-        // new group: if can't add then delete
         if (!group->Create(pPlayer->GetObjectGuid(), pPlayer->GetName()))
         {
             delete group;
-            return;
+            // Another bot created the party first on this tick.
+            group = pPlayer->GetGroup();
+            if (!group)
+                return false;
         }
-        sObjectMgr.AddGroup(group);
+        else
+            sObjectMgr.AddGroup(group);
     }
 
-    if (me->GetGroup() != group)
-    {
-        if (me->GetGroup())
-            me->RemoveFromGroup();
+    if (me->GetGroup() == group)
+        return true;
 
-        group->AddMember(me->GetObjectGuid(), me->GetName());
-    }
+    if (me->GetGroup())
+        me->RemoveFromGroup();
+
+    if (group->IsFull())
+        return false;
+
+    return group->AddMember(me->GetObjectGuid(), me->GetName());
 }
 
 void PartyBotAI::OnPacketReceived(WorldPacket const* packet)
@@ -2289,7 +2296,16 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
     if (!m_initialized)
     {
-        AddToPlayerGroup();
+        // Do not finish init (or quit) until we are actually in the party.
+        // A failed join used to mark the bot initialized, then GetPartyLeader
+        // returned null and requestRemoval burned a fill seat for 30s.
+        if (!AddToPlayerGroup())
+        {
+            if (++m_groupJoinTries >= 15)
+                botEntry->requestRemoval = true;
+            return;
+        }
+        m_groupJoinTries = 0;
 
         if (m_race && m_class) // temporary character
         {
@@ -2371,8 +2387,15 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     Player* pLeader = GetPartyLeader();
     if (!pLeader)
     {
-        botEntry->requestRemoval = true;
-        return;
+        // Leader's group pointer can drift (stale duplicate group_member rows).
+        // Rejoin once before giving up so a fill seat is not burned.
+        if (m_companion && AddToPlayerGroup())
+            pLeader = GetPartyLeader();
+        if (!pLeader)
+        {
+            botEntry->requestRemoval = true;
+            return;
+        }
     }
 
     if (!pLeader->IsInWorld())

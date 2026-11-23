@@ -422,10 +422,28 @@ bool PlayerBotMgr::AddBot(uint32 playerGUID, bool chatBot, PlayerBotAI* pAI)
         return false;
     }
 
-    if (sWorld.FindSession(accountId))
+    if (WorldSession* existing = sWorld.FindSession(accountId))
     {
-        sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "[PlayerBotMgr] Account %u is already online!", accountId);
-        return false;
+        // A prior fill often leaves the companion session stuck: kick it so
+        // this call can reuse the account instead of failing the seat forever.
+        if (existing->GetBot())
+        {
+            KickBot(playerGUID);
+            existing = sWorld.FindSession(accountId);
+        }
+        if (existing)
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "[PlayerBotMgr] Account %u is already online!", accountId);
+            return false;
+        }
+        // KickBot erased the map entry; reload account for the insert below.
+        iter = m_bots.find(playerGUID);
+        if (iter == m_bots.end())
+            accountId = sObjectMgr.GetPlayerAccountIdByGUID(playerGUID);
+        else
+            accountId = iter->second->accountId;
+        if (!accountId)
+            return false;
     }
 
     std::shared_ptr<PlayerBotEntry> e;
@@ -527,6 +545,38 @@ bool PlayerBotMgr::DeleteBot(std::map<uint64, std::shared_ptr<PlayerBotEntry>>::
         m_stats.onlineCount--;
 
     OnBotLogout(iter->second.get());
+    return true;
+}
+
+PlayerBotEntry* PlayerBotMgr::GetBotEntry(uint32 playerGuid)
+{
+    auto iter = m_bots.find(playerGuid);
+    return iter == m_bots.end() ? nullptr : iter->second.get();
+}
+
+bool PlayerBotMgr::KickBot(uint32 playerGuid)
+{
+    auto iter = m_bots.find(playerGuid);
+    if (iter == m_bots.end())
+        return false;
+
+    std::shared_ptr<PlayerBotEntry> entry = iter->second;
+    if (entry->ai && entry->ai->me)
+    {
+        if (!entry->ai->me->IsAlive())
+        {
+            entry->ai->me->ResurrectPlayer(1.0f);
+            entry->ai->me->SpawnCorpseBones();
+        }
+        entry->ai->me->RemoveFromGroup();
+    }
+
+    if (WorldSession* sess = sWorld.FindSession(entry->accountId))
+        sess->LogoutPlayer(m_confAllowSaving || entry->persistent);
+
+    DeleteBot(iter);
+    if (entry->customBot)
+        m_bots.erase(playerGuid);
     return true;
 }
 
