@@ -90,6 +90,7 @@ private:
     {
         uint32 lastMap = UINT32_MAX;
         uint32 fillAt = 0;          // world ms; 0 = no fill pending
+        uint32 repairAt = 0;        // world ms; next allowed short-party repair
         // Last spot outside hostile aggro range in this dungeon instance.
         bool hasSafe = false;
         uint32 safeMap = 0;
@@ -134,6 +135,8 @@ private:
     std::unordered_map<uint32, uint32> m_wantSize;                   // leader -> last fill target
     std::unordered_map<uint32, std::map<uint32, uint32>> m_companions; // owner -> roster slot -> bot guid
     std::unordered_map<uint32, uint32> m_companionOwner;              // bot guid -> owner
+    // owner -> roster slot -> world ms when the slot may be tried again
+    std::unordered_map<uint32, std::map<uint32, uint32>> m_slotCooldown;
     bool m_companionsLoaded = false;
     uint32 m_timer = 0;
     uint32 m_now = 0;

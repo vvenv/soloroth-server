@@ -190,6 +190,11 @@ namespace
     uint32 const FILL_GIVE_UP_MS = 120000;
     // A bot that never shows up in the group is forgotten after this.
     uint32 const BOT_LOGIN_GRACE_MS = 30000;
+    // After AddBot fails (account still online), skip that roster slot a while.
+    uint32 const SLOT_FAIL_COOLDOWN_MS = 15000;
+    // Short-party repair: do not re-Fill every tick or chat spams new names.
+    uint32 const REPAIR_RETRY_OK_MS = 4000;
+    uint32 const REPAIR_RETRY_FAIL_MS = 10000;
     // After a full wipe, wait for mobs to evade before safe-spot revive.
     uint32 const WIPE_REVIVE_DELAY_MS = 8000;
     float const SAFE_AGGRO_MARGIN = 3.0f;
@@ -744,27 +749,32 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
     auto slotOf = [](RosterBot const& r) { return uint32(&r - ROSTER); };
     // Roster slots that failed to spawn this fill (stuck online session, etc.).
     std::set<uint32> blocked;
-    // Only this character's own companion can be out already. Orphans left
-    // online outside the party (failed dismiss / missed instance) are kicked
-    // so the seat can be used again instead of skipping every tank forever.
+    // Only this character's own companion can be out already. Do not KickBot
+    // here: logging out a LOADING session crashes the world update and left
+    // accounts "already online", so Fill announced a new name every tick.
     auto present = [&](RosterBot const& r)
     {
         uint32 const slot = slotOf(r);
         if (blocked.find(slot) != blocked.end())
             return true;
+        auto cool = m_slotCooldown.find(ownerLow);
+        if (cool != m_slotCooldown.end())
+        {
+            auto when = cool->second.find(slot);
+            if (when != cool->second.end() && m_now < when->second)
+                return true;
+        }
         uint32 const botLow = GetCompanion(ownerLow, slot);
         if (!botLow)
             return false;
         if (std::find(guids.begin(), guids.end(), botLow) != guids.end())
             return true;
-        ObjectGuid const guid(HIGHGUID_PLAYER, botLow);
-        if (!ObjectAccessor::FindPlayerNotInWorld(guid))
-            return false;
-        PlayerBotEntry* entry = sPlayerBotMgr.GetBotEntry(botLow);
-        if (entry && entry->state == PB_STATE_LOADING && mine.find(botLow) != mine.end())
-            return true;
-        sPlayerBotMgr.KickBot(botLow);
-        return false;
+        return ObjectAccessor::FindPlayerNotInWorld(ObjectGuid(HIGHGUID_PLAYER, botLow)) != nullptr;
+    };
+    auto markSlotFail = [&](uint32 slot)
+    {
+        blocked.insert(slot);
+        m_slotCooldown[ownerLow][slot] = m_now + SLOT_FAIL_COOLDOWN_MS;
     };
     // A free roster member for one of `wanted` roles. Prefer a class the
     // party lacks, then a race it lacks, else any. Each class gets the same
@@ -853,14 +863,12 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
             ai->m_companion = true;
             if (!sPlayerBotMgr.AddBot(botLow, false, ai))
             {
-                // Stuck session from a prior fill: kick and retry once.
-                sPlayerBotMgr.KickBot(botLow);
-                if (!sPlayerBotMgr.AddBot(botLow, false, ai))
-                {
-                    delete ai;
-                    blocked.insert(slot);
-                    continue;
-                }
+                // AddBot already kicks a stuck ONLINE bot session once. Do not
+                // KickBot a LOADING session here (world update asserts) — cool
+                // the slot down and try another roster member.
+                delete ai;
+                markSlotFail(slot);
+                continue;
             }
         }
         else
@@ -875,7 +883,7 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
             if (!sPlayerBotMgr.AddBot(ai, true))
             {
                 delete ai;
-                blocked.insert(slot);
+                markSlotFail(slot);
                 continue;
             }
             botLow = uint32(ai->botEntry->playerGUID);
@@ -1202,7 +1210,8 @@ void DungeonBotMgr::Update(uint32 diff)
     }
 
     // Repair a short party, or a full one that still lacks tank/healer (e.g.
-    // dismiss raced a re-fill and DPS took every seat).
+    // dismiss raced a re-fill and DPS took every seat). Back off when fills
+    // fail so chat does not spam a new random name every half-second.
     for (ObjectGuid const& guid : players)
     {
         Player* pPlayer = sObjectAccessor.FindPlayer(guid);
@@ -1214,11 +1223,15 @@ void DungeonBotMgr::Update(uint32 diff)
         auto want = m_wantSize.find(low);
         if (want == m_wantSize.end())
             continue;
+        Watch& repairWatch = m_watch[low];
+        if (repairWatch.repairAt && m_now < repairWatch.repairAt)
+            continue;
         ForgetGoneBots(low);
         Group* group = pPlayer->GetGroup();
         uint32 have = group ? group->GetMembersCount() : 1;
         bool hasTank = GetPlayerRole(pPlayer) == ROLE_TANK;
         bool hasHealer = GetPlayerRole(pPlayer) == ROLE_HEALER;
+        bool pendingLogin = false;
         if (group)
         {
             for (auto const& slot : group->GetMemberSlots())
@@ -1261,6 +1274,7 @@ void DungeonBotMgr::Update(uint32 diff)
                 if (entry && entry->state == PB_STATE_LOADING)
                 {
                     ++have;
+                    pendingLogin = true;
                     if (bot.second.role == ROLE_TANK)
                         hasTank = true;
                     else if (bot.second.role == ROLE_HEALER)
@@ -1271,13 +1285,25 @@ void DungeonBotMgr::Update(uint32 diff)
         bool const shortParty = have < want->second;
         bool const badComp = !hasTank || (want->second >= 3 && !hasHealer);
         if (!shortParty && !badComp)
+        {
+            repairWatch.repairAt = 0;
             continue;
+        }
+        // Wait for in-flight logins before starting another wave of names.
+        if (pendingLogin)
+        {
+            repairWatch.repairAt = m_now + REPAIR_RETRY_OK_MS;
+            continue;
+        }
         std::string who, why;
         if (Fill(pPlayer, who, why, want->second) && !who.empty())
         {
             bool const zh = IsZh(pPlayer->GetSession());
             ChatHandler(pPlayer).PSendSysMessage(zh ? "队友正在赶来：%s。" : "On their way: %s.", who.c_str());
+            repairWatch.repairAt = m_now + REPAIR_RETRY_OK_MS;
         }
+        else
+            repairWatch.repairAt = m_now + REPAIR_RETRY_FAIL_MS;
     }
 
     // Players who logged out: forget where they were, so logging back in

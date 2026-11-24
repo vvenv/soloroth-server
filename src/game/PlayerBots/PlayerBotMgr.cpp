@@ -424,9 +424,9 @@ bool PlayerBotMgr::AddBot(uint32 playerGUID, bool chatBot, PlayerBotAI* pAI)
 
     if (WorldSession* existing = sWorld.FindSession(accountId))
     {
-        // A prior fill often leaves the companion session stuck: kick it so
-        // this call can reuse the account instead of failing the seat forever.
-        if (existing->GetBot())
+        // A prior fill often leaves the companion session stuck. Only kick an
+        // ONLINE bot — LogoutPlayer on a LOADING session asserts in World::Update.
+        if (existing->GetBot() && existing->GetBot()->state == PB_STATE_ONLINE)
         {
             KickBot(playerGUID);
             existing = sWorld.FindSession(accountId);
