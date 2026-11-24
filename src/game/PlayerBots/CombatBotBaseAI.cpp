@@ -2407,8 +2407,42 @@ uint8 CombatBotBaseAI::GetCombatEnemyCountInRadiusAround(Unit const* pTarget, fl
     if (!pTarget)
         return 0;
 
-    // GetEnemyCountInRadiusAround sees every unfriendly in range, including idle
-    // camp mobs. Blizzard / Volley / Rain on that count pulls the neighborhood.
+    // Only hostiles that have entered this fight's threat (us / party / pets).
+    // IsInCombat alone still picks up a neighbor pull or idle camp that got
+    // tagged elsewhere — Blizzard / Volley / Rain must not count those.
+    auto onPartyThreat = [this](Unit* pEnemy) -> bool
+    {
+        if (!pEnemy)
+            return false;
+
+        auto listed = [&](Unit* pUnit) -> bool
+        {
+            if (!pUnit)
+                return false;
+            if (pEnemy->GetVictim() == pUnit)
+                return true;
+            if (!pEnemy->CanHaveThreatList())
+                return false;
+            return pEnemy->GetThreatManager().getThreat(pUnit) > 0.0f;
+        };
+
+        if (listed(me) || listed(me->GetPet()))
+            return true;
+
+        if (Group* pGroup = me->GetGroup())
+        {
+            for (GroupReference* itr = pGroup->GetFirstMember(); itr; itr = itr->next())
+            {
+                Player* pMember = itr->getSource();
+                if (!pMember || pMember == me)
+                    continue;
+                if (listed(pMember) || listed(pMember->GetPet()))
+                    return true;
+            }
+        }
+        return false;
+    };
+
     std::list<Unit*> targets;
     me->GetEnemyListInRadiusAround(pTarget, radius, targets);
     uint8 count = 0;
@@ -2417,6 +2451,8 @@ uint8 CombatBotBaseAI::GetCombatEnemyCountInRadiusAround(Unit const* pTarget, fl
         if (!pEnemy || !pEnemy->IsInCombat())
             continue;
         if (pEnemy->HasBreakableByDamageCrowdControlAura())
+            continue;
+        if (!onPartyThreat(pEnemy))
             continue;
         ++count;
     }

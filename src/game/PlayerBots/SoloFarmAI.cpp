@@ -54,8 +54,10 @@ namespace
     // Assist: how far a mob the player targeted (while standing) may be. No area search.
     float const ASSIST_PULL_DIST = 30.0f;
     float const KITE_DIST = 15.0f;
-    // Below this a caster stops spending mana spells: wand if equipped, else melee.
+    // Below this a caster cannot keep casting: wand if equipped, else melee.
     float const OOM_MANA_PCT = 10.0f;
+    // Current target this low: finish with the wand instead of another nuke.
+    float const WAND_FINISH_HP = 25.0f;
     uint32 const SPELL_SHOOT_WAND = 5019;
     uint32 const PATH_CANDIDATES = 6;
     uint32 const WANDER_TRIES = 8;
@@ -351,6 +353,23 @@ bool SoloFarmAI::AttackStart(Unit* pVictim)
 {
     if (!PartyBotAI::AttackStart(pVictim))
         return false;
+    // Duo/trio bots open on the leader's selection — set it so they join the
+    // auto-picked pull immediately, not after the first bolt lands threat.
+    // The client's own portrait ignores that field. TargetByName needs the
+    // name in the client's language; the template name is English and the
+    // zhCN client answers that with ERR_UNIT_NOT_FOUND («未知单位»).
+    me->SetSelectionGuid(pVictim->GetObjectGuid());
+    char const* name = nullptr;
+    if (me->GetSession())
+        name = pVictim->GetNameForLocaleIdx(me->GetSession()->GetSessionDbLocaleIndex());
+    if (name && name[0])
+    {
+        std::string const message = std::string("SoloFarm\t") + name;
+        WorldPacket data;
+        ChatHandler::BuildChatPacket(data, CHAT_MSG_WHISPER, message.c_str(), LANG_ADDON,
+            CHAT_TAG_NONE, me->GetObjectGuid());
+        me->GetSession()->SendPacket(&data);
+    }
     EnsureFacing(pVictim);
     return true;
 }
@@ -733,6 +752,27 @@ bool SoloFarmAI::TryEscapeMelee(Unit* pVictim)
 {
     if (!pVictim || !WantsDistance() || me->GetMap()->IsDungeon())
         return false;
+
+    // Frozen or stunned: do not keep scanning retreat angles. That walk is the
+    // "looking around", and it also holds the next cast until the spline ends.
+    // Blink once if still in the swing; otherwise turn back and cast now.
+    bool const pinned = pVictim->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_PENDING_ROOT |
+        UNIT_STATE_STUNNED | UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL);
+    if (pinned)
+    {
+        if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == DISTANCING_MOTION_TYPE ||
+            me->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+        {
+            me->GetMotionMaster()->Clear(false, true);
+            me->GetMotionMaster()->MoveIdle();
+            if (!me->movespline->Finalized())
+                me->StopMoving();
+        }
+        if (me->GetCombatDistance(pVictim) < 8.0f && TryBlinkAway(pVictim))
+            return true;
+        EnsureFacing(pVictim);
+        return false;
+    }
 
     // A retreat is already running. Casting here (Cone of Cold, Arcane Explosion)
     // stops it on top of the pack and breaks a root we just spent. Blink is the
@@ -1272,16 +1312,26 @@ bool SoloFarmAI::UpdateCombat()
         return true;
     }
 
-    // Wand Shoot is autorepeat: moving (including a chase tick) cancels it. Keep shooting.
-    if (me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) && me->GetClass() != CLASS_HUNTER)
-        return true;
-
-    // Out of mana: wand at range when equipped, otherwise close in and swing.
-    bool const casterOom = !IsBreakableControl(pVictim) && GetRole() == ROLE_RANGE_DPS &&
+    // Wand (ranged slot, not the staff): only when mana cannot support another
+    // cast, or this one mob is low enough that a nuke would mostly overkill.
+    bool const caster = !IsBreakableControl(pVictim) && GetRole() == ROLE_RANGE_DPS &&
         me->GetClass() != CLASS_HUNTER && me->GetShapeshiftForm() == FORM_NONE &&
-        me->GetPowerType() == POWER_MANA && me->GetPowerPercent(POWER_MANA) < OOM_MANA_PCT;
-    bool const useWand = casterOom && HasUsableWand();
-    bool const goMelee = casterOom && !useWand;
+        me->GetPowerType() == POWER_MANA;
+    bool const casterOom = caster && me->GetPowerPercent(POWER_MANA) < OOM_MANA_PCT;
+    bool const finishWithWand = me->GetClass() == CLASS_MAGE && caster &&
+        me->GetAttackers().size() < 2 &&
+        pVictim->GetHealthPercent() < WAND_FINISH_HP && HasUsableWand();
+    bool const useWand = (casterOom || finishWithWand) && HasUsableWand();
+    bool const goMelee = casterOom && !HasUsableWand();
+
+    // Shoot is autorepeat: a chase tick cancels it. Keep it only while we
+    // still want the wand; otherwise the next mob gets a real cast.
+    if (me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) && me->GetClass() != CLASS_HUNTER)
+    {
+        if (useWand)
+            return true;
+        me->InterruptSpell(CURRENT_AUTOREPEAT_SPELL, true);
+    }
     if (useWand)
     {
         if (me->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
@@ -1369,7 +1419,7 @@ bool SoloFarmAI::UpdateCombat()
     if (TryEscapeMelee(pVictim))
         return true;
 
-    // After potions and CC: OOM with a wand keeps the range and shoots.
+    // Wand when the next nuke is not worth it: out of mana, or the mob is low.
     if (useWand)
     {
         if (!me->IsMoving() && me->movespline->Finalized() && me->GetCombatDistance(pVictim) <= 30.0f)
@@ -1459,8 +1509,14 @@ bool SoloFarmAI::HasUsableWand() const
 bool SoloFarmAI::Rest()
 {
     bool const usesMana = me->GetPowerType() == POWER_MANA;
+    // A wand does not replace drinking. Sit later and stand sooner so a grind
+    // mage is not down after every pull; the wand only covers an empty bar
+    // or the last bit of a mob.
+    bool const wandCaster = usesMana && HasUsableWand();
+    float const manaStart = wandCaster ? 20.0f : 40.0f;
+    float const manaDone = wandCaster ? 70.0f : 95.0f;
     bool const needHealth = me->GetHealthPercent() < (m_resting ? 95.0f : 60.0f);
-    bool const needMana = usesMana && me->GetPowerPercent(POWER_MANA) < (m_resting ? 95.0f : 40.0f);
+    bool const needMana = usesMana && me->GetPowerPercent(POWER_MANA) < (m_resting ? manaDone : manaStart);
 
     if (!needHealth && !needMana)
     {

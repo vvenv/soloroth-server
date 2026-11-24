@@ -1503,6 +1503,11 @@ bool PartyBotAI::AttackStart(Unit* pVictim)
     // Classic pre-pot: mana flask/pot as the elite pull starts, not mid-GCD later.
     TryPrePullConsumable(pVictim);
 
+    // Party frames and target-of-target read UNIT_FIELD_TARGET. Attack() never
+    // writes it, so a mage showed no target until the first cast.
+    if (pVictim && !m_ownCharacter)
+        me->SetSelectionGuid(pVictim->GetObjectGuid());
+
     if (me->Attack(pVictim, true))
     {
         BeginChasing(pVictim);
@@ -2956,6 +2961,10 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     }
 
     pVictim = me->GetVictim();
+    // Keep the portrait on the mob we're fighting, including while chasing
+    // and between casts. Own character: the client owns that portrait.
+    if (pVictim && !m_ownCharacter && me->GetTargetGuid() != pVictim->GetObjectGuid())
+        me->SetSelectionGuid(pVictim->GetObjectGuid());
     if (!me->IsMoving())
     {
         if (!pVictim)
@@ -5209,6 +5218,27 @@ void PartyBotAI::UpdateInCombatAI_Mage()
         {
             BeginChasing(pVictim);
         }
+        // Frozen or stunned: stop the retreat scan and cast. A blink is only
+        // the gap-opener while still in the swing, then the next tick fires.
+        bool const pinned = pVictim->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_PENDING_ROOT |
+            UNIT_STATE_STUNNED | UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL);
+        if (pinned)
+        {
+            MovementGeneratorType const mt = me->GetMotionMaster()->GetCurrentMovementGeneratorType();
+            if (mt == DISTANCING_MOTION_TYPE || mt == POINT_MOTION_TYPE)
+            {
+                me->GetMotionMaster()->Clear(false, true);
+                me->GetMotionMaster()->MoveIdle();
+                if (!me->movespline->Finalized())
+                    me->StopMoving();
+            }
+            if (me->GetCombatDistance(pVictim) < 8.0f &&
+                m_spells.mage.pBlink &&
+                CanTryToCastSpell(me, m_spells.mage.pBlink) &&
+                DoCastSpell(me, m_spells.mage.pBlink) == SPELL_CAST_OK)
+                return;
+            EnsureFacing(pVictim);
+        }
         else if (GetAttackersInRangeCount(10.0f))
         {
             if (m_spells.mage.pManaShield &&
@@ -5228,7 +5258,12 @@ void PartyBotAI::UpdateInCombatAI_Mage()
                     CanTryToCastSpell(me, m_spells.mage.pBlink))
                 {
                     if (me->GetMotionMaster()->GetCurrentMovementGeneratorType())
-                        me->GetMotionMaster()->Clear();
+                    {
+                        // Clear() with no idle left UpdateMotion aborting, so the
+                        // mage stood still after the teleport.
+                        me->GetMotionMaster()->Clear(false, true);
+                        me->GetMotionMaster()->MoveIdle();
+                    }
 
                     if (DoCastSpell(me, m_spells.mage.pBlink) == SPELL_CAST_OK)
                         return;
@@ -5288,30 +5323,33 @@ void PartyBotAI::UpdateInCombatAI_Mage()
                 return;
         }
 
-        // Blizzard vs frostbolt the way a person decides:
-        // outdoor solo — only a tight pack already on us, with mana to finish the
-        // channel (3 from social aggro is still bolted); dungeon/party — 3+ in
-        // combat on the kill target is enough. Finish a dying focus first.
+        // Blizzard only when its own splash would tick more than one hostile
+        // already on our threat. Player ranks use SpellRadius 14 (= 8 yd).
+        // Outdoor solo still wants a tight 4+; dungeon/party a 3+ pack.
+        // Finish a dying focus first.
         if (m_spells.mage.pBlizzard && !ShouldFocusBeforeCleave())
         {
-            bool wantBlizzard = false;
-            if (m_ownCharacter && me->GetMap() && !me->GetMap()->IsDungeon())
-            {
-                if (me->GetPowerPercent(POWER_MANA) >= 50.0f)
-                {
-                    uint8 packed = 0;
-                    for (Unit const* pAtt : me->GetAttackers())
-                        if (pAtt && pVictim->GetDistance(pAtt) <= 8.0f)
-                            ++packed;
-                    wantBlizzard = packed >= 4;
-                }
-            }
-            else if (me->GetPowerPercent(POWER_MANA) >= 35.0f &&
-                     GetCombatEnemyCountInRadiusAround(pVictim, 10.0f) >= 3)
-                wantBlizzard = true;
+            SpellEntry const* pBlizzard = m_spells.mage.pBlizzard;
+            float radius = 8.0f;
+            if (pBlizzard->EffectRadiusIndex[0])
+                radius = Spells::GetSpellRadius(sSpellRadiusStore.LookupEntry(pBlizzard->EffectRadiusIndex[0]));
+            else if (pBlizzard->EffectRadiusIndex[1])
+                radius = Spells::GetSpellRadius(sSpellRadiusStore.LookupEntry(pBlizzard->EffectRadiusIndex[1]));
+            else if (pBlizzard->EffectRadiusIndex[2])
+                radius = Spells::GetSpellRadius(sSpellRadiusStore.LookupEntry(pBlizzard->EffectRadiusIndex[2]));
 
-            if (wantBlizzard && CanTryToCastSpell(pVictim, m_spells.mage.pBlizzard) &&
-                DoCastSpell(pVictim, m_spells.mage.pBlizzard) == SPELL_CAST_OK)
+            uint8 const hits = GetCombatEnemyCountInRadiusAround(pVictim, radius);
+            bool wantBlizzard = false;
+            if (hits >= 2)
+            {
+                if (m_ownCharacter && me->GetMap() && !me->GetMap()->IsDungeon())
+                    wantBlizzard = me->GetPowerPercent(POWER_MANA) >= 50.0f && hits >= 4;
+                else
+                    wantBlizzard = me->GetPowerPercent(POWER_MANA) >= 35.0f && hits >= 3;
+            }
+
+            if (wantBlizzard && CanTryToCastSpell(pVictim, pBlizzard) &&
+                DoCastSpell(pVictim, pBlizzard) == SPELL_CAST_OK)
                 return;
         }
 
@@ -5356,6 +5394,13 @@ void PartyBotAI::UpdateInCombatAI_Mage()
                 return;
         }
 
+        // Ranged wand, not the staff. A full nuke on a nearly dead mob wastes
+        // the mana; shoot the rest. Also the fallback when mana cannot cast.
+        if (((pVictim->GetHealthPercent() < 25.0f) ||
+             (me->GetPowerPercent(POWER_MANA) < 10.0f)) &&
+            TryShootWand(pVictim))
+            return;
+
         if (fireSpec && m_spells.mage.pFireball &&
             CanTryToCastSpell(pVictim, m_spells.mage.pFireball))
         {
@@ -5394,12 +5439,6 @@ void PartyBotAI::UpdateInCombatAI_Mage()
             if (DoCastSpell(me, m_spells.mage.pEvocation) == SPELL_CAST_OK)
                 return;
         }
-
-        if (me->HasSpell(PB_SPELL_SHOOT_WAND) &&
-           !me->IsMoving() &&
-           (me->GetPowerPercent(POWER_MANA) < 5.0f) &&
-           !me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
-            me->CastSpell(pVictim, PB_SPELL_SHOOT_WAND, false);
     }
 }
 
