@@ -56,6 +56,8 @@ public:
     bool AttackStart(Unit* pVictim);
     // Leader's engage style (calm = wait for the pack; aggressive = charge in).
     bool IsEngageAggressive() const;
+    // Duo/trio (`.bots fill 2|3`): leader's selected mob is an immediate go.
+    bool IsSmallParty() const;
     bool IsInCalmEngageRange(Unit const* pTarget) const;
     // Leader already swung / cast / got hit by this mob — party may open from any range.
     bool IsLeaderCommittedTo(Unit const* pTarget) const;
@@ -130,6 +132,8 @@ public:
     bool TryCrowdControlExtra();
     // Lowest-HP engaged add: finish one before opening the next.
     Unit* SelectFocusFireTarget() const;
+    // Focus (skull / lowest HP) is nearly dead — dump into it instead of cleaving.
+    bool ShouldFocusBeforeCleave() const;
     // Fade / Feign / Cower / Vanish when threat is about to rip.
     bool TryThreatDump();
     // True when our threat is so high that the next cast would pull — skip damage.
@@ -146,11 +150,15 @@ public:
     bool TryRegainLineOfSight(Unit* pVictim);
     // DoCastSpell StopMoving can leave melee IDLE out of reach — restart chase.
     void ResumeMeleeChaseIfNeeded(Unit* pVictim);
+    // Gate class-AI MoveChase the same way as AttackStart (idle-pack clearance).
+    void BeginChasing(Unit* pVictim) const override;
     // Tank: early in a far pull, drag the pack back to the party (LoS corner).
     bool TryDragPackToParty();
     // Walking me→dest would enter an idle hostile's aggro (chain-pull risk).
     bool WouldMoveAggroExtras(float destX, float destY, float destZ,
                               Unit const* pIgnore = nullptr) const;
+    // Healer/leader peel: chase even through packs; otherwise plant.
+    bool IsUrgentPeelTarget(Unit const* pTarget) const;
     // Hunter / Warlock: keep the pet on the kill target.
     bool EnsurePetAttacks(Unit* pVictim);
     // Mana pot right as an elite / hard pull opens (classic pre-pot window).

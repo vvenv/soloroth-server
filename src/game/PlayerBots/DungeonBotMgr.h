@@ -62,11 +62,12 @@ public:
     void SetEngageStyle(Player* pPlayer, PartyBotEngageStyle style);
     static char const* EngageStyleName(PartyBotEngageStyle style, bool zh);
 
-    // Adds bots for the missing roles until the party has `target` members
-    // (2, 3 or 5, counting the player), or sends extras home until it does.
-    // Picked at random from the fixed roster. Returns how many were added;
-    // `who` lists them, `why` says why none were when it returns 0, and
-    // `removed` counts bots sent home to shrink the party.
+    // Adds bots until the party has `target` members (2, 3 or 5, counting
+    // the player), or sends extras home until it does. Duo: one random role.
+    // Trio/five: tank and healer first, then DPS. Picked at random from the
+    // fixed roster. Returns how many were added; `who` lists them, `why`
+    // says why none were when it returns 0, and `removed` counts bots sent
+    // home to shrink the party.
     uint32 Fill(Player* pPlayer, std::string& who, std::string& why, uint32 target = 5, uint32* removed = nullptr);
     // Sends away the bots this player leads: only those filled in a dungeon, or all.
     // Always clears their m_autoBots entries so a later fill is not short a seat.

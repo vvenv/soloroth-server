@@ -2086,11 +2086,42 @@ bool CombatBotBaseAI::IsNearTankThreat(Unit* pEnemy, float ratio) const
 
 Unit* CombatBotBaseAI::SelectHealTarget(float selfHealPercent, float groupHealPercent) const
 {
-    if (me->GetHealthPercent() < selfHealPercent)
-        return me;
-
     if (IsInDuel())
+    {
+        if (me->GetHealthPercent() < selfHealPercent)
+            return me;
         return nullptr;
+    }
+
+    // Mid-band self damage: keep a critical tank up first. Only bail to self
+    // when the healer is about to die (<30%).
+    if (me->GetHealthPercent() < selfHealPercent)
+    {
+        if (me->GetHealthPercent() >= 30.0f)
+        {
+            if (Group* pGroup = me->GetGroup())
+            {
+                Player* pCriticalTank = nullptr;
+                float bestTankHp = 1000.0f;
+                for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+                {
+                    Player* pMember = itr->getSource();
+                    if (!pMember || pMember == me || !IsPartyTank(pMember))
+                        continue;
+                    if (!IsValidHealTarget(pMember, 60.0f) || pMember->GetHealthPercent() >= 60.0f)
+                        continue;
+                    if (pMember->GetHealthPercent() < bestTankHp)
+                    {
+                        bestTankHp = pMember->GetHealthPercent();
+                        pCriticalTank = pMember;
+                    }
+                }
+                if (pCriticalTank)
+                    return pCriticalTank;
+            }
+        }
+        return me;
+    }
 
     Unit* pTarget = nullptr;
     float bestScore = 1000.0f;
@@ -3188,6 +3219,7 @@ bool CombatBotBaseAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* p
     // Filler nukes that leave a rider — Frostbolt chill, Fireball's tick — are still
     // pressed every GCD the way a person plays. DoT openers with a direct hit
     // (Immolate, Moonfire, Flame Shock, Holy Fire) are gated in the class AI.
+    // Stackable debuffs at max stacks may still refresh when about to fall off.
     if (pSpellEntry->IsSpellAppliesAura() && !pSpellEntry->IsDirectDamageSpell() &&
         pTarget->HasAura(pSpellEntry->Id))
     {
@@ -3197,7 +3229,11 @@ bool CombatBotBaseAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* p
             if (SpellAuraHolder const* pHolder = pTarget->GetSpellAuraHolder(pSpellEntry->Id))
             {
                 if (pHolder->GetStackAmount() >= maxStacks)
-                    return false;
+                {
+                    int32 const dur = pHolder->GetAuraDuration();
+                    if (dur <= 0 || dur >= 8000)
+                        return false;
+                }
             }
         }
         else

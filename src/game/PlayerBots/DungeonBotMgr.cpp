@@ -703,15 +703,12 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
     bool needTank = std::find(roles.begin(), roles.end(), ROLE_TANK) == roles.end();
     bool needHealer = std::find(roles.begin(), roles.end(), ROLE_HEALER) == roles.end();
 
-    // Full but missing a tank/healer: free DPS seats so the fill below can
-    // replace them. A dismiss/re-enter race used to leave five DPS and then
-    // report "already full" forever.
-    if (roles.size() >= target && (needTank || needHealer))
+    // Trio/five full but missing a tank/healer: free DPS seats so the fill
+    // below can replace them. A dismiss/re-enter race used to leave five DPS
+    // and then report "already full" forever. Duo is random — no role repair.
+    if (target >= 3 && roles.size() >= target && (needTank || needHealer))
     {
-        uint32 missing = (needTank ? 1u : 0u) + (needHealer && target >= 3 ? 1u : 0u);
-        // Duo only needs the one support fill would add first (tank, else heal).
-        if (target < 3)
-            missing = needTank || needHealer ? 1u : 0u;
+        uint32 missing = (needTank ? 1u : 0u) + (needHealer ? 1u : 0u);
         while (missing && roles.size() == target)
         {
             int const best = pickDropIndex(true);
@@ -820,24 +817,38 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
 
     // Keep trying until the party reaches `target`, or no roster left to try.
     // A failed pick/AddBot must not burn a seat (that used to leave fill-5 at 3).
-    // Do not spend the last seats on DPS while a tank/healer is still missing:
-    // leave them open so Update can retry once companions finish logging out.
+    // Trio/five: do not spend the last seats on DPS while a tank/healer is
+    // still missing — leave them open so Update can retry once companions
+    // finish logging out. Duo: one random companion, any role.
     uint32 have = uint32(roles.size());
     uint32 added = 0;
     while (have < target)
     {
         RosterBot const* r = nullptr;
-        if (needTank)
-            r = pick({ ROLE_TANK });
-        if (!r && needHealer)
-            r = pick({ ROLE_HEALER });
-        // Tank/healer first: leave the seat open rather than plug it with DPS.
-        if (!r && (needTank || needHealer))
-            break;
-        if (!r)
+        if (target < 3)
         {
-            // At most two melee, so the tank is not crowded and cleaves hit fewer.
-            r = melee >= 2 ? pick({ ROLE_RANGE_DPS }) : pick({ ROLE_MELEE_DPS, ROLE_RANGE_DPS });
+            static CombatBotRoles const kDuoRoles[] = {
+                ROLE_TANK, ROLE_HEALER, ROLE_MELEE_DPS, ROLE_RANGE_DPS
+            };
+            CombatBotRoles const wantRole = kDuoRoles[urand(0, 3)];
+            r = pick({ wantRole });
+            if (!r)
+                r = pick({ ROLE_TANK, ROLE_HEALER, ROLE_MELEE_DPS, ROLE_RANGE_DPS });
+        }
+        else
+        {
+            if (needTank)
+                r = pick({ ROLE_TANK });
+            if (!r && needHealer)
+                r = pick({ ROLE_HEALER });
+            // Tank/healer first: leave the seat open rather than plug it with DPS.
+            if (!r && (needTank || needHealer))
+                break;
+            if (!r)
+            {
+                // At most two melee, so the tank is not crowded and cleaves hit fewer.
+                r = melee >= 2 ? pick({ ROLE_RANGE_DPS }) : pick({ ROLE_MELEE_DPS, ROLE_RANGE_DPS });
+            }
         }
         if (!r)
             break;
@@ -1209,9 +1220,10 @@ void DungeonBotMgr::Update(uint32 diff)
             ChatHandler(pPlayer).SendSysMessage(why.c_str());
     }
 
-    // Repair a short party, or a full one that still lacks tank/healer (e.g.
-    // dismiss raced a re-fill and DPS took every seat). Back off when fills
-    // fail so chat does not spam a new random name every half-second.
+    // Repair a short party, or a trio/five that still lacks tank/healer (e.g.
+    // dismiss raced a re-fill and DPS took every seat). Duo stays random — no
+    // role repair. Back off when fills fail so chat does not spam a new
+    // random name every half-second.
     for (ObjectGuid const& guid : players)
     {
         Player* pPlayer = sObjectAccessor.FindPlayer(guid);
@@ -1283,7 +1295,8 @@ void DungeonBotMgr::Update(uint32 diff)
             }
         }
         bool const shortParty = have < want->second;
-        bool const badComp = !hasTank || (want->second >= 3 && !hasHealer);
+        // Trio/five need tank+healer; duo is a random companion.
+        bool const badComp = want->second >= 3 && (!hasTank || !hasHealer);
         if (!shortParty && !badComp)
         {
             repairWatch.repairAt = 0;

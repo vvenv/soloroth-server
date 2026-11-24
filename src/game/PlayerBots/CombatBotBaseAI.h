@@ -169,7 +169,8 @@ public:
     bool TryRacialCombatAbility(Unit* pVictim);
     uint8 GetHighestHonorRankFromEquippedItems() const;
     void UpdateVisualHonorRankBasedOnItems();
-    void BeginChasing(Unit* pVictim) const;
+    // PartyBotAI overrides to refuse bee-lining through idle packs.
+    virtual void BeginChasing(Unit* pVictim) const;
     // Melee DPS and healers approach from behind; ranged hold a band instead.
     virtual bool ChaseFromBehind(Unit* /*pVictim*/) const
     {
