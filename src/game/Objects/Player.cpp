@@ -16466,9 +16466,12 @@ void Player::ConvertInstancesToGroup(Player* player, Group* group, ObjectGuid pl
 
     uint32 playerLowGuid = playerGuid.GetCounter();
 
-    // if the player's not online we don't know what binds it has
+    // if the player's not online we don't know what binds it has.
+    // INSERT IGNORE: with Instance.AutoReset off, character_instance keeps the
+    // personal rows, so a second ConvertInstancesToGroup (new party / new
+    // leader) would otherwise hit Duplicate entry on (leader_guid, instance).
     if (!player || !group || has_binds)
-        CharacterDatabase.PExecute("INSERT INTO `group_instance` SELECT `guid`, `instance`, `permanent` FROM `character_instance` WHERE `guid` = '%u'", playerLowGuid);
+        CharacterDatabase.PExecute("INSERT IGNORE INTO `group_instance` SELECT `guid`, `instance`, `permanent` FROM `character_instance` WHERE `guid` = '%u'", playerLowGuid);
 
     // the following should not get executed when changing leaders
     if ((!player || has_solo) && sWorld.getConfig(CONFIG_BOOL_INSTANCE_AUTO_RESET))

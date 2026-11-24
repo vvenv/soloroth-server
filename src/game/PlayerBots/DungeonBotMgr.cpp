@@ -512,7 +512,8 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
         why = zh ? "现在不能叫机器人（飞行中、战场里或传送中）。" : "Bots cannot join now (flying, in a battleground or teleporting).";
         return 0;
     }
-    Map* pMap = pPlayer->GetMap();
+    // FindMap: GetMap asserts when m_currMap is null (e.g. mid-teleport).
+    Map* pMap = pPlayer->FindMap();
     if (!pMap || pMap->IsRaid())
     {
         why = zh ? "团队副本里不会补机器人。" : "Bots do not join in raids.";
@@ -920,7 +921,7 @@ void DungeonBotMgr::ClearSafe(Watch& w)
 
 void DungeonBotMgr::SeedSafe(Watch& w, Player* pPlayer)
 {
-    if (!pPlayer || !pPlayer->GetMap())
+    if (!pPlayer || !pPlayer->FindMap())
         return;
     w.hasSafe = true;
     w.safeMap = pPlayer->GetMapId();
@@ -968,7 +969,7 @@ bool DungeonBotMgr::PartyWipedOnMap(Player* pPlayer) const
 {
     if (!pPlayer || pPlayer->IsAlive())
         return false;
-    Map* pMap = pPlayer->GetMap();
+    Map* pMap = pPlayer->FindMap();
     if (!pMap)
         return false;
 
@@ -979,7 +980,9 @@ bool DungeonBotMgr::PartyWipedOnMap(Player* pPlayer) const
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         Player* pMember = itr->getSource();
-        if (!pMember || pMember->GetMap() != pMap)
+        // Group still holds the Player* while a bot is between maps (ResetMap
+        // already ran). GetMap() would assert; treat no-map as not on this wipe.
+        if (!pMember || pMember->FindMap() != pMap)
             continue;
         if (pMember->IsAlive())
             return false;
@@ -1055,7 +1058,7 @@ void DungeonBotMgr::Update(uint32 diff)
         Player* pPlayer = sObjectAccessor.FindPlayer(guid);
         if (!pPlayer || !pPlayer->IsInWorld() || pPlayer->IsBeingTeleported())
             continue;
-        Map* pMap = pPlayer->GetMap();
+        Map* pMap = pPlayer->FindMap();
         if (!pMap)
             continue;
 
