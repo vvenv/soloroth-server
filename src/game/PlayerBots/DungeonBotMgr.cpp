@@ -610,93 +610,143 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
         names.push_back(bot.second.name);
     }
 
-    // Too many: send bots home until the party is the size asked for. Damage
-    // bots go first, then a healer, then a tank, so a duo or a trio keeps the
-    // roles a fill would have added first. The player is never removed.
+    auto dropBot = [&](uint32 botLow)
+    {
+        ObjectGuid const guid(HIGHGUID_PLAYER, botLow);
+        if (Group* pNow = pPlayer->GetGroup())
+            if (pNow->IsMember(guid))
+                pNow->RemoveMember(guid, 0);
+        // In the world: the bot manager logs them out. Still logging in:
+        // DeleteBot leaves the entry offline so the login does not finish.
+        if (PartyBotAI* pAI = GetPartyBotAI(sObjectAccessor.FindPlayer(guid)))
+        {
+            if (pAI->botEntry)
+                pAI->botEntry->requestRemoval = true;
+        }
+        else
+            sPlayerBotMgr.DeleteBot(botLow);
+        mine.erase(botLow);
+    };
+    // Prefer dropping damage bots, then a healer, then a tank.
+    auto pickDropIndex = [&](bool dpsOnly) -> int
+    {
+        int best = -1;
+        int bestScore = 99;
+        for (uint32 i = 0; i < guids.size(); ++i)
+        {
+            if (guids[i] == pPlayer->GetGUIDLow())
+                continue;
+            ObjectGuid const guid(HIGHGUID_PLAYER, guids[i]);
+            bool const bot = mine.find(guids[i]) != mine.end() || IsCompanion(guids[i]) ||
+                             GetPartyBotAI(sObjectAccessor.FindPlayer(guid)) != nullptr;
+            if (!bot)
+                continue;
+            int score = 0;
+            CombatBotRoles const role = i < roles.size() ? roles[i] : ROLE_INVALID;
+            if (role == ROLE_HEALER)
+                score = 1;
+            else if (role == ROLE_TANK)
+                score = 2;
+            if (dpsOnly && score != 0)
+                continue;
+            if (best < 0 || score < bestScore || (score == bestScore && int(i) > best))
+            {
+                best = int(i);
+                bestScore = score;
+            }
+        }
+        return best;
+    };
+    auto eraseSeat = [&](uint32 index)
+    {
+        guids.erase(guids.begin() + index);
+        if (index < roles.size())
+            roles.erase(roles.begin() + index);
+        if (index < classes.size())
+            classes.erase(classes.begin() + index);
+        if (index < races.size())
+            races.erase(races.begin() + index);
+        if (index < names.size())
+            names.erase(names.begin() + index);
+    };
+
+    uint32 removed = 0;
+
+    // Too many: send bots home until the party is the size asked for. The
+    // player is never removed.
     if (roles.size() > target)
     {
-        auto dropBot = [&](uint32 botLow)
+        while (roles.size() > target)
         {
-            ObjectGuid const guid(HIGHGUID_PLAYER, botLow);
-            if (Group* pNow = pPlayer->GetGroup())
-                if (pNow->IsMember(guid))
-                    pNow->RemoveMember(guid, 0);
-            // In the world: the bot manager logs them out. Still logging in:
-            // DeleteBot leaves the entry offline so the login does not finish.
-            if (PartyBotAI* pAI = GetPartyBotAI(sObjectAccessor.FindPlayer(guid)))
-            {
-                if (pAI->botEntry)
-                    pAI->botEntry->requestRemoval = true;
-            }
-            else
-                sPlayerBotMgr.DeleteBot(botLow);
-            mine.erase(botLow);
-        };
-
-        std::vector<uint32> gone;
-        uint32 removed = 0;
-        while (roles.size() - gone.size() > target)
-        {
-            int best = -1;
-            int bestScore = 99;
-            for (uint32 i = 0; i < guids.size(); ++i)
-            {
-                if (guids[i] == pPlayer->GetGUIDLow())
-                    continue;
-                if (std::find(gone.begin(), gone.end(), guids[i]) != gone.end())
-                    continue;
-                ObjectGuid const guid(HIGHGUID_PLAYER, guids[i]);
-                bool const bot = mine.find(guids[i]) != mine.end() || IsCompanion(guids[i]) ||
-                                 GetPartyBotAI(sObjectAccessor.FindPlayer(guid)) != nullptr;
-                if (!bot)
-                    continue;
-                int score = 0;
-                if (i < roles.size() && roles[i] == ROLE_HEALER)
-                    score = 1;
-                else if (i < roles.size() && roles[i] == ROLE_TANK)
-                    score = 2;
-                if (best < 0 || score < bestScore || (score == bestScore && int(i) > best))
-                {
-                    best = int(i);
-                    bestScore = score;
-                }
-            }
+            int const best = pickDropIndex(false);
             if (best < 0)
                 break;
             dropBot(guids[best]);
-            gone.push_back(guids[best]);
+            eraseSeat(uint32(best));
             ++removed;
         }
         if (removedOut)
             *removedOut = removed;
-        if (roles.size() - gone.size() > target)
+        if (roles.size() > target)
         {
             why = zh ? "队伍里还有别人，不能缩到这个人数。" : "The party has other players, so it cannot shrink to that size.";
             return 0;
         }
-        return 0;
-    }
-
-    if (roles.size() >= target)
-    {
-        if (target == 2)
-            why = zh ? "已经是两人。" : "Already a duo.";
-        else if (target == 3)
-            why = zh ? "已经是三人。" : "Already a trio.";
-        else
-            why = zh ? "队伍已经满了。" : "The party is already full.";
-        return 0;
+        // Shrinking done; composition may still lack a tank/healer below.
     }
 
     bool needTank = std::find(roles.begin(), roles.end(), ROLE_TANK) == roles.end();
     bool needHealer = std::find(roles.begin(), roles.end(), ROLE_HEALER) == roles.end();
+
+    // Full but missing a tank/healer: free DPS seats so the fill below can
+    // replace them. A dismiss/re-enter race used to leave five DPS and then
+    // report "already full" forever.
+    if (roles.size() >= target && (needTank || needHealer))
+    {
+        uint32 missing = (needTank ? 1u : 0u) + (needHealer && target >= 3 ? 1u : 0u);
+        // Duo only needs the one support fill would add first (tank, else heal).
+        if (target < 3)
+            missing = needTank || needHealer ? 1u : 0u;
+        while (missing && roles.size() == target)
+        {
+            int const best = pickDropIndex(true);
+            if (best < 0)
+                break;
+            dropBot(guids[best]);
+            eraseSeat(uint32(best));
+            ++removed;
+            --missing;
+        }
+        needTank = std::find(roles.begin(), roles.end(), ROLE_TANK) == roles.end();
+        needHealer = std::find(roles.begin(), roles.end(), ROLE_HEALER) == roles.end();
+    }
+    if (removedOut)
+        *removedOut = removed;
+
+    if (roles.size() >= target)
+    {
+        // Shrink-only success: leave `why` empty so `.bots fill` reports the removals.
+        if (!removed)
+        {
+            if (target == 2)
+                why = zh ? "已经是两人。" : "Already a duo.";
+            else if (target == 3)
+                why = zh ? "已经是三人。" : "Already a trio.";
+            else
+                why = zh ? "队伍已经满了。" : "The party is already full.";
+        }
+        return 0;
+    }
+
     uint32 melee = uint32(std::count(roles.begin(), roles.end(), ROLE_MELEE_DPS));
 
     Team const team = pPlayer->GetTeam();
     auto slotOf = [](RosterBot const& r) { return uint32(&r - ROSTER); };
     // Roster slots that failed to spawn this fill (stuck online session, etc.).
     std::set<uint32> blocked;
-    // Only this character's own companion can be out already.
+    // Only this character's own companion can be out already. Orphans left
+    // online outside the party (failed dismiss / missed instance) are kicked
+    // so the seat can be used again instead of skipping every tank forever.
     auto present = [&](RosterBot const& r)
     {
         uint32 const slot = slotOf(r);
@@ -705,8 +755,16 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
         uint32 const botLow = GetCompanion(ownerLow, slot);
         if (!botLow)
             return false;
-        return std::find(guids.begin(), guids.end(), botLow) != guids.end() ||
-               ObjectAccessor::FindPlayerNotInWorld(ObjectGuid(HIGHGUID_PLAYER, botLow)) != nullptr;
+        if (std::find(guids.begin(), guids.end(), botLow) != guids.end())
+            return true;
+        ObjectGuid const guid(HIGHGUID_PLAYER, botLow);
+        if (!ObjectAccessor::FindPlayerNotInWorld(guid))
+            return false;
+        PlayerBotEntry* entry = sPlayerBotMgr.GetBotEntry(botLow);
+        if (entry && entry->state == PB_STATE_LOADING && mine.find(botLow) != mine.end())
+            return true;
+        sPlayerBotMgr.KickBot(botLow);
+        return false;
     };
     // A free roster member for one of `wanted` roles. Prefer a class the
     // party lacks, then a race it lacks, else any. Each class gets the same
@@ -752,6 +810,8 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
 
     // Keep trying until the party reaches `target`, or no roster left to try.
     // A failed pick/AddBot must not burn a seat (that used to leave fill-5 at 3).
+    // Do not spend the last seats on DPS while a tank/healer is still missing:
+    // leave them open so Update can retry once companions finish logging out.
     uint32 have = uint32(roles.size());
     uint32 added = 0;
     while (have < target)
@@ -761,6 +821,9 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
             r = pick({ ROLE_TANK });
         if (!r && needHealer)
             r = pick({ ROLE_HEALER });
+        // Tank/healer first: leave the seat open rather than plug it with DPS.
+        if (!r && (needTank || needHealer))
+            break;
         if (!r)
         {
             // At most two melee, so the tank is not crowded and cleaves hit fewer.
@@ -1138,8 +1201,8 @@ void DungeonBotMgr::Update(uint32 diff)
             ChatHandler(pPlayer).SendSysMessage(why.c_str());
     }
 
-    // Repair a short party: a companion that self-removed used to keep the
-    // seat for 30s and leave the player stuck at 3 with "already full".
+    // Repair a short party, or a full one that still lacks tank/healer (e.g.
+    // dismiss raced a re-fill and DPS took every seat).
     for (ObjectGuid const& guid : players)
     {
         Player* pPlayer = sObjectAccessor.FindPlayer(guid);
@@ -1154,6 +1217,39 @@ void DungeonBotMgr::Update(uint32 diff)
         ForgetGoneBots(low);
         Group* group = pPlayer->GetGroup();
         uint32 have = group ? group->GetMembersCount() : 1;
+        bool hasTank = GetPlayerRole(pPlayer) == ROLE_TANK;
+        bool hasHealer = GetPlayerRole(pPlayer) == ROLE_HEALER;
+        if (group)
+        {
+            for (auto const& slot : group->GetMemberSlots())
+            {
+                if (slot.guid == pPlayer->GetObjectGuid())
+                    continue;
+                Player* pMember = sObjectAccessor.FindPlayer(slot.guid);
+                CombatBotRoles role = ROLE_INVALID;
+                if (pMember)
+                {
+                    if (PartyBotAI* pAI = GetPartyBotAI(pMember))
+                        role = pAI->GetRole();
+                    else
+                        role = GetPlayerRole(pMember);
+                }
+                else
+                {
+                    auto mineRoles = m_autoBots.find(low);
+                    if (mineRoles != m_autoBots.end())
+                    {
+                        auto bot = mineRoles->second.find(slot.guid.GetCounter());
+                        if (bot != mineRoles->second.end())
+                            role = bot->second.role;
+                    }
+                }
+                if (role == ROLE_TANK)
+                    hasTank = true;
+                else if (role == ROLE_HEALER)
+                    hasHealer = true;
+            }
+        }
         auto mine = m_autoBots.find(low);
         if (mine != m_autoBots.end())
         {
@@ -1163,10 +1259,18 @@ void DungeonBotMgr::Update(uint32 diff)
                     continue;
                 PlayerBotEntry* entry = sPlayerBotMgr.GetBotEntry(bot.first);
                 if (entry && entry->state == PB_STATE_LOADING)
+                {
                     ++have;
+                    if (bot.second.role == ROLE_TANK)
+                        hasTank = true;
+                    else if (bot.second.role == ROLE_HEALER)
+                        hasHealer = true;
+                }
             }
         }
-        if (have >= want->second)
+        bool const shortParty = have < want->second;
+        bool const badComp = !hasTank || (want->second >= 3 && !hasHealer);
+        if (!shortParty && !badComp)
             continue;
         std::string who, why;
         if (Fill(pPlayer, who, why, want->second) && !who.empty())

@@ -148,6 +148,9 @@ public:
     void ResumeMeleeChaseIfNeeded(Unit* pVictim);
     // Tank: early in a far pull, drag the pack back to the party (LoS corner).
     bool TryDragPackToParty();
+    // Walking me→dest would enter an idle hostile's aggro (chain-pull risk).
+    bool WouldMoveAggroExtras(float destX, float destY, float destZ,
+                              Unit const* pIgnore = nullptr) const;
     // Hunter / Warlock: keep the pet on the kill target.
     bool EnsurePetAttacks(Unit* pVictim);
     // Mana pot right as an elite / hard pull opens (classic pre-pot window).

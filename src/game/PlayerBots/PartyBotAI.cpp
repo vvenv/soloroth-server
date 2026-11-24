@@ -62,6 +62,28 @@ enum PartyBotSpells
 #define PB_PULL_MAX_DIST 40.0f
 // Improved Scorch "Fire Vulnerability" (stacks to 5).
 #define PB_SPELL_FIRE_VULNERABILITY 22959
+// Idle-pack clearance when dragging / chasing (matches wipe safe-spot margin).
+#define PB_AGGRO_PATH_MARGIN 3.0f
+
+namespace
+{
+float PbDist2d(float x1, float y1, float x2, float y2)
+{
+    float const dx = x1 - x2;
+    float const dy = y1 - y2;
+    return std::sqrt(dx * dx + dy * dy);
+}
+
+float PbDistToSegment2d(float px, float py, float ax, float ay, float bx, float by)
+{
+    float const dx = bx - ax;
+    float const dy = by - ay;
+    float const len2 = dx * dx + dy * dy;
+    float t = len2 > 0.0f ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0.0f;
+    t = std::max(0.0f, std::min(1.0f, t));
+    return PbDist2d(px, py, ax + t * dx, ay + t * dy);
+}
+} // namespace
 
 bool PartyBotAI::OnSessionLoaded(PlayerBotEntry* entry, WorldSession* sess)
 {
@@ -456,6 +478,12 @@ void PartyBotAI::ResumeMeleeChaseIfNeeded(Unit* pVictim)
         return;
     if (me->CanReachWithMeleeAutoAttack(pVictim))
         return;
+    // Melee DPS: do not bee-line through idle packs (SM courtyard etc.).
+    // Tanks still chase peels — their drag path is gated in TryDragPackToParty.
+    if (m_role == ROLE_MELEE_DPS && me->GetDistance(pVictim) > 12.0f &&
+        WouldMoveAggroExtras(pVictim->GetPositionX(), pVictim->GetPositionY(),
+                             pVictim->GetPositionZ(), pVictim))
+        return;
 
     MovementGeneratorType const mt = me->GetMotionMaster()->GetCurrentMovementGeneratorType();
     // DoCastSpell → StopMoving kills the spline but leaves CHASE on the stack.
@@ -493,6 +521,56 @@ bool PartyBotAI::EnsurePetAttacks(Unit* pVictim)
     return true;
 }
 
+bool PartyBotAI::WouldMoveAggroExtras(float destX, float destY, float destZ,
+                                      Unit const* pIgnore) const
+{
+    float const ax = me->GetPositionX();
+    float const ay = me->GetPositionY();
+    float const az = me->GetPositionZ();
+    float const pathLen = me->GetDistance(destX, destY, destZ);
+    if (pathLen < 1.0f)
+        return false;
+
+    float const search = std::min(50.0f, pathLen + 20.0f);
+    std::list<Unit*> hostiles;
+    me->GetEnemyListInRadiusAround(me, search, hostiles);
+
+    for (Unit* pUnit : hostiles)
+    {
+        Creature* c = pUnit ? pUnit->ToCreature() : nullptr;
+        if (!c || !c->IsAlive() || c->IsPet() || c->IsCivilian())
+            continue;
+        if (pIgnore && c == pIgnore)
+            continue;
+        // Already our fight — walking past them is fine.
+        if (c->IsInCombat())
+            continue;
+        if (c->HasFlag(UNIT_FIELD_FLAGS,
+                UNIT_FLAG_NOT_ATTACKABLE_1 | UNIT_FLAG_NON_ATTACKABLE_2 |
+                UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_IMMUNE_TO_PLAYER))
+            continue;
+
+        float reach = c->GetAttackDistance(me);
+        if (reach <= 0.0f)
+            continue;
+        reach += PB_AGGRO_PATH_MARGIN;
+        // Wanderers can leave home into the corridor.
+        float tx = c->GetPositionX();
+        float ty = c->GetPositionY();
+        float tz = c->GetPositionZ();
+        if (c->GetDefaultMovementType() == RANDOM_MOTION_TYPE && c->GetWanderDistance() > 0.0f)
+        {
+            c->GetRespawnCoord(tx, ty, tz);
+            reach += c->GetWanderDistance();
+        }
+        if (std::fabs(tz - (az + destZ) * 0.5f) > reach + 2.0f)
+            continue;
+        if (PbDistToSegment2d(tx, ty, ax, ay, destX, destY) <= reach)
+            return true;
+    }
+    return false;
+}
+
 bool PartyBotAI::TryDragPackToParty()
 {
     if (m_role != ROLE_TANK || IsInDuel())
@@ -516,6 +594,10 @@ bool PartyBotAI::TryDragPackToParty()
         return false;
     // Keep melee contact while walking back.
     if (!me->CanReachWithMeleeAutoAttack(pVictim) && me->GetDistance(pVictim) > 12.0f)
+        return false;
+    // Plant instead of chaining the next courtyard pack (SM gate etc.).
+    if (WouldMoveAggroExtras(pLeader->GetPositionX(), pLeader->GetPositionY(),
+                             pLeader->GetPositionZ(), pVictim))
         return false;
 
     MovementGeneratorType const mt = me->GetMotionMaster()->GetCurrentMovementGeneratorType();
@@ -1356,11 +1438,25 @@ bool PartyBotAI::PullFightAwayFromCrowdControl()
     }
 
     // Drag the pack away from the sheep. Try a few bearings so a wall or pit
-    // does not strand the tank (Ragefire lava etc.).
+    // does not strand the tank (Ragefire lava etc.), and skip bearings that
+    // would chain an idle pack.
+    float const want = safeDist + 4.0f;
+    float const ox = pCC->GetPositionX();
+    float const oy = pCC->GetPositionY();
+    float const baseAng = std::atan2(me->GetPositionY() - oy, me->GetPositionX() - ox);
     float const offsets[] = { 0.0f, 0.9f, -0.9f, 1.8f, -1.8f, 2.7f, -2.7f };
     for (float offset : offsets)
-        if (me->GetMotionMaster()->MoveDistance(pCC, safeDist + 4.0f, offset))
+    {
+        float const ang = baseAng + offset;
+        float dx = ox + std::cos(ang) * want;
+        float dy = oy + std::sin(ang) * want;
+        float dz = me->GetPositionZ();
+        me->UpdateAllowedPositionZ(dx, dy, dz);
+        if (WouldMoveAggroExtras(dx, dy, dz, pVictim))
+            continue;
+        if (me->GetMotionMaster()->MoveDistance(pCC, want, offset))
             return true;
+    }
     return false;
 }
 
@@ -1376,6 +1472,18 @@ bool PartyBotAI::AttackStart(Unit* pVictim)
 
     if (me->Attack(pVictim, true))
     {
+        // Melee DPS: lock the target but do not run through idle packs to reach it.
+        if (m_role == ROLE_MELEE_DPS &&
+            !me->CanReachWithMeleeAutoAttack(pVictim) &&
+            me->GetDistance(pVictim) > 12.0f &&
+            WouldMoveAggroExtras(pVictim->GetPositionX(), pVictim->GetPositionY(),
+                                 pVictim->GetPositionZ(), pVictim))
+        {
+            me->StopMoving(true);
+            me->GetMotionMaster()->Clear(false, true);
+            me->GetMotionMaster()->MoveIdle();
+            return true;
+        }
         BeginChasing(pVictim);
         return true;
     }
