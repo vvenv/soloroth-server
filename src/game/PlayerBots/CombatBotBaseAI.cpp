@@ -3518,7 +3518,8 @@ bool CombatBotBaseAI::TryUtilityConsumable()
         return UseItemEffect(pItem, false);
     };
 
-    for (int slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+    // Include the extra backpack half (97-112); loot often pushes gems there.
+    FOR_BACKPACK_SLOTS(slot)
         if (tryItem(me->GetItemByPos(INVENTORY_SLOT_BAG_0, slot)))
             return true;
     for (int bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
@@ -3563,7 +3564,10 @@ bool CombatBotBaseAI::HasConjuredConsumable(uint32 effect) const
         return false;
     };
 
-    for (int slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+    // Must scan the same 32 backpack slots as UseCombatConsumable / GetItemCount.
+    // Missing the extra half (97-112) makes out-of-combat conjure loop forever:
+    // the gem is there, CanStoreNewItem refuses a second, cast still starts.
+    FOR_BACKPACK_SLOTS(slot)
         if (matchItem(me->GetItemByPos(INVENTORY_SLOT_BAG_0, slot)))
             return true;
     for (int bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
