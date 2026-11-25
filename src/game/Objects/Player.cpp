@@ -11663,6 +11663,19 @@ void Player::RemoveItemFromBuyBackSlot(uint32 slot, bool del)
 
 void Player::SendEquipError(InventoryResult msg, Item const* pItem, Item const* pItem2, uint8 bagSlot /*=0*/, uint32 itemid /*= 0*/) const
 {
+    // Pin Unique/MaxCount spam: every path that shows ERR_ITEM_MAX_COUNT lands here.
+    if (msg == EQUIP_ERR_CANT_CARRY_MORE_OF_THIS)
+    {
+        uint32 const id = itemid ? itemid : (pItem ? pItem->GetEntry() : 0);
+        ItemPrototype const* proto = id ? sObjectMgr.GetItemPrototype(id) : nullptr;
+        sLog.Player(GetSession(), LOG_LOOTS, LOG_LVL_MINIMAL,
+            "%s equiperror maxcount item=%u%s%s",
+            GetShortDescription().c_str(),
+            id,
+            (proto && proto->Name1) ? " " : "",
+            (proto && proto->Name1) ? proto->Name1 : "");
+    }
+
     auto packet = std::make_unique<WorldPackets::Item::InventoryChangeFailure>();
     packet->reason = msg;
 
@@ -21182,6 +21195,21 @@ bool Player::SoloTakeLoot(Loot& loot)
         InventoryResult msg = CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, item->itemid, item->count);
         if (msg != EQUIP_ERR_OK)
         {
+            // Unique / MaxCount already held: leave on the corpse, no chat spam.
+            // Not "bags full" — grind must keep going (mage kite leaves these often).
+            if (msg == EQUIP_ERR_CANT_CARRY_MORE_OF_THIS)
+            {
+                ItemPrototype const* proto = sObjectMgr.GetItemPrototype(item->itemid);
+                WorldObject const* from = loot.GetLootTarget();
+                sLog.Player(GetSession(), LOG_LOOTS, LOG_LVL_BASIC,
+                    "%s skips maxcount %ux%u%s%s [loot from %s]",
+                    GetShortDescription().c_str(),
+                    item->count, item->itemid,
+                    (proto && proto->Name1) ? " " : "",
+                    (proto && proto->Name1) ? proto->Name1 : "",
+                    from ? from->GetGuidStr().c_str() : "NULL");
+                continue;
+            }
             SendEquipError(msg, nullptr, nullptr, 0, item->itemid);
             all = false;
             continue;

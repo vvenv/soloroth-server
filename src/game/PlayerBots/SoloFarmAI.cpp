@@ -1649,7 +1649,8 @@ bool SoloFarmAI::Conjure()
             continue;
 
         uint32 const itemId = pSpell->EffectItemType[EFFECT_INDEX_0];
-        if (!itemId || me->GetItemCount(itemId) >= line.keep)
+        // Bank counts: MaxCount and CanStore both include bank; bags-only would retry forever.
+        if (!itemId || me->GetItemCount(itemId, true) >= line.keep)
             continue;
 
         bool reagents = true;

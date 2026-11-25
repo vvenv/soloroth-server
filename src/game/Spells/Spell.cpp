@@ -7313,7 +7313,21 @@ SpellCastResult Spell::CheckItems()
                         InventoryResult msg = static_cast<Player*>(target)->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, m_spellInfo->EffectItemType[i], count, &no_space);
                         if (msg != EQUIP_ERR_OK)
                         {
-                            static_cast<Player*>(target)->SendEquipError(msg, nullptr, nullptr, 0, m_spellInfo->EffectItemType[i]);
+                            // Unique already held (mana gem): refuse without UI spam. Farm Conjure
+                            // retries every tick out of combat; SendEquipError would yell each time.
+                            if (msg == EQUIP_ERR_CANT_CARRY_MORE_OF_THIS)
+                            {
+                                uint32 const id = m_spellInfo->EffectItemType[i];
+                                ItemPrototype const* proto = sObjectMgr.GetItemPrototype(id);
+                                sLog.Player(static_cast<Player*>(target)->GetSession(), LOG_LOOTS, LOG_LVL_MINIMAL,
+                                    "%s spell %u create skip maxcount item=%u%s%s",
+                                    static_cast<Player*>(target)->GetShortDescription().c_str(),
+                                    m_spellInfo->Id, id,
+                                    (proto && proto->Name1) ? " " : "",
+                                    (proto && proto->Name1) ? proto->Name1 : "");
+                            }
+                            else
+                                static_cast<Player*>(target)->SendEquipError(msg, nullptr, nullptr, 0, m_spellInfo->EffectItemType[i]);
                             return SPELL_FAILED_DONT_REPORT;
                         }
                     }
