@@ -2171,13 +2171,7 @@ void Group::ResetInstances(InstanceResetMethod method, Player* SendMsgTo)
 
         if (method == INSTANCE_RESET_ALL)
         {
-            // the "reset all instances" method can only reset normal maps
-            if (entry->mapType == MAP_RAID)
-            {
-                ++itr;
-                continue;
-            }
-
+            // Soloroth: reset all includes trio-scaled raids.
             if (SendMsgTo)
             {
                 bool offline_players = false;
@@ -2249,7 +2243,8 @@ bool Group::ResetInstance(uint32 mapId, Player* sendTo)
 
     DungeonPersistentState* state = itr->second.state;
     MapEntry const* entry = sMapStorage.LookupEntry<MapEntry>(mapId);
-    if (!entry || !state || !state->CanReset() || entry->mapType == MAP_RAID)
+    // Soloroth: raids reset like other instances.
+    if (!entry || !state || !state->CanReset() || !entry->IsDungeon())
         return false;
 
     bool isEmpty = true;

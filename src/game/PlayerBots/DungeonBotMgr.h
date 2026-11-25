@@ -1,6 +1,7 @@
 /*
- * Fills a player's party with party bots when they enter a five-player
- * dungeon, and sends the bots home when they leave it alive.
+ * Fills a player's party with party bots when they enter a dungeon or raid,
+ * and sends the bots home when they leave it alive. Instances are trio-scaled
+ * (see Solo.Instance.* rates); the party is a duo or a trio, never five.
  *
  * Tracks the last "safe" spot the player walked through (outside hostile
  * aggro radii). After a full party wipe and a short wait for mobs to evade,
@@ -12,11 +13,10 @@
  * hook and nothing touches a map from a map thread.
  *
  * Each character keeps settings in `character_party_bots`: the role the
- * player plays (auto = guessed from class and talents), whether dungeons
+ * player plays (auto = guessed from class and talents), whether instances
  * fill on their own, and engage style (calm = wait until mobs are close,
  * aggressive = charge in). `.bots` (open to every account) changes them,
- * fills a duo, a trio or a party of five, or dismisses by hand. The Bots
- * addon drives it. Raids are 20 or 40 and are not filled.
+ * fills a duo or a trio, or dismisses by hand. The Bots addon drives it.
  *
  * Each roster member a character calls becomes that character's companion
  * (`character_companions`): a saved character on its own made-up account,
@@ -62,13 +62,13 @@ public:
     void SetEngageStyle(Player* pPlayer, PartyBotEngageStyle style);
     static char const* EngageStyleName(PartyBotEngageStyle style, bool zh);
 
-    // Adds bots until the party has `target` members (2, 3 or 5, counting
-    // the player), or sends extras home until it does. Duo: one random role.
-    // Trio/five: tank and healer first, then DPS. Picked at random from the
-    // fixed roster. Returns how many were added; `who` lists them, `why`
-    // says why none were when it returns 0, and `removed` counts bots sent
-    // home to shrink the party.
-    uint32 Fill(Player* pPlayer, std::string& who, std::string& why, uint32 target = 5, uint32* removed = nullptr);
+    // Adds bots until the party has `target` members (2 or 3, counting the
+    // player), or sends extras home until it does. Duo: one random role.
+    // Trio: tank and healer first, then DPS. Picked at random from the fixed
+    // roster. Returns how many were added; `who` lists them, `why` says why
+    // none were when it returns 0, and `removed` counts bots sent home to
+    // shrink the party. Default target is a trio (instance auto-fill).
+    uint32 Fill(Player* pPlayer, std::string& who, std::string& why, uint32 target = 3, uint32* removed = nullptr);
     // Sends away the bots this player leads: only those filled in a dungeon, or all.
     // Always clears their m_autoBots entries so a later fill is not short a seat.
     uint32 Dismiss(Player* pPlayer, bool autoOnly);
@@ -122,7 +122,7 @@ private:
     Settings& GetSettings(Player* pPlayer);
     void SaveSettings(Player* pPlayer);
     void ForgetGoneBots(uint32 leaderLow);
-    // Party size the leader last asked for (2/3/5). Update re-fills until it holds.
+    // Party size the leader last asked for (2/3). Update re-fills until it holds.
     void SetWantSize(uint32 leaderLow, uint32 size);
     void ClearWantSize(uint32 leaderLow);
     void LoadCompanions();

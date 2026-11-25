@@ -796,7 +796,8 @@ bool ChatHandler::HandleInstanceResetCommand(char* args)
 
     uint32 mapId = atoi(args);
     MapEntry const* entry = sMapStorage.LookupEntry<MapEntry>(mapId);
-    if (!entry || !entry->IsDungeon() || entry->mapType == MAP_RAID)
+    // Soloroth: raids are trio-scaled and reset like five-mans (manual only).
+    if (!entry || !entry->IsDungeon())
     {
         SendSysMessage("That map is not a resettable dungeon.");
         SetSentErrorMessage(true);

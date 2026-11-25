@@ -2632,10 +2632,10 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         }
         else
         {
-            // Full wipe in a five-player dungeon: DungeonBotMgr teleports the
-            // party to the last safe spot. Standing up here would re-pull.
+            // Full wipe in an instance: DungeonBotMgr teleports the party to
+            // the last safe spot. Standing up here would re-pull.
             bool partyWipe = false;
-            if (me->GetMap() && me->GetMap()->IsNonRaidDungeon())
+            if (me->GetMap() && me->GetMap()->IsDungeon())
             {
                 partyWipe = true;
                 if (Group* pGroup = me->GetGroup())
@@ -5236,7 +5236,10 @@ void PartyBotAI::UpdateInCombatAI_Mage()
                 m_spells.mage.pBlink &&
                 CanTryToCastSpell(me, m_spells.mage.pBlink) &&
                 DoCastSpell(me, m_spells.mage.pBlink) == SPELL_CAST_OK)
+            {
+                EnsureFacing(pVictim);
                 return;
+            }
             EnsureFacing(pVictim);
         }
         else if (GetAttackersInRangeCount(10.0f))
@@ -5266,7 +5269,10 @@ void PartyBotAI::UpdateInCombatAI_Mage()
                     }
 
                     if (DoCastSpell(me, m_spells.mage.pBlink) == SPELL_CAST_OK)
+                    {
+                        EnsureFacing(pVictim);
                         return;
+                    }
                 }
 
                 if (!me->HasUnitState(UNIT_STATE_CAN_NOT_MOVE))

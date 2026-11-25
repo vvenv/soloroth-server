@@ -1356,7 +1356,11 @@ float SpellCaster::MeleeDamageBonusDone(Unit const* pVictim, float pdamage, Weap
     float DonePercent   = 1.0f;
 
     if (!isWeaponDamageBasedSpell && GetTypeId() == TYPEID_UNIT && !(IsPet() && ((Creature*)this)->GetOwnerGuid().IsPlayer()))
-        DonePercent *= Creature::_GetSpellDamageMod(((Creature*)this)->GetCreatureInfo()->rank);
+    {
+        Creature* creature = (Creature*)this;
+        DonePercent *= Creature::_GetSpellDamageMod(creature->GetCreatureInfo()->rank);
+        DonePercent *= creature->GetSoloInstanceDamageMod();
+    }
 
     // ..done pct, already included in weapon damage based spells
     if (pUnit && !isWeaponDamageBasedSpell)
@@ -1587,7 +1591,11 @@ float SpellCaster::SpellDamageBonusDone(Unit const* pVictim, SpellEntry const* s
 
     // Creature damage
     if (GetTypeId() == TYPEID_UNIT && !(IsPet() && ((Creature*)this)->GetOwnerGuid().IsPlayer()))
-        DoneTotalMod *= Creature::_GetSpellDamageMod(((Creature*)this)->GetCreatureInfo()->rank);
+    {
+        Creature* creature = (Creature*)this;
+        DoneTotalMod *= Creature::_GetSpellDamageMod(creature->GetCreatureInfo()->rank);
+        DoneTotalMod *= creature->GetSoloInstanceDamageMod();
+    }
 
     if (pUnit)
     {

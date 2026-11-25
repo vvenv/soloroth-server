@@ -16327,11 +16327,11 @@ void Player::KeepInstanceProgress()
         }
     }
 
-    // Pin the dungeon we are standing in even when the group bind list was
-    // empty (solo, or ConvertInstancesToGroup already cleared the personal copy).
+    // Pin the dungeon or raid we are standing in even when the group bind
+    // list was empty (solo, or ConvertInstancesToGroup already cleared it).
     if (Map* map = FindMap())
     {
-        if (map->IsNonRaidDungeon())
+        if (map->IsDungeon())
         {
             if (DungeonPersistentState* state = ((DungeonMap*)map)->GetPersistanceState())
             {
@@ -17512,16 +17512,7 @@ void Player::ResetInstances(InstanceResetMethod method)
             continue;
         }
 
-        if (method == INSTANCE_RESET_ALL)
-        {
-            // the "reset all instances" method can only reset normal maps
-            if (entry->mapType == MAP_RAID)
-            {
-                ++itr;
-                continue;
-            }
-        }
-
+        // Soloroth: INSTANCE_RESET_ALL also clears trio-scaled raids.
         ResetInstance(method, itr);
     }
 }
@@ -17535,7 +17526,8 @@ bool Player::ResetOneInstance(uint32 mapId)
 
     DungeonPersistentState* state = itr->second.state;
     MapEntry const* entry = sMapStorage.LookupEntry<MapEntry>(mapId);
-    if (!entry || !state || !state->CanReset() || entry->mapType == MAP_RAID)
+    // Soloroth: raids reset like other instances (manual, no weekly timer).
+    if (!entry || !state || !state->CanReset() || !entry->IsDungeon())
         return false;
     if (IsInWorld() && mapId == GetMapId())
         return false;

@@ -173,6 +173,8 @@ private:
     bool EnsurePole();
     void RestoreWeapons();
     bool FindFishingSpot();
+    // Schools / floating debris / wreckage only. Open water is FindFishingSpot's fallback.
+    bool FindFishingHoleSpot();
     bool IsFishable(float px, float py, float pz, float fx, float fy) const;
     uint32 ScoreCast(float px, float py, float pz, float o) const;
     void Reel(GameObject* pBobber);

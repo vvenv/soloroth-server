@@ -517,6 +517,13 @@ void World::LoadConfigSettings(bool reload)
     setConfigMin(CONFIG_FLOAT_RATE_XP_PERSONAL_MIN,      "Rate.XP.Personal.Min", 1.0f, 0.0f);
     setConfigMin(CONFIG_FLOAT_RATE_XP_PERSONAL_MAX,      "Rate.XP.Personal.Max", 1.0f, 0.0f);
     setConfigMin(CONFIG_FLOAT_RATE_XP_NOQUEST_KILL,        "Rate.XP.NoQuest.Kill", 2.0f, 0.0f);
+    // Trio-scaled instances: stock 5/20/40 content tuned for a three-player party.
+    setConfigPos(CONFIG_FLOAT_SOLO_INSTANCE_DUNGEON_HP,     "Solo.Instance.Dungeon.HP", 0.60f);
+    setConfigPos(CONFIG_FLOAT_SOLO_INSTANCE_DUNGEON_DAMAGE, "Solo.Instance.Dungeon.Damage", 0.70f);
+    setConfigPos(CONFIG_FLOAT_SOLO_INSTANCE_RAID20_HP,      "Solo.Instance.Raid20.HP", 0.22f);
+    setConfigPos(CONFIG_FLOAT_SOLO_INSTANCE_RAID20_DAMAGE,  "Solo.Instance.Raid20.Damage", 0.45f);
+    setConfigPos(CONFIG_FLOAT_SOLO_INSTANCE_RAID40_HP,      "Solo.Instance.Raid40.HP", 0.12f);
+    setConfigPos(CONFIG_FLOAT_SOLO_INSTANCE_RAID40_DAMAGE,  "Solo.Instance.Raid40.Damage", 0.40f);
     setConfig(CONFIG_FLOAT_RATE_REPUTATION_GAIN,           "Rate.Reputation.Gain", 1.0f);
     setConfig(CONFIG_FLOAT_RATE_REPUTATION_LOWLEVEL_KILL,  "Rate.Reputation.LowLevel.Kill", 0.2f);
     setConfigPos(CONFIG_FLOAT_RATE_CREATURE_NORMAL_DAMAGE,               "Rate.Creature.Normal.Damage", 1.0f);

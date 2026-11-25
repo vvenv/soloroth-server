@@ -1797,9 +1797,11 @@ void Creature::InitStatsForLevel(float percentHealth, float percentMana)
     SetInitCreaturePowerType();
 
     CreatureClassLevelStats const* pCLS = GetClassLevelStats();
+    float const soloHp = GetSoloInstanceHealthMod();
+    float const soloDmg = GetSoloInstanceDamageMod();
 
     // health
-    float const healthMod = _GetHealthMod(rank);
+    float const healthMod = _GetHealthMod(rank) * soloHp;
     uint32 const health = std::max(1u, uint32(roundf(healthMod * pCLS->health * cinfo->health_multiplier)));
     uint32 const baseHealth = std::max(1u, uint32(roundf(healthMod * pCLS->base_health)));
 
@@ -1827,7 +1829,7 @@ void Creature::InitStatsForLevel(float percentHealth, float percentMana)
     SetModifierValue(UNIT_MOD_MANA, BASE_VALUE, float(mana));
 
     // damage
-    float const damageMod = _GetDamageMod(rank);
+    float const damageMod = _GetDamageMod(rank) * soloDmg;
     float const meleeDamageAverage = pCLS->melee_damage * cinfo->damage_multiplier * damageMod;
     float const meleeDamageVariance = meleeDamageAverage * cinfo->damage_variance;
     float const rangedDamageAverage = pCLS->ranged_damage * cinfo->damage_multiplier * damageMod;
@@ -1908,6 +1910,40 @@ float Creature::_GetSpellDamageMod(int32 rank)
         default:
             return sWorld.getConfig(CONFIG_FLOAT_RATE_CREATURE_ELITE_ELITE_SPELLDAMAGE);
     }
+}
+
+// Soloroth: scale dungeon/raid creatures for a three-player party. Tier follows
+// Map.dbc maxPlayers. Player-owned pets and outdoor world elites stay stock.
+float Creature::GetSoloInstanceHealthMod() const
+{
+    if (GetCharmerOrOwnerPlayerOrPlayerItself())
+        return 1.0f;
+    Map const* map = GetMap();
+    if (!map || !map->IsDungeon())
+        return 1.0f;
+    MapEntry const* entry = map->GetMapEntry();
+    uint32 const maxPlayers = entry ? entry->maxPlayers : 5;
+    if (maxPlayers >= 40)
+        return sWorld.getConfig(CONFIG_FLOAT_SOLO_INSTANCE_RAID40_HP);
+    if (maxPlayers >= 20)
+        return sWorld.getConfig(CONFIG_FLOAT_SOLO_INSTANCE_RAID20_HP);
+    return sWorld.getConfig(CONFIG_FLOAT_SOLO_INSTANCE_DUNGEON_HP);
+}
+
+float Creature::GetSoloInstanceDamageMod() const
+{
+    if (GetCharmerOrOwnerPlayerOrPlayerItself())
+        return 1.0f;
+    Map const* map = GetMap();
+    if (!map || !map->IsDungeon())
+        return 1.0f;
+    MapEntry const* entry = map->GetMapEntry();
+    uint32 const maxPlayers = entry ? entry->maxPlayers : 5;
+    if (maxPlayers >= 40)
+        return sWorld.getConfig(CONFIG_FLOAT_SOLO_INSTANCE_RAID40_DAMAGE);
+    if (maxPlayers >= 20)
+        return sWorld.getConfig(CONFIG_FLOAT_SOLO_INSTANCE_RAID20_DAMAGE);
+    return sWorld.getConfig(CONFIG_FLOAT_SOLO_INSTANCE_DUNGEON_DAMAGE);
 }
 
 bool Creature::CreateFromProto(uint32 guidlow, CreatureInfo const* cinfo, uint32 firstCreatureId, GameEventCreatureData const* eventData /*=nullptr*/)
@@ -3712,7 +3748,7 @@ void Creature::ResetStats()
     if (m_creatureInfo)
     {
         CreatureClassLevelStats const* pCLS = GetClassLevelStats();
-        float const damageMod = _GetDamageMod(m_creatureInfo->rank);
+        float const damageMod = _GetDamageMod(m_creatureInfo->rank) * GetSoloInstanceDamageMod();
         float const meleeDamageAverage = pCLS->melee_damage * m_creatureInfo->damage_multiplier * damageMod;
         float const meleeDamageVariance = meleeDamageAverage * m_creatureInfo->damage_variance;
         float const rangedDamageAverage = pCLS->ranged_damage * m_creatureInfo->damage_multiplier * damageMod;
@@ -3735,7 +3771,7 @@ void Creature::ResetStats()
 void Creature::GetDefaultDamageRange(float& dmgMin, float& dmgMax) const
 {
     CreatureClassLevelStats const* pCLS = GetClassLevelStats();
-    float const damageMod = _GetDamageMod(m_creatureInfo->rank);
+    float const damageMod = _GetDamageMod(m_creatureInfo->rank) * GetSoloInstanceDamageMod();
     float const meleeDamageAverage = pCLS->melee_damage * m_creatureInfo->damage_multiplier * damageMod;
     float const meleeDamageVariance = meleeDamageAverage * m_creatureInfo->damage_variance;
     dmgMin = meleeDamageAverage - meleeDamageVariance;

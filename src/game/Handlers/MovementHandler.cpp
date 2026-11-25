@@ -183,9 +183,9 @@ void WorldSession::HandleMoveWorldportAck()
         MapEntry const* oldMapEntry = sMapStorage.LookupEntry<MapEntry>(oldLoc.mapId);
         if (oldMapEntry && oldMapEntry->IsDungeon())
         {
-            // A .go or hearth lands here. Copy the group's 5-man save onto the
-            // character before the leave hook drops the personal copy.
-            if (oldMapEntry->IsNonRaidDungeon())
+            // A .go or hearth lands here. Copy the group's instance save onto
+            // the character before the leave hook drops the personal copy.
+            if (oldMapEntry->IsDungeon())
                 GetPlayer()->KeepInstanceProgress();
             GetPlayer()->ResetPersonalInstanceOnLeaveDungeon(oldLoc.mapId);
         }

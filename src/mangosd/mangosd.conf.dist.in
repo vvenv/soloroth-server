@@ -3253,6 +3253,13 @@ AHBot.itemcount = 50
 #        other party bots while they are in the world.
 #        Default: "" (off)
 #
+#    Solo.Instance.*.HP / Solo.Instance.*.Damage
+#        Extra multipliers for creatures on dungeon and raid maps so a three-player
+#        party can clear stock 5/20/40 content. Outdoor elites and world bosses are
+#        unchanged. Player-owned pets and guardians are skipped. Tier is picked from
+#        Map.dbc maxPlayers (5 / 20 / 40).
+#        Defaults match Soloroth's "fun, not souls" trio tuning.
+#
 ###################################################################################################################
 
 RandomBot.Enable = 0
@@ -3273,6 +3280,12 @@ PartyBot.RandomGearLevelDifference = 10
 BattleBot.AutoEquip = 1
 BattleBot.AutoJoin = 0
 SoloGuild.Name = ""
+Solo.Instance.Dungeon.HP = 0.60
+Solo.Instance.Dungeon.Damage = 0.70
+Solo.Instance.Raid20.HP = 0.22
+Solo.Instance.Raid20.Damage = 0.45
+Solo.Instance.Raid40.HP = 0.12
+Solo.Instance.Raid40.Damage = 0.40
 
 ###################################################################################################################
 # MAIL FLOODING MITIGATION

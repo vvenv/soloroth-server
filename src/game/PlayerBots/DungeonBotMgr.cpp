@@ -1,6 +1,6 @@
 /*
- * Party bots that join on their own in five-player dungeons. See
- * DungeonBotMgr.h for the rules.
+ * Party bots that join on their own in dungeons and raids (trio-scaled).
+ * See DungeonBotMgr.h for the rules.
  */
 
 #include "DungeonBotMgr.h"
@@ -200,7 +200,7 @@ namespace
     float const SAFE_AGGRO_MARGIN = 3.0f;
     float const SAFE_SEARCH_RANGE = 40.0f;
     uint32 const SPELL_HONORLESS_TARGET = 2479;
-    uint32 const PARTY_SIZE = 5;
+    uint32 const PARTY_SIZE = 3;
 
 
     enum : uint32
@@ -519,9 +519,9 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
     }
     // FindMap: GetMap asserts when m_currMap is null (e.g. mid-teleport).
     Map* pMap = pPlayer->FindMap();
-    if (!pMap || pMap->IsRaid())
+    if (!pMap)
     {
-        why = zh ? "团队副本里不会补机器人。" : "Bots do not join in raids.";
+        why = zh ? "现在不能叫机器人。" : "Bots cannot join now.";
         return 0;
     }
 
@@ -552,9 +552,11 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
     Group* pGroup = pPlayer->GetGroup();
     if (pGroup)
     {
+        // Trio product stays a normal party (max 5). A raid group would let
+        // AddMember keep going past three; Soloroth never creates raids.
         if (pGroup->isRaidGroup())
         {
-            why = zh ? "团队里不会补机器人。" : "Bots do not join a raid group.";
+            why = zh ? "请先解散团队再叫小队机器人。" : "Leave the raid group before calling party bots.";
             return 0;
         }
         if (pGroup->GetLeaderGuid() != pPlayer->GetObjectGuid())
@@ -703,8 +705,8 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
     bool needTank = std::find(roles.begin(), roles.end(), ROLE_TANK) == roles.end();
     bool needHealer = std::find(roles.begin(), roles.end(), ROLE_HEALER) == roles.end();
 
-    // Trio/five full but missing a tank/healer: free DPS seats so the fill
-    // below can replace them. A dismiss/re-enter race used to leave five DPS
+    // Trio full but missing a tank/healer: free DPS seats so the fill below
+    // can replace them. A dismiss/re-enter race used to leave only DPS
     // and then report "already full" forever. Duo is random — no role repair.
     if (target >= 3 && roles.size() >= target && (needTank || needHealer))
     {
@@ -817,7 +819,7 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
 
     // Keep trying until the party reaches `target`, or no roster left to try.
     // A failed pick/AddBot must not burn a seat (that used to leave fill-5 at 3).
-    // Trio/five: do not spend the last seats on DPS while a tank/healer is
+    // Trio: do not spend the last seats on DPS while a tank/healer is
     // still missing — leave them open so Update can retry once companions
     // finish logging out. Duo: one random companion, any role.
     uint32 have = uint32(roles.size());
@@ -915,7 +917,7 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
         bot.race = r->race;
         bot.name = name;
         bot.lastSeen = m_now;
-        bot.dungeon = pMap->IsNonRaidDungeon();
+        bot.dungeon = pMap->IsDungeon();
         roles.push_back(r->role);
         classes.push_back(r->botClass);
         races.push_back(r->race);
@@ -942,7 +944,7 @@ uint32 DungeonBotMgr::Dismiss(Player* pPlayer, bool autoOnly)
 {
     uint32 count = 0;
     uint32 const leaderLow = pPlayer->GetGUIDLow();
-    // Stop repair-fills (leaving a dungeon must not re-fill to five outdoors).
+    // Stop repair-fills (leaving a dungeon must not re-fill to three outdoors).
     ClearWantSize(leaderLow);
 
     // The bots this manager brought, wherever they are. Always drop the
@@ -1145,7 +1147,7 @@ void DungeonBotMgr::Update(uint32 diff)
             continue;
 
         Watch& w = m_watch[guid.GetCounter()];
-        bool const inDungeon = pMap->IsNonRaidDungeon();
+        bool const inDungeon = pMap->IsDungeon();
         if (pMap->GetId() != w.lastMap)
         {
             w.lastMap = pMap->GetId();
@@ -1220,7 +1222,7 @@ void DungeonBotMgr::Update(uint32 diff)
             ChatHandler(pPlayer).SendSysMessage(why.c_str());
     }
 
-    // Repair a short party, or a trio/five that still lacks tank/healer (e.g.
+    // Repair a short party, or a trio that still lacks tank/healer (e.g.
     // dismiss raced a re-fill and DPS took every seat). Duo stays random — no
     // role repair. Back off when fills fail so chat does not spam a new
     // random name every half-second.
@@ -1295,7 +1297,7 @@ void DungeonBotMgr::Update(uint32 diff)
             }
         }
         bool const shortParty = have < want->second;
-        // Trio/five need tank+healer; duo is a random companion.
+        // Trio needs tank+healer; duo is a random companion.
         bool const badComp = want->second >= 3 && (!hasTank || !hasHealer);
         if (!shortParty && !badComp)
         {
@@ -1370,11 +1372,11 @@ bool ChatHandler::HandleBotsStatusCommand(char* args)
     if (quiet)
         return true;
     if (zh)
-        PSendSysMessage("你的职责：%s%s；进五人副本自动补机器人：%s；接战：%s。",
+        PSendSysMessage("你的职责：%s%s；进副本自动补三人小队：%s；接战：%s。",
             DungeonBotMgr::RoleName(playing, true), chosen == ROLE_INVALID ? "（自动判断）" : "",
             autoFill ? "开" : "关", DungeonBotMgr::EngageStyleName(engage, true));
     else
-        PSendSysMessage("You play %s%s; five-player dungeons fill with bots: %s; engage: %s.",
+        PSendSysMessage("You play %s%s; instances fill a trio with bots: %s; engage: %s.",
             DungeonBotMgr::RoleName(playing, false), chosen == ROLE_INVALID ? " (guessed)" : "",
             autoFill ? "on" : "off", DungeonBotMgr::EngageStyleName(engage, false));
     return true;
@@ -1455,9 +1457,9 @@ bool ChatHandler::HandleBotsFillCommand(char* args)
     if (!pPlayer)
         return false;
 
-    // No argument still fills a party of five. 2 and 3 are a duo and a trio.
-    // Raid sizes (20 and 40) are refused here: Fill does not join a raid.
-    uint32 target = 5;
+    // No argument fills a trio. 2 is a duo. Instances are trio-scaled; five
+    // is no longer offered.
+    uint32 target = 3;
     if (args)
     {
         while (*args == ' ')
@@ -1468,11 +1470,11 @@ bool ChatHandler::HandleBotsFillCommand(char* args)
             char* rest = args + 1;
             while (*rest == ' ')
                 ++rest;
-            if ((digit != '2' && digit != '3' && digit != '5') || *rest)
+            if ((digit != '2' && digit != '3') || *rest)
             {
                 SendSysMessage(BotsZh(this)
-                    ? "用法：.bots fill [2|3|5]。两人、三人或五人。团队副本是 20 人或 40 人，现在不会补机器人。"
-                    : "Usage: .bots fill [2|3|5]. A duo, a trio or five. Raids are 20 or 40 and are not filled.");
+                    ? "用法：.bots fill [2|3]。两人小队或三人小队。"
+                    : "Usage: .bots fill [2|3]. A duo or a trio.");
                 SetSentErrorMessage(true);
                 return false;
             }

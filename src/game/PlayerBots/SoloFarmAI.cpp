@@ -743,7 +743,12 @@ bool SoloFarmAI::TryBlinkAway(Unit* pEnemy)
         if (!me->movespline->Finalized() || me->IsMoving())
             me->StopMoving();
         me->SetOrientation(o);
-        return DoCastSpell(me, pBlink) == SPELL_CAST_OK;
+        if (DoCastSpell(me, pBlink) != SPELL_CAST_OK)
+            return false;
+        // Blink leaves us facing the flee heading. Turn back now so the next
+        // GCD tick can cast at the mob instead of standing looking away.
+        EnsureFacing(pEnemy);
+        return true;
     }
     return false;
 }
@@ -939,10 +944,10 @@ void SoloFarmAI::UpdateAI(uint32 const diff)
     if (DoesGrind())
     {
         UpdateGrind();
-        // Between pulls, pick up a school if one is in range.
+        // Between pulls, pick up a school / debris / wreckage if one is in range.
         if (m_mode == SOLO_FARM_ALL && m_fishingSpell && m_pullGuid.IsEmpty() && !m_resting &&
-            m_now >= m_nextSearch && FindFishingSpot() && m_spotHole.IsEmpty())
-            m_hasSpot = false;
+            m_now >= m_nextSearch)
+            FindFishingHoleSpot();
         return;
     }
 
@@ -2088,7 +2093,8 @@ WorldObject* SoloFarmAI::PickApproach(std::vector<std::pair<float, WorldObject*>
 
 bool SoloFarmAI::InPartyDungeon() const
 {
-    return me->GetMap()->IsDungeon() && !me->GetMap()->IsRaid();
+    // Trio-scaled: raids use the same party-dungeon farm rules as five-mans.
+    return me->GetMap()->IsDungeon();
 }
 
 uint32 SoloFarmAI::PackLimit() const
@@ -2903,11 +2909,18 @@ void SoloFarmAI::UpdateFishing()
             m_hasSpot = false;
     }
 
-    // In open water, look again now and then for a school that has spawned since.
-    if (m_hasSpot && m_spotHole.IsEmpty() && m_casts >= 12)
+    // Open water is a fallback: keep looking for a school / debris / wreckage.
+    if (m_hasSpot && m_spotHole.IsEmpty() && m_now >= m_nextSearch)
     {
-        m_casts = 0;
-        m_hasSpot = false;
+        m_nextSearch = m_now + SEARCH_MS;
+        if (FindFishingHoleSpot())
+            return;
+        // No hole yet: refresh the open-water pick after a few casts in case the shore changed.
+        if (m_casts >= 8)
+        {
+            m_casts = 0;
+            m_hasSpot = false;
+        }
     }
 
     if (!m_hasSpot && !FindFishingSpot())
@@ -3049,7 +3062,7 @@ uint32 SoloFarmAI::ScoreCast(float px, float py, float pz, float o) const
     return score;
 }
 
-bool SoloFarmAI::FindFishingSpot()
+bool SoloFarmAI::FindFishingHoleSpot()
 {
     struct Spot
     {
@@ -3081,42 +3094,144 @@ bool SoloFarmAI::FindFishingSpot()
         z = pMap->GetHeight(x, y, top, true, 50.0f);
         return z > INVALID_HEIGHT && !pTerrain->IsSwimmable(x, y, z, 1.5f);
     };
+    auto claim = [&](Spot const& spot) -> bool
+    {
+        if (!PlaceOk(spot.x, spot.y, spot.z))
+            return false;
 
-    // Where the player stands and faces, when that is already a good cast.
-    if (!isBad(me->GetPositionX(), me->GetPositionY()) &&
-        ScoreCast(me->GetPositionX(), me->GetPositionY(), me->GetPositionZ(), me->GetOrientation()) >= 8)
-        spots.push_back({ me->GetPositionX(), me->GetPositionY(), me->GetPositionZ(), me->GetOrientation(), -1.0f, ObjectGuid(), true });
+        float z = spot.z;
+        if (!spot.here)
+        {
+            PathInfo path(me);
+            path.calculate(spot.x, spot.y, spot.z, false);
+            Vector3 const end = path.getActualEndPosition();
+            if (!(path.getPathType() & PATHFIND_NORMAL) || Dist2d(end.x, end.y, spot.x, spot.y) > 1.5f)
+            {
+                m_badSpots.emplace_back(spot.x, spot.y);
+                return false;
+            }
+            if (NearInstanceEntrance(end.x, end.y, end.z))
+            {
+                m_badSpots.emplace_back(spot.x, spot.y);
+                return false;
+            }
+            z = end.z;
+        }
 
-    // Schools first, from the shore around them, facing them.
+        m_spotX = spot.x;
+        m_spotY = spot.y;
+        m_spotZ = z;
+        m_spotO = spot.o;
+        m_spotHole = spot.hole;
+        m_hasSpot = true;
+        m_moveTries = 0;
+        m_castFails = 0;
+        m_casts = 0;
+        m_castPending = false;
+        return true;
+    };
+
     std::list<GameObject*> holes;
 #if SUPPORTED_CLIENT_BUILD > CLIENT_BUILD_1_6_1
+    // Schools, floating debris, wreckage — anything GAMEOBJECT_TYPE_FISHINGHOLE.
     FishingHoleCheck holeCheck{ cx, cy, m_radius + m_castMax };
     MaNGOS::GameObjectListSearcher<FishingHoleCheck> holeSearcher(holes, holeCheck);
     Cell::VisitGridObjects(cx, cy, pMap, holeSearcher, m_radius + m_castMax);
 #endif
 
+    float const px = me->GetPositionX();
+    float const py = me->GetPositionY();
+    float const pz = me->GetPositionZ();
+
     for (GameObject* pHole : holes)
     {
-        for (float distance : { mid, (m_castMin + mid) / 2.0f })
+        float const hx = pHole->GetPositionX();
+        float const hy = pHole->GetPositionY();
+        float const holeDist = Dist2d(px, py, hx, hy);
+        // Already in cast range of this pool: just face it.
+        if (!isBad(px, py) && holeDist >= m_castMin && holeDist <= m_castMax &&
+            IsFishable(px, py, pz, hx, hy))
         {
+            float const o = std::atan2(hy - py, hx - px);
+            spots.push_back({ px, py, pz, o, -2000.0f - (m_castMax - std::fabs(holeDist - mid)),
+                pHole->GetObjectGuid(), true });
+        }
+
+        // Bobber must land inside the pool radius (~3–4 yd). Stand so mid-range aims at the pool.
+        float const holeRadius = std::max(3.0f, float(pHole->GetGOInfo()->fishinghole.radius));
+        for (float distance : { mid, m_castMax - holeRadius, m_castMin + holeRadius, (m_castMin + mid) / 2.0f })
+        {
+            if (distance < m_castMin || distance > m_castMax)
+                continue;
             for (uint32 i = 0; i < 24; ++i)
             {
                 float const angle = 2.0f * M_PI_F * i / 24.0f;
-                float const x = pHole->GetPositionX() + distance * std::cos(angle);
-                float const y = pHole->GetPositionY() + distance * std::sin(angle);
+                float const x = hx + distance * std::cos(angle);
+                float const y = hy + distance * std::sin(angle);
                 float z;
                 if (Dist2d(x, y, cx, cy) > m_radius || isBad(x, y) || !ground(x, y, z))
                     continue;
 
                 float const o = std::fmod(angle + M_PI_F, 2.0f * M_PI_F);
-                if (!IsFishable(x, y, z, pHole->GetPositionX(), pHole->GetPositionY()) || ScoreCast(x, y, z, o) < 7)
+                // Facing the pool matters more than a wide fan of water.
+                if (!IsFishable(x, y, z, hx, hy) || ScoreCast(x, y, z, o) < 5)
                     continue;
                 spots.push_back({ x, y, z, o, me->GetDistance2d(x, y) - 1000.0f, pHole->GetObjectGuid(), false });
             }
         }
     }
 
-    // Open water: a grid over the area, each point's first direction that casts well.
+    std::sort(spots.begin(), spots.end(), [](Spot const& a, Spot const& b) { return a.cost < b.cost; });
+
+    uint32 tries = 0;
+    for (Spot const& spot : spots)
+    {
+        if (++tries > 16)
+            break;
+        if (claim(spot))
+            return true;
+    }
+    return false;
+}
+
+bool SoloFarmAI::FindFishingSpot()
+{
+    // Pools first (schools, floating debris, wreckage); open water only when none work.
+    if (FindFishingHoleSpot())
+        return true;
+
+    struct Spot
+    {
+        float x, y, z, o, cost;
+        bool here;
+    };
+    std::vector<Spot> spots;
+
+    Map* pMap = me->GetMap();
+    TerrainInfo const* pTerrain = me->GetTerrain();
+    float const mid = (m_castMin + m_castMax) / 2.0f;
+    bool const pinned = m_mode == SOLO_FARM_FISH;
+    float const cx = pinned ? m_x : me->GetPositionX();
+    float const cy = pinned ? m_y : me->GetPositionY();
+    float const top = std::max(me->GetPositionZ(), pinned ? m_z : me->GetPositionZ()) + 10.0f;
+
+    auto isBad = [&](float x, float y)
+    {
+        for (auto const& bad : m_badSpots)
+            if (Dist2d(x, y, bad.first, bad.second) < 3.0f)
+                return true;
+        return false;
+    };
+    auto ground = [&](float x, float y, float& z)
+    {
+        z = pMap->GetHeight(x, y, top, true, 50.0f);
+        return z > INVALID_HEIGHT && !pTerrain->IsSwimmable(x, y, z, 1.5f);
+    };
+
+    if (!isBad(me->GetPositionX(), me->GetPositionY()) &&
+        ScoreCast(me->GetPositionX(), me->GetPositionY(), me->GetPositionZ(), me->GetOrientation()) >= 8)
+        spots.push_back({ me->GetPositionX(), me->GetPositionY(), me->GetPositionZ(), me->GetOrientation(), -1.0f, true });
+
     float const step = m_radius > 30.0f ? 4.0f : 3.0f;
     for (float dx = -m_radius; dx <= m_radius; dx += step)
     {
@@ -3135,7 +3250,7 @@ bool SoloFarmAI::FindFishingSpot()
                 float const o = 2.0f * M_PI_F * i / 16.0f;
                 if (!IsFishable(x, y, z, x + mid * std::cos(o), y + mid * std::sin(o)) || ScoreCast(x, y, z, o) < 8)
                     continue;
-                spots.push_back({ x, y, z, o, me->GetDistance2d(x, y), ObjectGuid(), false });
+                spots.push_back({ x, y, z, o, me->GetDistance2d(x, y), false });
                 break;
             }
         }
@@ -3174,7 +3289,7 @@ bool SoloFarmAI::FindFishingSpot()
         m_spotY = spot.y;
         m_spotZ = z;
         m_spotO = spot.o;
-        m_spotHole = spot.hole;
+        m_spotHole.Clear();
         m_hasSpot = true;
         m_moveTries = 0;
         m_castFails = 0;
