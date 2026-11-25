@@ -488,18 +488,33 @@ void PartyBotAI::BeginChasing(Unit* pVictim) const
         (m_role == ROLE_MELEE_DPS || m_role == ROLE_TANK) &&
         !me->CanReachWithMeleeAutoAttack(pVictim) &&
         me->GetDistance(pVictim) > 12.0f &&
-        !IsUrgentPeelTarget(pVictim) &&
         WouldMoveAggroExtras(pVictim->GetPositionX(), pVictim->GetPositionY(),
                              pVictim->GetPositionZ(), pVictim))
     {
-        // Keep the GCD/swings on this target; do not run the corridor.
-        if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != IDLE_MOTION_TYPE)
+        // Urgent healer/player peel may cross a short gap; a long corridor still
+        // chains courtyard packs — plant and let Taunt cover it unless the ally
+        // is actually dying.
+        bool allowUrgent = false;
+        if (IsUrgentPeelTarget(pVictim))
         {
-            me->StopMoving(true);
-            me->GetMotionMaster()->Clear(false, true);
-            me->GetMotionMaster()->MoveIdle();
+            if (me->GetDistance(pVictim) <= 15.0f)
+                allowUrgent = true;
+            else if (Unit* pHit = pVictim->GetVictim())
+                if (Player* pPlayer = pHit->ToPlayer())
+                    if (pPlayer->GetHealthPercent() < 40.0f)
+                        allowUrgent = true;
         }
-        return;
+        if (!allowUrgent)
+        {
+            // Keep the GCD/swings on this target; do not run the corridor.
+            if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != IDLE_MOTION_TYPE)
+            {
+                me->StopMoving(true);
+                me->GetMotionMaster()->Clear(false, true);
+                me->GetMotionMaster()->MoveIdle();
+            }
+            return;
+        }
     }
     CombatBotBaseAI::BeginChasing(pVictim);
 }
@@ -2178,6 +2193,24 @@ Unit* PartyBotAI::SelectPartyPeelTarget() const
     Unit const* pCurrent = me->GetVictim();
     Player const* pLeader = GetPartyLeader();
 
+    // Honor the stick lock first so two healer adds do not alternate every tick.
+    if (!m_tankFocusGuid.IsEmpty() && WorldTimer::getMSTime() < m_tankFocusUntil)
+    {
+        if (Unit* pStick = me->GetMap()->GetUnit(m_tankFocusGuid))
+        {
+            if (pStick != pCurrent &&
+                IsValidHostileTarget(pStick) &&
+                pStick->GetVictim() != me &&
+                me->IsWithinDist(pStick, 50.0f) &&
+                IsUrgentPeelTarget(pStick))
+                return pStick;
+        }
+    }
+
+    // Closest loose add on the healer / player — stable across ticks.
+    Unit* pBest = nullptr;
+    float bestDist = 0.0f;
+
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         Player* pMember = itr->getSource();
@@ -2205,11 +2238,76 @@ Unit* PartyBotAI::SelectPartyPeelTarget() const
             if (pAttacker->GetVictim() == me)
                 continue;
 
-            return pAttacker;
+            float const dist = me->GetDistance(pAttacker);
+            if (!pBest || dist < bestDist)
+            {
+                pBest = pAttacker;
+                bestDist = dist;
+            }
         }
     }
 
-    return nullptr;
+    return pBest;
+}
+
+void PartyBotAI::LockTankFocus(Unit const* pTarget, uint32 durationMs)
+{
+    if (!pTarget)
+        return;
+    m_tankFocusGuid = pTarget->GetObjectGuid();
+    m_tankFocusUntil = WorldTimer::getMSTime() + durationMs;
+}
+
+bool PartyBotAI::CanTankChaseSwitch(Unit const* pNew) const
+{
+    if (!pNew)
+        return false;
+
+    Unit* pCur = me->GetVictim();
+    if (!pCur || !IsValidHostileTarget(pCur))
+        return true;
+    if (pCur == pNew)
+        return false;
+
+    uint32 const now = WorldTimer::getMSTime();
+    // Mid stick window and current is not glued yet — stay and swing.
+    if (!m_tankFocusGuid.IsEmpty() &&
+        now < m_tankFocusUntil &&
+        pCur->GetObjectGuid() == m_tankFocusGuid &&
+        pCur->GetVictim() != me)
+        return false;
+
+    // Still establishing melee threat: taunt the other add from here.
+    if (pCur->GetVictim() != me &&
+        (me->CanReachWithMeleeAutoAttack(pCur) || me->GetDistance(pCur) <= 8.0f))
+        return false;
+
+    // Current already on us — free to walk to the next healer/player add.
+    if (pCur->GetVictim() == me)
+        return true;
+
+    // Lost a far target: only chase a clearly closer peel.
+    return me->GetDistance(pNew) + 5.0f < me->GetDistance(pCur);
+}
+
+bool PartyBotAI::HasIdleHostileInRange(float radius) const
+{
+    std::list<Unit*> hostiles;
+    me->GetEnemyListInRadiusAround(me, radius, hostiles);
+    for (Unit* pUnit : hostiles)
+    {
+        Creature* c = pUnit ? pUnit->ToCreature() : nullptr;
+        if (!c || !c->IsAlive() || c->IsPet() || c->IsCivilian())
+            continue;
+        if (c->IsInCombat())
+            continue;
+        if (c->HasFlag(UNIT_FIELD_FLAGS,
+                UNIT_FLAG_NOT_ATTACKABLE_1 | UNIT_FLAG_NON_ATTACKABLE_2 |
+                UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_IMMUNE_TO_PLAYER))
+            continue;
+        return true;
+    }
+    return false;
 }
 
 Player* PartyBotAI::SelectResurrectionTarget() const
@@ -3069,17 +3167,20 @@ void PartyBotAI::UpdateInCombatAI()
         {
             Unit* pPeel = SelectPartyPeelTarget();
 
-            // Healer / player peel first — before drag or face-away. Otherwise the
-            // priest Psychic Screams and kites while we walk the pack to the corner.
-            if (pPeel)
+            // Taunt first — pulls without leaving the current mob. Chase-switching
+            // every tick between two healer adds is what left neither on the tank.
+            if (TryTankSnapThreat())
+                return;
+
+            // Healer / player peel: only walk when we are free to leave current.
+            if (pPeel && me->GetVictim() != pPeel &&
+                CanEngageTarget(pPeel) && CanTankChaseSwitch(pPeel))
             {
-                if (TryTankSnapThreat())
-                    return;
-                if (me->GetVictim() != pPeel && CanEngageTarget(pPeel))
+                me->AttackStop(true);
+                if (AttackStart(pPeel))
                 {
-                    me->AttackStop(true);
-                    if (AttackStart(pPeel))
-                        return;
+                    LockTankFocus(pPeel);
+                    return;
                 }
             }
 
@@ -3090,24 +3191,22 @@ void PartyBotAI::UpdateInCombatAI()
             if (!pVictim)
             {
                 if (Unit* pLoose = SelectPartyAttackTarget())
-                    if (CanEngageTarget(pLoose))
-                        AttackStart(pLoose);
+                {
+                    if (CanEngageTarget(pLoose) && AttackStart(pLoose))
+                        LockTankFocus(pLoose);
+                }
             }
 
             // Player (or a bot) sheeped an add: drag the rest clear so AoE does not open it.
             bool const dragging = PullFightAwayFromCrowdControl();
 
             // Far open: walk the pack back to the party so casters keep LoS at the corner.
+            // Skip while a peel still needs attention — do not drag into the next pack.
             if (!dragging && !pPeel && TryDragPackToParty())
                 return;
 
             // Elite/boss: stand opposite the party so cleave hits the wall.
             if (!dragging && !pPeel && TryTankFaceAwayFromParty())
-                return;
-
-            // Taunt every loose mob (healer adds, post-fear, multi-pull) — not only
-            // the current target, and not only inside the post-fear snap window.
-            if (TryTankSnapThreat())
                 return;
 
             // Taunt current target if it is attacking someone else.
@@ -4487,11 +4586,11 @@ bool PartyBotAI::TryTankSnapThreat()
     };
 
     // Prefer peeling off the healer / player, then any loose add.
+    // Taunt only — chase switching lives in UpdateInCombatAI so Taunt CD
+    // does not send us running between two adds every tick.
     if (Unit* pPeel = SelectPartyPeelTarget())
     {
         if (tryTaunt(pPeel))
-            return true;
-        if (me->GetVictim() != pPeel && CanEngageTarget(pPeel) && AttackStart(pPeel))
             return true;
     }
 
@@ -4751,6 +4850,7 @@ void PartyBotAI::UpdateInCombatAI_Paladin()
             }
             if (m_spells.paladin.pConsecration &&
                (GetAttackersInRangeCount(10.0f) > 2) &&
+               !HasIdleHostileInRange(10.0f) &&
                 CanTryToCastSpell(me, m_spells.paladin.pConsecration))
             {
                 if (DoCastSpell(me, m_spells.paladin.pConsecration) == SPELL_CAST_OK)
@@ -6177,6 +6277,7 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
         if (m_spells.warrior.pThunderClap &&
             m_role == ROLE_TANK &&
             GetAttackersInRangeCount(8.0f) >= 2 &&
+            !HasIdleHostileInRange(10.0f) &&
             CanTryToCastSpell(pVictim, m_spells.warrior.pThunderClap))
         {
             if (DoCastSpell(pVictim, m_spells.warrior.pThunderClap) == SPELL_CAST_OK)
@@ -6304,9 +6405,11 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
         }
 
         // Demo on the pack once; skip while the current target already has it.
+        // Idle packs in shout range would chain — wait until they walk off.
         if (m_spells.warrior.pDemoralizingShout &&
             m_role == ROLE_TANK &&
             !pVictim->HasAura(m_spells.warrior.pDemoralizingShout->Id) &&
+            !HasIdleHostileInRange(12.0f) &&
             CanTryToCastSpell(me, m_spells.warrior.pDemoralizingShout))
         {
             if (DoCastSpell(me, m_spells.warrior.pDemoralizingShout) == SPELL_CAST_OK)
@@ -6726,7 +6829,8 @@ void PartyBotAI::UpdateOutOfCombatAI_Druid()
         if (EnterCombatDruidForm())
             return;
 
-        if ((me->GetPowerPercent(POWER_MANA) > 80.0f) &&
+        // Same as priest / pala / shaman healers: no mana>80 gate between pulls.
+        if (GetRole() == ROLE_HEALER &&
             FindAndHealInjuredAlly())
             return;
     }
@@ -6816,8 +6920,56 @@ void PartyBotAI::UpdateInCombatAI_Druid()
         (m_role != ROLE_TANK || !me->CanReachWithMeleeAutoAttack(pVictim)))
         me->RemoveSpellsCausingAura(SPELL_AURA_MOD_SHAPESHIFT);
 
+    // Resto idle pad: Moonfire then Wrath with spare mana — no Starfire / Hurricane.
     if (GetRole() == ROLE_HEALER)
+    {
+        if (form == FORM_NONE)
+        {
+            if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE &&
+                me->GetDistance(pVictim) > 30.0f)
+            {
+                BeginChasing(pVictim);
+            }
+            else if (pVictim->CanReachWithMeleeAutoAttack(me) &&
+                    (pVictim->GetVictim() == me) &&
+                    !me->HasUnitState(UNIT_STATE_ROOT) &&
+                    (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != DISTANCING_MOTION_TYPE))
+            {
+                if (m_spells.druid.pEntanglingRoots &&
+                    CanTryToCastSpell(pVictim, m_spells.druid.pEntanglingRoots))
+                {
+                    if (DoCastSpell(pVictim, m_spells.druid.pEntanglingRoots) == SPELL_CAST_OK)
+                        return;
+                }
+                me->SetCasterChaseDistance(25.0f);
+                if (RunAwayFromTarget(pVictim))
+                    return;
+            }
+
+            if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == DISTANCING_MOTION_TYPE)
+                return;
+
+            if (me->GetPowerPercent(POWER_MANA) >= 55.0f)
+            {
+                if (m_spells.druid.pMoonfire &&
+                    !pVictim->HasAura(m_spells.druid.pMoonfire->Id) &&
+                    CanTryToCastSpell(pVictim, m_spells.druid.pMoonfire))
+                {
+                    if (DoCastSpell(pVictim, m_spells.druid.pMoonfire) == SPELL_CAST_OK)
+                        return;
+                }
+
+                if (m_spells.druid.pWrath &&
+                    me->GetPowerPercent(POWER_MANA) >= 65.0f &&
+                    CanTryToCastSpell(pVictim, m_spells.druid.pWrath))
+                {
+                    if (DoCastSpell(pVictim, m_spells.druid.pWrath) == SPELL_CAST_OK)
+                        return;
+                }
+            }
+        }
         return;
+    }
 
     switch (form)
     {
@@ -6969,6 +7121,7 @@ void PartyBotAI::UpdateInCombatAI_Druid()
                 (GetAttackersInRangeCount(10.0f) > 1))
             {
                 if (m_spells.druid.pDemoralizingRoar &&
+                    !HasIdleHostileInRange(12.0f) &&
                     CanTryToCastSpell(pVictim, m_spells.druid.pDemoralizingRoar))
                 {
                     if (DoCastSpell(pVictim, m_spells.druid.pDemoralizingRoar) == SPELL_CAST_OK)

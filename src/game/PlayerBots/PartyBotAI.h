@@ -83,6 +83,11 @@ public:
     Unit* SelectPartyAttackTarget() const;
     // A different mob on the healer/player — peel without thrashing every add.
     Unit* SelectPartyPeelTarget() const;
+    // Stick to one mob while building threat; taunt others instead of running laps.
+    void LockTankFocus(Unit const* pTarget, uint32 durationMs = 3000);
+    bool CanTankChaseSwitch(Unit const* pNew) const;
+    // Idle pack inside radius — AoE threat would chain-pull.
+    bool HasIdleHostileInRange(float radius) const;
     Player* SelectResurrectionTarget() const;
     bool MoveToResurrect();
     bool AllyWillResurrect() const;
@@ -251,6 +256,10 @@ public:
     uint32 m_forceEngageUntil = 0;
     // After breaking fear / stun: tank snaps threat for a few seconds.
     uint32 m_snapThreatUntil = 0;
+    // Tank: do not chase-switch off this guid until the stick window ends
+    // (or the mob is already attacking us). Stops A↔B laps on healer adds.
+    ObjectGuid m_tankFocusGuid;
+    uint32 m_tankFocusUntil = 0;
     // Pre-pot lockout so we do not chug every tick on the same pull.
     uint32 m_prePotUntil = 0;
     // Soft reposition (spread / stack / face-away) lockout — stops combat thrashing.

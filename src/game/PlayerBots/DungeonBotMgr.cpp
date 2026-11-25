@@ -597,9 +597,9 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
         names.push_back(pPlayer->GetName());
     }
 
-    // Bots still logging in count too, or a second fill would double them.
-    // Only LOADING seats count here — offline / self-removed entries are
-    // dropped by ForgetGoneBots and must not report "already full".
+    // Bots still logging in (or online but not yet on the party roster) count
+    // too, or a second fill would double them. Offline / self-removed entries
+    // are dropped by ForgetGoneBots and must not report "already full".
     auto& mine = m_autoBots[ownerLow];
     for (auto const& bot : mine)
     {
@@ -607,7 +607,7 @@ uint32 DungeonBotMgr::Fill(Player* pPlayer, std::string& who, std::string& why, 
         if (pGroup && pGroup->IsMember(guid))
             continue;
         PlayerBotEntry* entry = sPlayerBotMgr.GetBotEntry(bot.first);
-        if (!entry || entry->state != PB_STATE_LOADING)
+        if (!entry || entry->state == PB_STATE_OFFLINE)
             continue;
         guids.push_back(bot.first);
         roles.push_back(bot.second.role);
@@ -1216,8 +1216,13 @@ void DungeonBotMgr::Update(uint32 diff)
         std::string who, why;
         bool const zh = IsZh(pPlayer->GetSession());
         if (Fill(pPlayer, who, why))
+        {
             ChatHandler(pPlayer).PSendSysMessage(zh ? "队友加入了队伍：%s（你是%s）。人数在小地图下的组队按钮里改。" : "Joining your party: %s (you play %s). The party button under the minimap changes the size.",
                 who.c_str(), RoleName(GetPlayerRole(pPlayer), zh));
+            // Give the new bots time to finish login / join the roster before
+            // the short-party repair can race another Fill.
+            w.repairAt = m_now + REPAIR_RETRY_OK_MS;
+        }
         else if (!why.empty())
             ChatHandler(pPlayer).SendSysMessage(why.c_str());
     }
@@ -1285,15 +1290,16 @@ void DungeonBotMgr::Update(uint32 diff)
                 if (group && group->IsMember(ObjectGuid(HIGHGUID_PLAYER, bot.first)))
                     continue;
                 PlayerBotEntry* entry = sPlayerBotMgr.GetBotEntry(bot.first);
-                if (entry && entry->state == PB_STATE_LOADING)
-                {
-                    ++have;
-                    pendingLogin = true;
-                    if (bot.second.role == ROLE_TANK)
-                        hasTank = true;
-                    else if (bot.second.role == ROLE_HEALER)
-                        hasHealer = true;
-                }
+                // LOADING or ONLINE-but-not-grouped yet: hold the seat. Counting
+                // only LOADING let a second fill race in and push a trio to five.
+                if (!entry || entry->state == PB_STATE_OFFLINE)
+                    continue;
+                ++have;
+                pendingLogin = true;
+                if (bot.second.role == ROLE_TANK)
+                    hasTank = true;
+                else if (bot.second.role == ROLE_HEALER)
+                    hasHealer = true;
             }
         }
         bool const shortParty = have < want->second;
