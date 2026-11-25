@@ -4167,9 +4167,12 @@ bool PartyBotAI::TryKeepRangedDistance()
         switch (me->GetClass())
         {
             case CLASS_MAGE:
+                // tooClose can be true out to ~12 yd for kiting; nova is ~10 yd.
+                // Wait until the mob is in the ring — casting on self always "succeeds".
                 if (m_spells.mage.pFrostNova &&
                     !pEnemy->HasUnitState(UNIT_STATE_ROOT) &&
                     !pEnemy->HasUnitState(UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL) &&
+                    IsUnitInSelfAoE(pEnemy, m_spells.mage.pFrostNova) &&
                     CanTryToCastSpell(me, m_spells.mage.pFrostNova) &&
                     DoCastSpell(me, m_spells.mage.pFrostNova) == SPELL_CAST_OK)
                     break;
@@ -5380,6 +5383,7 @@ void PartyBotAI::UpdateInCombatAI_Mage()
                     if (m_spells.mage.pFrostNova &&
                        !pVictim->HasUnitState(UNIT_STATE_ROOT) &&
                        !pVictim->HasUnitState(UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL) &&
+                        IsUnitInSelfAoE(pVictim, m_spells.mage.pFrostNova) &&
                         CanTryToCastSpell(me, m_spells.mage.pFrostNova))
                     {
                         DoCastSpell(me, m_spells.mage.pFrostNova);

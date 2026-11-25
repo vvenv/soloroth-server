@@ -665,12 +665,13 @@ bool SoloFarmAI::TryControlExtra(Unit* pVictim)
         return false;
 
     // Frost Nova hits everything around us, including a sheep we just cast.
-    // Root first, then control once the nova is on cooldown.
+    // Root first, then control once the nova is on cooldown — but only when the
+    // add is actually inside the nova, otherwise wait and sheep now.
     if (me->GetClass() == CLASS_MAGE && m_spells.mage.pFrostNova && me->IsSpellReady(m_spells.mage.pFrostNova))
     {
-        float const radius = EffectRadius(m_spells.mage.pFrostNova, 10.0f);
         for (Unit* pAdd : extras)
-            if (me->GetDistance(pAdd) <= radius && !pAdd->HasUnitState(UNIT_STATE_ROOT))
+            if (IsUnitInSelfAoE(pAdd, m_spells.mage.pFrostNova) &&
+                !pAdd->HasUnitState(UNIT_STATE_ROOT))
                 return false;
     }
 
@@ -801,9 +802,11 @@ bool SoloFarmAI::TryEscapeMelee(Unit* pVictim)
     {
         // Root the pack, then leave on a later tick once the aura has landed.
         // Nova and Blink share the global cooldown, so they cannot both go off now.
+        // Nova is self-cast; wait until a mob is inside the ring or the GCD is wasted.
         if (me->GetClass() == CLASS_MAGE && m_spells.mage.pFrostNova &&
             !pVictim->HasUnitState(UNIT_STATE_ROOT) &&
             !pVictim->HasUnitState(UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL) &&
+            IsUnitInSelfAoE(pVictim, m_spells.mage.pFrostNova) &&
             CanTryToCastSpell(me, m_spells.mage.pFrostNova) &&
             DoCastSpell(me, m_spells.mage.pFrostNova) == SPELL_CAST_OK)
             return true;
@@ -1001,8 +1004,9 @@ std::vector<SpellEntry const*> SoloFarmAI::RunnerStopSpells(Unit const* pVictim)
             return { m_spells.shaman.pFrostShock };
         case CLASS_MAGE:
         {
-            // Frost Nova hits around us only.
-            SpellEntry const* pNova = me->IsWithinDist(pVictim, 8.0f) ? m_spells.mage.pFrostNova : nullptr;
+            // Frost Nova hits around us only — skip it until the runner is in the ring.
+            SpellEntry const* pNova = IsUnitInSelfAoE(pVictim, m_spells.mage.pFrostNova)
+                ? m_spells.mage.pFrostNova : nullptr;
             return { pNova, m_spells.mage.pFrostbolt, m_spells.mage.pConeofCold };
         }
         case CLASS_WARLOCK:

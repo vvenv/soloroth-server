@@ -21185,33 +21185,39 @@ bool Player::SoloTakeLoot(Loot& loot)
 
         ItemPosCountVec dest;
         InventoryResult msg = CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, item->itemid, item->count);
-        if (msg != EQUIP_ERR_OK)
+        if (msg != EQUIP_ERR_OK && msg != EQUIP_ERR_CANT_CARRY_MORE_OF_THIS)
         {
-            // Unique / MaxCount already held: leave on the corpse, no chat spam.
-            // Not "bags full" — grind must keep going (mage kite leaves these often).
-            if (msg == EQUIP_ERR_CANT_CARRY_MORE_OF_THIS)
-            {
-                ItemPrototype const* proto = sObjectMgr.GetItemPrototype(item->itemid);
-                WorldObject const* from = loot.GetLootTarget();
-                sLog.Player(GetSession(), LOG_LOOTS, LOG_LVL_BASIC,
-                    "%s skips maxcount %ux%u%s%s [loot from %s]",
-                    GetShortDescription().c_str(),
-                    item->count, item->itemid,
-                    (proto && proto->Name1) ? " " : "",
-                    (proto && proto->Name1) ? proto->Name1 : "",
-                    from ? from->GetGuidStr().c_str() : "NULL");
-                continue;
-            }
             SendEquipError(msg, nullptr, nullptr, 0, item->itemid);
             all = false;
             continue;
         }
 
-        Item* newitem = StoreNewItem(dest, item->itemid, true, item->randomPropertyId);
-        if (!newitem)
+        // Unique / MaxCount already held: discard from this corpse (no chat spam).
+        // Leaving it would keep unlootedCount > 0, so isLooted() stays false and
+        // skinning / corpse cleanup never run (mage kite leaves these often).
+        bool const abandonMaxCount = (msg == EQUIP_ERR_CANT_CARRY_MORE_OF_THIS);
+        if (abandonMaxCount)
         {
-            all = false;
-            continue;
+            ItemPrototype const* proto = sObjectMgr.GetItemPrototype(item->itemid);
+            WorldObject const* from = loot.GetLootTarget();
+            sLog.Player(GetSession(), LOG_LOOTS, LOG_LVL_BASIC,
+                "%s abandons maxcount %ux%u%s%s [loot from %s]",
+                GetShortDescription().c_str(),
+                item->count, item->itemid,
+                (proto && proto->Name1) ? " " : "",
+                (proto && proto->Name1) ? proto->Name1 : "",
+                from ? from->GetGuidStr().c_str() : "NULL");
+        }
+
+        Item* newitem = nullptr;
+        if (!abandonMaxCount)
+        {
+            newitem = StoreNewItem(dest, item->itemid, true, item->randomPropertyId);
+            if (!newitem)
+            {
+                all = false;
+                continue;
+            }
         }
 
         if (qitem)
@@ -21240,8 +21246,11 @@ bool Player::SoloTakeLoot(Loot& loot)
 
         --loot.unlootedCount;
 
-        SendNewItem(newitem, uint32(item->count), false, false, true);
-        OnReceivedItem(newitem);
+        if (newitem)
+        {
+            SendNewItem(newitem, uint32(item->count), false, false, true);
+            OnReceivedItem(newitem);
+        }
     }
     return all;
 }

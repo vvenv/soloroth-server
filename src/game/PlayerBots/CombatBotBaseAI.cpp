@@ -2402,6 +2402,29 @@ uint8 CombatBotBaseAI::GetAttackersInRangeCount(float range) const
     return count;
 }
 
+bool CombatBotBaseAI::IsUnitInSelfAoE(Unit const* pTarget, SpellEntry const* pSpell, float fallbackRadius) const
+{
+    if (!pTarget || !pSpell)
+        return false;
+
+    float radius = 0.0f;
+    for (int i = 0; i < MAX_SPELL_EFFECTS; ++i)
+    {
+        if (!pSpell->EffectRadiusIndex[i])
+            continue;
+        if (SpellRadiusEntry const* pEntry = sSpellRadiusStore.LookupEntry(pSpell->EffectRadiusIndex[i]))
+            radius = std::max(radius, Spells::GetSpellRadius(pEntry));
+    }
+    if (radius <= 0.0f)
+        radius = fallbackRadius;
+
+    // Classic AoE vs creatures adds their combat reach; vs players it does not.
+    if (!pTarget->IsCharmerOrOwnerPlayerOrPlayerItself())
+        radius += pTarget->GetCombatReach();
+
+    return me->IsWithinDist(pTarget, radius, true, SizeFactor::None);
+}
+
 uint8 CombatBotBaseAI::GetCombatEnemyCountInRadiusAround(Unit const* pTarget, float radius) const
 {
     if (!pTarget)

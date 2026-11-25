@@ -105,6 +105,9 @@ public:
     void LearnRandomTalents();
     
     uint8 GetAttackersInRangeCount(float range) const;
+    // Self-centered hostile AoE (Frost Nova, …): same reach rule as Spell::FillAreaTargets.
+    // Nova is cast on self, so CanTryToCastSpell never checks the mob — call this first.
+    bool IsUnitInSelfAoE(Unit const* pTarget, SpellEntry const* pSpell, float fallbackRadius = 10.0f) const;
     // Hostiles near pTarget that are on our / the party's threat — not idle
     // camp trash or a neighbor pull that is merely IsInCombat.
     uint8 GetCombatEnemyCountInRadiusAround(Unit const* pTarget, float radius) const;

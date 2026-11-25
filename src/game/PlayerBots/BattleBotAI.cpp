@@ -1130,7 +1130,7 @@ void BattleBotAI::UpdateFlagCarrierAI()
             {
                 if (m_spells.mage.pFrostNova &&
                     CanTryToCastSpell(me, m_spells.mage.pFrostNova) &&
-                    m_spells.mage.pFrostNova->IsTargetInRange(me, pAttacker))
+                    IsUnitInSelfAoE(pAttacker, m_spells.mage.pFrostNova))
                 {
                     me->CastSpell(me, m_spells.mage.pFrostNova, false);
                     return;
@@ -1860,6 +1860,7 @@ void BattleBotAI::UpdateInCombatAI_Mage()
                 if (m_spells.mage.pFrostNova &&
                     !pVictim->HasUnitState(UNIT_STATE_ROOT) &&
                     !pVictim->HasUnitState(UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL) &&
+                    IsUnitInSelfAoE(pVictim, m_spells.mage.pFrostNova) &&
                     CanTryToCastSpell(me, m_spells.mage.pFrostNova))
                 {
                     DoCastSpell(me, m_spells.mage.pFrostNova);
