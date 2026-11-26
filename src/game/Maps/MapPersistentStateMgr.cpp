@@ -843,6 +843,9 @@ void MapPersistentStateManager::CleanupInstances()
     // clean invalid instance references in other tables
     _DelHelper(CharacterDatabase, "character_instance.guid, instance", "character_instance", "LEFT JOIN instance ON character_instance.instance = instance.id WHERE instance.id IS NULL");
     _DelHelper(CharacterDatabase, "group_instance.leader_guid, instance", "group_instance", "LEFT JOIN instance ON group_instance.instance = instance.id WHERE instance.id IS NULL");
+    // Solo dungeon progress / leave spot: drop rows whose instance was removed.
+    _DelHelper(CharacterDatabase, "character_dungeon_boss.guid, character_dungeon_boss.instance, character_dungeon_boss.entry", "character_dungeon_boss", "LEFT JOIN instance ON character_dungeon_boss.instance = instance.id WHERE instance.id IS NULL");
+    _DelHelper(CharacterDatabase, "character_dungeon_resume.guid, character_dungeon_resume.map", "character_dungeon_resume", "LEFT JOIN instance ON character_dungeon_resume.instance = instance.id WHERE instance.id IS NULL");
 
     // clean unused respawn data
     CharacterDatabase.PExecute("DELETE FROM `creature_respawn` WHERE `instance` >= %u AND `instance` NOT IN (SELECT `id` FROM `instance`)", RESERVED_INSTANCES_LAST);
@@ -874,6 +877,11 @@ void MapPersistentStateManager::PackInstances()
         CharacterDatabase.PExecute("UPDATE `characters` SET `instance` = `instance` + %u WHERE `instance` >= %u ORDER BY `instance` DESC", RESERVED_INSTANCES_LAST, RESERVED_INSTANCES_LAST);
         CharacterDatabase.PExecute("UPDATE `character_instance` SET `instance` = `instance` + %u WHERE `instance` >= 0 ORDER BY `instance` DESC", RESERVED_INSTANCES_LAST);
         CharacterDatabase.PExecute("UPDATE `group_instance` SET `instance` = `instance` + %u WHERE `instance` >= 0 ORDER BY `instance` DESC", RESERVED_INSTANCES_LAST);
+        // Solo: boss kills and leave spots key off instance id; keep them in
+        // lockstep with character_instance or the next boot remaps the bind
+        // and leaves progress pointing at a recycled id (empty UI).
+        CharacterDatabase.PExecute("UPDATE `character_dungeon_boss` SET `instance` = `instance` + %u WHERE `instance` >= 0 ORDER BY `instance` DESC", RESERVED_INSTANCES_LAST);
+        CharacterDatabase.PExecute("UPDATE `character_dungeon_resume` SET `instance` = `instance` + %u WHERE `instance` >= 0 ORDER BY `instance` DESC", RESERVED_INSTANCES_LAST);
         CharacterDatabase.Execute("DELETE FROM `instance` WHERE `map` <= 1");
     CharacterDatabase.CommitTransaction();
     std::unique_ptr<QueryResult> result = CharacterDatabase.Query("SELECT `id` FROM `instance`");
@@ -905,6 +913,8 @@ void MapPersistentStateManager::PackInstances()
             CharacterDatabase.PExecute("UPDATE `character_instance` SET `instance` = '%u' WHERE `instance` = '%u'", InstanceNumber, i);
             CharacterDatabase.PExecute("UPDATE `instance` SET `id` = '%u' WHERE `id` = '%u'", InstanceNumber, i);
             CharacterDatabase.PExecute("UPDATE `group_instance` SET `instance` = '%u' WHERE `instance` = '%u'", InstanceNumber, i);
+            CharacterDatabase.PExecute("UPDATE `character_dungeon_boss` SET `instance` = '%u' WHERE `instance` = '%u'", InstanceNumber, i);
+            CharacterDatabase.PExecute("UPDATE `character_dungeon_resume` SET `instance` = '%u' WHERE `instance` = '%u'", InstanceNumber, i);
             //execute transaction synchronously
             CharacterDatabase.CommitTransaction();
         }

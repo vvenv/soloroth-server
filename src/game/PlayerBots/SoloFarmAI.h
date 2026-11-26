@@ -48,6 +48,8 @@ public:
     static void OnPlayerFacing(Player* pPlayer);
     // Assist only: clear a leftover server spline so WASD is accepted again.
     static void YieldMotion(Player* pPlayer);
+    // Server MovePoint / chase / plant / .go settle: ignore trailing client START_* for a beat.
+    void NoteServerMotion();
 
     void UpdateAI(uint32 const diff) override;
     void Remove() override;
@@ -197,6 +199,8 @@ private:
     uint32 m_level = 0;
     bool m_stopped = false;
     bool m_resting = false;
+    // WorldTimer ms: client START_* after a finished server leg must not end the farm.
+    uint32 m_ignoreManualUntil = 0;
     std::map<ObjectGuid, uint32> m_blacklist;
 
     // Grinding.

@@ -394,6 +394,32 @@ void WorldSession::HandleMovementOpcodes(WorldPackets::Movement::MovementPacket 
         pPlayerMover->UpdateFallInformationIfNeed(packet.movementInfo, opcode);
     }
 
+    // Grind is driving this body. A client heartbeat still sliding from the last
+    // chase relocates the player and cancels the cast ("被打断"), or overwrites the
+    // facing we just set ("你必须面对目标").
+    if (pPlayerMover == _player)
+        if (SoloFarmAI* pFarm = SoloFarmAI::Of(_player))
+            if (pFarm->GetMode() != SOLO_FARM_FIGHT)
+            {
+                // Mid-cast / channel / wand autorepeat: drop the whole relocate.
+                // skipAutorepeat=true used to let Shoot heartbeats through → "被打断".
+                if (_player->IsNonMeleeSpellCasted(false, false, false))
+                    return;
+                // Plant window, or standing idle between casts: strip leftover
+                // MOVEFLAG_FORWARD from chase heartbeats. Leaving them on made
+                // every AI tick Plant→cast fail→"被打断" in SM GY.
+                // Still apply the packet when wandering/chasing (spline active).
+                bool const serverIdle = _player->movespline->Finalized() &&
+                    (_player->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE ||
+                     pFarm->IsHoldingPlant());
+                if (serverIdle)
+                {
+                    MovementInfo& mi = const_cast<MovementInfo&>(packet.movementInfo);
+                    mi.RemoveMovementFlag(MOVEFLAG_MASK_MOVING);
+                    mi.ChangeOrientation(_player->GetOrientation());
+                }
+            }
+
     HandleMoverRelocation(pMover, const_cast<MovementInfo&>(packet.movementInfo));
 
 #if SUPPORTED_CLIENT_BUILD > CLIENT_BUILD_1_8_4

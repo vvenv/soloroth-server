@@ -90,6 +90,11 @@ public:
     void AutoAssignRole();
     void PopulateSpellData();
     void ResetSpellData();
+    // Points spent in one TalentTab.dbc row (sum of known talent ranks).
+    uint32 CountTalentTabPoints(uint32 talentTabId) const;
+    // Argmax of the class's three tabpage slots; caches m_primaryTabPage (0/1/2).
+    void RefreshPrimaryTalentTab();
+    int8 GetPrimaryTalentTabPage() const { return m_primaryTabPage; }
     void AddAllSpellReagents();
     void SummonPetIfNeeded();
     void LearnArmorProficiencies();
@@ -150,9 +155,16 @@ public:
     SpellCastResult DoCastSpell(Unit* pTarget, SpellEntry const* pSpellEntry);
     // Right-drag / keyboard turn from the player: pause AI facing broadcasts briefly.
     void NotePlayerFacing();
-    // Face pTarget when outside the front cone. Broadcasts MSG_MOVE_SET_FACING unless
-    // this is an own character whose player just looked away.
+    // Drop chase / spline and clear move flags before a cast that movement would cancel.
+    void PlantForCast();
+    // Own-character grind: MovementHandler ignores client relocates for a short window
+    // after PlantForCast so a leftover chase heartbeat cannot re-apply MOVEFLAG /
+    // old facing before CastSpell ("被打断" / "你必须面对目标").
+    bool IsHoldingPlant() const;
+    // Face pTarget. Broadcasts MSG_MOVE_SET_FACING unless the player just looked away.
     void EnsureFacing(Unit* pTarget);
+    // Own body: client rejects the last yards of a spell ("你距离太远"). Slack the reach.
+    float OwnCastReach(float maxRange) const;
     virtual bool CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const;
     bool IsWearingShield(Player* pPlayer) const;
     bool IsInDuel() const;
@@ -335,7 +347,8 @@ public:
     {
         struct
         {
-            SpellEntry const* spells[45];
+            // Druid fills 45; mage needs Arcane Missiles + Mage Armor headroom.
+            SpellEntry const* spells[56];
         } raw;
         struct
         {
@@ -407,6 +420,8 @@ public:
         struct
         {
             SpellEntry const* pIceArmor;
+            // Mage Armor (arcane tree preference over Ice Armor).
+            SpellEntry const* pMageArmor;
             SpellEntry const* pArcaneIntellect;
             SpellEntry const* pArcaneBrilliance;
             SpellEntry const* pIceBarrier;
@@ -415,6 +430,7 @@ public:
             SpellEntry const* pFrostbolt;
             SpellEntry const* pFireBlast;
             SpellEntry const* pFireball;
+            SpellEntry const* pArcaneMissiles;
             SpellEntry const* pArcaneExplosion;
             SpellEntry const* pFrostNova;
             SpellEntry const* pConeofCold;
@@ -623,8 +639,12 @@ public:
     bool m_ownCharacter = false;
     // Last MSG_MOVE_SET_FACING / turn the player sent (own character only).
     uint32 m_playerFacingAt = 0;
+    // Last PlantForCast (own character): see IsHoldingPlant.
+    uint32 m_plantedAt = 0;
     uint8 m_visualHonorRank = 0;
     CombatBotRoles m_role = ROLE_INVALID;
+    // Class talent tabpage with the most points (0/1/2). -1 until PopulateSpellData.
+    int8 m_primaryTabPage = -1;
     // Part of a premade spec name (e.g. "frost") preferred among the role's
     // templates of the same level.
     std::string m_specHint;

@@ -56,8 +56,10 @@ namespace
     float const KITE_DIST = 15.0f;
     // Below this a caster cannot keep casting: wand if equipped, else melee.
     float const OOM_MANA_PCT = 10.0f;
-    // Current target this low: finish with the wand instead of another nuke.
-    float const WAND_FINISH_HP = 25.0f;
+    // Wand-finish only when the bar is also thin. Full-mana + low mob HP used to
+    // shoot while the player still had >60% mana (finish ignored mana entirely).
+    float const WAND_FINISH_HP = 12.0f;
+    float const WAND_FINISH_MANA_PCT = 25.0f;
     uint32 const SPELL_SHOOT_WAND = 5019;
     uint32 const PATH_CANDIDATES = 6;
     uint32 const WANDER_TRIES = 8;
@@ -202,8 +204,8 @@ SoloFarmAI::SoloFarmAI(Player* pPlayer, SoloFarmMode mode, float radius)
     m_initialized = true;
     m_level = pPlayer->GetLevel();
     ResetSpellData();
-    PopulateSpellData();
     AssignSoloRole();
+    PopulateSpellData(); // after role so empty/tie talent tabs can use role hints
 
     for (uint32 spellId : FISHING_SPELLS)
     {
@@ -223,6 +225,8 @@ SoloFarmAI::SoloFarmAI(Player* pPlayer, SoloFarmMode mode, float radius)
     m_mineSpell = BestKnownSpell(pPlayer, MINE_SPELLS, sizeof(MINE_SPELLS) / sizeof(MINE_SPELLS[0]));
     m_skinSpell = BestKnownSpell(pPlayer, SKIN_SPELLS, sizeof(SKIN_SPELLS) / sizeof(SKIN_SPELLS[0]));
     m_wanderSteps = urand(2, 5);
+    // .go / login settle often leaves a START_FORWARD right after Start().
+    NoteServerMotion();
 }
 
 char const* SoloFarmAI::ModeWire() const
@@ -334,12 +338,23 @@ void SoloFarmAI::StopFor(Player* pPlayer, SoloFarmStop reason)
         pAI->Stop(reason);
 }
 
+void SoloFarmAI::NoteServerMotion()
+{
+    // Trailing START_* after a finalized spline (or a teleport settle) must not
+    // look like "站着按移动键". Panel / .solo stop still ends the farm anytime.
+    m_ignoreManualUntil = WorldTimer::getMSTime() + 1500;
+}
+
 void SoloFarmAI::OnManualMove(Player* pPlayer)
 {
     // Assist exists so the player can walk. A key only ends the modes that steer.
     if (SoloFarmAI* pAI = Of(pPlayer))
+    {
         if (pAI->PlayerSteers())
             return;
+        if (WorldTimer::getMSTime() < pAI->m_ignoreManualUntil)
+            return;
+    }
     StopFor(pPlayer, SOLO_STOP_MOVED);
 }
 
@@ -756,8 +771,76 @@ bool SoloFarmAI::TryBlinkAway(Unit* pEnemy)
 
 bool SoloFarmAI::TryEscapeMelee(Unit* pVictim)
 {
-    if (!pVictim || !WantsDistance() || me->GetMap()->IsDungeon())
+    if (!pVictim || !WantsDistance())
         return false;
+
+    // Dungeons: still Nova / Blink (and class roots below). Long MoveDistance
+    // kite stays outdoor-only via RunAwayFromTarget's own IsDungeon gate — the
+    // old early return here left SM GY mages planted in the swing ("站桩").
+    // Mage: one gap, then plant. A retreat that never ends cancels the channel
+    // (mana gone, no damage). Standing in the swing the whole fight eats
+    // pushback. Nova or blink, take a single step if still in melee, then cast.
+    if (me->GetClass() == CLASS_MAGE)
+    {
+        auto stopRetreat = [this]()
+        {
+            MovementGeneratorType const mt = me->GetMotionMaster()->GetCurrentMovementGeneratorType();
+            if (mt == DISTANCING_MOTION_TYPE || mt == POINT_MOTION_TYPE)
+            {
+                me->GetMotionMaster()->Clear(false, true);
+                me->GetMotionMaster()->MoveIdle();
+                if (!me->movespline->Finalized())
+                    me->StopMoving();
+            }
+        };
+
+        float const dist = me->GetCombatDistance(pVictim);
+        bool const close = dist < 8.0f || GetAttackersInRangeCount(8.0f) > 0;
+        bool const pinned = pVictim->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_PENDING_ROOT |
+            UNIT_STATE_STUNNED | UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL);
+
+        if (!close || pinned)
+        {
+            stopRetreat();
+            if (pinned && dist < 8.0f && TryBlinkAway(pVictim))
+                return true;
+            if (pinned)
+                EnsureFacing(pVictim);
+            return false;
+        }
+
+        if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == DISTANCING_MOTION_TYPE)
+        {
+            if (dist >= 12.0f || me->movespline->Finalized())
+            {
+                stopRetreat();
+                EnsureFacing(pVictim);
+                return false;
+            }
+            return true;
+        }
+
+        // Nova itself is not movement-interrupted, but plant first so the next
+        // Frostbolt / Missiles tick is already idle instead of still chasing.
+        if (m_spells.mage.pFrostNova &&
+            !pVictim->HasUnitState(UNIT_STATE_ROOT) &&
+            !pVictim->HasUnitState(UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL) &&
+            IsUnitInSelfAoE(pVictim, m_spells.mage.pFrostNova) &&
+            CanTryToCastSpell(me, m_spells.mage.pFrostNova))
+        {
+            PlantForCast();
+            if (DoCastSpell(me, m_spells.mage.pFrostNova) == SPELL_CAST_OK)
+                return true;
+        }
+
+        if (dist < 8.0f && TryBlinkAway(pVictim))
+            return true;
+
+        if (dist < 8.0f && RunAwayFromTarget(pVictim))
+            return true;
+
+        return false;
+    }
 
     // Frozen or stunned: do not keep scanning retreat angles. That walk is the
     // "looking around", and it also holds the next cast until the spline ends.
@@ -844,6 +927,10 @@ void SoloFarmAI::UpdateAI(uint32 const diff)
     if (!me->IsInWorld() || me->IsBeingTeleported())
         return;
 
+    // Keep the grace window open for the whole server-driven leg, not only its start.
+    if (!PlayerSteers() && (!me->movespline->Finalized() || me->IsMoving()))
+        NoteServerMotion();
+
     if (!me->IsAlive())
     {
         // Assist stays armed through a corpse run. The other modes end.
@@ -877,8 +964,8 @@ void SoloFarmAI::UpdateAI(uint32 const diff)
     {
         m_level = me->GetLevel();
         ResetSpellData();
-        PopulateSpellData();
         AssignSoloRole();
+        PopulateSpellData();
     }
 
     if (me->HasUnitState(UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL))
@@ -894,6 +981,20 @@ void SoloFarmAI::UpdateAI(uint32 const diff)
     bool const attacked = !me->GetAttackers().empty() || (pPet && !pPet->GetAttackers().empty());
     if (attacked || me->GetVictim() || me->IsInCombat())
     {
+        // Water / food / mana gems are a long stand. A pull or a hit cuts them
+        // so the next tick can actually cast a damage spell.
+        if (Spell* pCast = me->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+        {
+            SpellEntry const* info = pCast->m_spellInfo;
+            for (uint8 i = 0; i < MAX_EFFECT_INDEX; ++i)
+            {
+                if (info->Effect[i] == SPELL_EFFECT_CREATE_ITEM)
+                {
+                    me->InterruptSpell(CURRENT_GENERIC_SPELL, false);
+                    break;
+                }
+            }
+        }
         if (DoesFish() && me->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
             me->InterruptSpell(CURRENT_CHANNELED_SPELL);
         if (DoesFish())
@@ -924,10 +1025,11 @@ void SoloFarmAI::UpdateAI(uint32 const diff)
     if (UpdateCombat())
         return;
 
-    if (Conjure())
+    // A conjure (or any cast) already running: do not start buffs, pulls or a
+    // second spell. That second cast is the "another action is in progress" spam.
+    if (me->IsNonMeleeSpellCasted(false))
         return;
 
-    // Quest goobers / chests before profession nodes and pulls.
     if (DoesQuestObjects() && UpdateQuestObjects())
         return;
 
@@ -1188,6 +1290,8 @@ void SoloFarmAI::HaltRoam()
     }
     if (!me->movespline->Finalized() || me->IsMoving())
         me->StopMoving();
+    // StopMoving finalizes the spline; residual START_* would otherwise end the farm.
+    NoteServerMotion();
 }
 
 bool SoloFarmAI::UpdateCombat()
@@ -1307,38 +1411,55 @@ bool SoloFarmAI::UpdateCombat()
 
     HoldPetOffControlled();
 
-    if (me->GetStandState() != UNIT_STAND_STATE_STAND)
-        me->SetStandState(UNIT_STAND_STATE_STAND);
-    if (m_resting)
-        m_resting = false;
-
-    // A roam Point under Chase (player MoveChase does not expire it) keeps the old leg alive.
-    if (m_wandering ||
-        me->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
-    {
-        HaltRoam();
-        BeginChasing(pVictim);
-        return true;
-    }
-
     // Wand (ranged slot, not the staff): only when mana cannot support another
     // cast, or this one mob is low enough that a nuke would mostly overkill.
+    // Computed before the cast gate: Shoot is autorepeat and skipAutorepeat=true
+    // would otherwise fall through into HaltRoam / BeginChasing → "被打断".
     bool const caster = !IsBreakableControl(pVictim) && GetRole() == ROLE_RANGE_DPS &&
         me->GetClass() != CLASS_HUNTER && me->GetShapeshiftForm() == FORM_NONE &&
         me->GetPowerType() == POWER_MANA;
     bool const casterOom = caster && me->GetPowerPercent(POWER_MANA) < OOM_MANA_PCT;
     bool const finishWithWand = me->GetClass() == CLASS_MAGE && caster &&
         me->GetAttackers().size() < 2 &&
-        pVictim->GetHealthPercent() < WAND_FINISH_HP && HasUsableWand();
+        pVictim->GetHealthPercent() < WAND_FINISH_HP &&
+        me->GetPowerPercent(POWER_MANA) < WAND_FINISH_MANA_PCT &&
+        HasUsableWand();
     bool const useWand = (casterOom || finishWithWand) && HasUsableWand();
     bool const goMelee = casterOom && !HasUsableWand();
 
-    // Shoot is autorepeat: a chase tick cancels it. Keep it only while we
-    // still want the wand; otherwise the next mob gets a real cast.
+    // A cast already on the bar (incl. Shoot): do not chase, stop, or turn.
+    // skipAutorepeat=false so wand heartbeats are protected the same as Frostbolt.
+    if (me->IsNonMeleeSpellCasted(false, false, false))
+        return true;
+
+    if (me->GetStandState() != UNIT_STAND_STATE_STAND)
+        me->SetStandState(UNIT_STAND_STATE_STAND);
+    if (m_resting)
+        m_resting = false;
+
+    // A roam / LOS Point under Chase keeps the old leg alive. Clear it, then
+    // fall through so Nova / a cast can run this tick — returning here left
+    // SM GY mages BeginChasing forever while an undead sat in melee.
+    if (m_wandering ||
+        me->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+        HaltRoam();
+
+    // Shoot is autorepeat: keep it only while we still want the wand; otherwise
+    // drop it so UpdateInCombatAI can open with a real cast (not every tick).
     if (me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) && me->GetClass() != CLASS_HUNTER)
     {
         if (useWand)
+        {
+            // Blink / kite leaves the body facing the flee bearing. Autorepeat
+            // keeps that facing ("背对目标"). SET_FACING mid-Shoot cancels it —
+            // interrupt, turn, restart next tick.
+            if (!me->IsFacingTarget(pVictim))
+            {
+                me->InterruptSpell(CURRENT_AUTOREPEAT_SPELL, false);
+                EnsureFacing(pVictim);
+            }
             return true;
+        }
         me->InterruptSpell(CURRENT_AUTOREPEAT_SPELL, true);
     }
     if (useWand)
@@ -1409,8 +1530,16 @@ bool SoloFarmAI::UpdateCombat()
         return true;
 
     // Potions and a self heal do not need the mob in view. A cast at it does.
-    if (!me->IsWithinLOSInMap(pVictim) && TryStepForSight(pVictim))
+    // Live SMGY: casting through a pillar / floor drop spammed "目标不在视野中"
+    // and cancelled Shoot. Step, or chase — never throw into the wall.
+    if (!me->IsWithinLOSInMap(pVictim))
+    {
+        if (TryStepForSight(pVictim))
+            return true;
+        if (!me->IsMoving())
+            BeginChasing(pVictim);
         return true;
+    }
 
     if (StopRunner(pVictim))
         return true;
@@ -1429,16 +1558,24 @@ bool SoloFarmAI::UpdateCombat()
         return true;
 
     // Wand when the next nuke is not worth it: out of mana, or the mob is low.
+    // Shoot carries SPELL_INTERRUPT_FLAG_MOVEMENT — plant before the autorepeat,
+    // or the next chase tick cancels it ("被打断").
     if (useWand)
     {
-        if (!me->IsMoving() && me->movespline->Finalized() && me->GetCombatDistance(pVictim) <= 30.0f)
+        float const wandReach = OwnCastReach(30.0f);
+        if (me->GetCombatDistance(pVictim) <= wandReach)
         {
-            if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
-            {
-                me->GetMotionMaster()->Clear(false, true);
-                me->GetMotionMaster()->MoveIdle();
-            }
+            PlantForCast();
+            // Own body: wait one tick if the client still shows a run flag.
+            if (m_ownCharacter &&
+                (!me->movespline->Finalized() || me->IsMoving() ||
+                 me->HasUnitMovementFlag(MOVEFLAG_MASK_MOVING)))
+                return true;
+            // Face before Shoot. If still off, wait a tick — casting while turned
+            // away is what the player sees as "背对挥杖".
             EnsureFacing(pVictim);
+            if (!me->IsFacingTarget(pVictim))
+                return true;
             me->CastSpell(pVictim, SPELL_SHOOT_WAND, false);
             return true;
         }
@@ -1449,9 +1586,35 @@ bool SoloFarmAI::UpdateCombat()
 
     // Rooted, and already outside the swing: do not chase back in while the root holds.
     // OOM without a wand: drop the range hold and walk into melee.
+    // Plant inside OwnCastReach with spare yards so a 3s bolt survives one mob step
+    // (live SMGY: planting at the outer edge → mid-cast "你距离太远").
+    float const castReach = OwnCastReach(
+        (me->GetClass() == CLASS_MAGE || me->GetClass() == CLASS_WARLOCK ||
+            me->GetClass() == CLASS_PRIEST) ? 30.0f : 20.0f);
+    float const plantReach = m_ownCharacter ? std::max(16.0f, castReach - 3.0f) : castReach;
+    // Do not "hold" inside melee: that cleared chase and stood in the swing.
+    // Escape (Nova/Blink) runs above; here only plant in the cast sweet spot.
+    float const meleeBand = 10.0f;
+    float const distNow = me->GetCombatDistance(pVictim);
     bool const holdRange = !goMelee && WantsDistance() && CanOutpaceAttackers() &&
-        me->GetCombatDistance(pVictim) < 20.0f;
-    if (!holdRange && !me->IsMoving())
+        distNow < plantReach && distNow >= meleeBand;
+    if (holdRange)
+    {
+        MovementGeneratorType const mt = me->GetMotionMaster()->GetCurrentMovementGeneratorType();
+        if (mt == CHASE_MOTION_TYPE || mt == POINT_MOTION_TYPE)
+        {
+            me->GetMotionMaster()->Clear(false, true);
+            me->GetMotionMaster()->MoveIdle();
+            if (!me->movespline->Finalized())
+                me->StopMoving(true);
+            else
+            {
+                me->ClearUnitState(UNIT_STATE_MOVING);
+                me->RemoveUnitMovementFlag(MOVEFLAG_MASK_MOVING);
+            }
+        }
+    }
+    else if (!me->IsMoving())
     {
         if (!me->HasUnitState(UNIT_STATE_MELEE_ATTACKING) &&
             (goMelee || GetRole() == ROLE_MELEE_DPS || GetRole() == ROLE_TANK) &&
@@ -1511,8 +1674,14 @@ bool SoloFarmAI::HasUsableWand() const
 {
     if (!me->HasSpell(SPELL_SHOOT_WAND))
         return false;
-    Item* pRanged = me->GetWeaponForAttack(RANGED_ATTACK, true, true);
-    return pRanged && pRanged->GetProto()->SubClass == ITEM_SUBCLASS_WEAPON_WAND;
+    // Equipped ranged slot only, and not broken — durability 0 still sits in
+    // the slot but Shoot fails with "必须装备一个魔杖" (live SMGY Gravestone).
+    Item* pRanged = me->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+    if (!pRanged || pRanged->GetProto()->SubClass != ITEM_SUBCLASS_WEAPON_WAND)
+        return false;
+    if (pRanged->GetProto()->MaxDurability && !pRanged->IsBroken())
+        return true;
+    return !pRanged->GetProto()->MaxDurability;
 }
 
 bool SoloFarmAI::Rest()
@@ -1545,7 +1714,10 @@ bool SoloFarmAI::Rest()
     if (needHealth && me->GetHealthPercent() < 80.0f && HealSelf())
         return true;
 
-    if (me->IsInCombat())
+    // Sword still red after a kill: drink anyway. Waiting on linger without a
+    // bottle is the long "站桩" after a mana dump (spirit ticks only).
+    bool const stillFighting = me->GetVictim() || !me->GetAttackers().empty();
+    if (stillFighting)
         return true;
 
     if (needHealth && !me->HasAuraType(SPELL_AURA_MOD_REGEN))
@@ -1650,10 +1822,23 @@ bool SoloFarmAI::Conjure()
 
     for (auto const& line : lines)
     {
+        // Highest rank whose item this character can actually use. Learn-all /
+        // high-rank spells otherwise stock Crystal Water (req 55) on a level-18
+        // mage — Rest then spirit-ticks forever (live probe 站桩).
         SpellEntry const* pSpell = nullptr;
         for (uint32 spellId : line.ranks)
-            if (me->HasSpell(spellId))
-                pSpell = sSpellMgr.GetSpellEntry(spellId);
+        {
+            if (!me->HasSpell(spellId))
+                continue;
+            SpellEntry const* pRank = sSpellMgr.GetSpellEntry(spellId);
+            if (!pRank)
+                continue;
+            uint32 const itemId = pRank->EffectItemType[EFFECT_INDEX_0];
+            ItemPrototype const* pProto = itemId ? sObjectMgr.GetItemPrototype(itemId) : nullptr;
+            if (!pProto || me->CanUseItem(pProto) != EQUIP_ERR_OK)
+                continue;
+            pSpell = pRank;
+        }
         if (!pSpell)
             continue;
 
@@ -1842,11 +2027,23 @@ void SoloFarmAI::UpdateGrind()
         return;
     }
 
-    if (Rest())
+    // Finish the cast already on the bar before buffs or another conjure.
+    if (me->IsNonMeleeSpellCasted(false))
         return;
 
-    UpdateOutOfCombatAI();
-    if (m_isBuffing || me->IsNonMeleeSpellCasted(false))
+    // About to Rest for mana/hp: conjure a bottle first if bags are empty.
+    // Always-first Conjure (live) burned a full bar stocking water before pull #1.
+    {
+        bool const usesMana = me->GetPowerType() == POWER_MANA;
+        bool const wandCaster = usesMana && HasUsableWand();
+        float const manaStart = wandCaster ? 20.0f : 40.0f;
+        bool const lowMana = usesMana && me->GetPowerPercent(POWER_MANA) < manaStart;
+        bool const lowHp = me->GetHealthPercent() < 60.0f;
+        if ((lowMana || lowHp) && Conjure())
+            return;
+    }
+
+    if (Rest())
         return;
 
     if (m_now >= m_nextSearch)
@@ -1869,6 +2066,14 @@ void SoloFarmAI::UpdateGrind()
             return;
         }
     }
+
+    // No pull this tick: restock water / food, then buffs.
+    if (Conjure())
+        return;
+
+    UpdateOutOfCombatAI();
+    if (m_isBuffing || me->IsNonMeleeSpellCasted(false))
+        return;
 
     if (me->IsInCombat())
     {

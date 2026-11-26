@@ -14,6 +14,7 @@
 #include "Chat.h"
 #include "CharacterDatabaseCache.h"
 #include "Database/DatabaseEnv.h"
+#include "DBCStores.h"
 #include "Pet.h"
 #include "MoveSpline.h"
 #include "Utilities/Random.h"
@@ -139,6 +140,131 @@ void CombatBotBaseAI::ResetSpellData()
     m_spellListDirectHeal.clear();
     m_spellListPeriodicHeal.clear();
     m_spellListTaunt.clear();
+    m_primaryTabPage = -1;
+}
+
+uint32 CombatBotBaseAI::CountTalentTabPoints(uint32 talentTabId) const
+{
+    if (!me)
+        return 0;
+
+    uint32 spent = 0;
+    uint32 const numRows = sTalentStore.GetNumRows();
+    for (uint32 i = 0; i < numRows; ++i)
+    {
+        TalentEntry const* talentInfo = sTalentStore.LookupEntry(i);
+        if (!talentInfo || talentInfo->TalentTab != talentTabId)
+            continue;
+
+        // Highest known rank only (lower ranks are replaced on learn).
+        for (int32 k = MAX_TALENT_RANK - 1; k >= 0; --k)
+        {
+            if (talentInfo->RankID[k] && me->HasSpell(talentInfo->RankID[k]))
+            {
+                spent += uint32(k + 1);
+                break;
+            }
+        }
+    }
+    return spent;
+}
+
+void CombatBotBaseAI::RefreshPrimaryTalentTab()
+{
+    m_primaryTabPage = -1;
+    if (!me)
+        return;
+
+    uint32 points[3] = { 0, 0, 0 };
+    bool haveTab[3] = { false, false, false };
+
+    for (uint32 i = 0; i < sTalentTabStore.GetNumRows(); ++i)
+    {
+        TalentTabEntry const* tab = sTalentTabStore.LookupEntry(i);
+        if (!tab || (me->GetClassMask() & tab->ClassMask) == 0)
+            continue;
+        if (tab->tabpage > 2)
+            continue;
+        haveTab[tab->tabpage] = true;
+        points[tab->tabpage] = CountTalentTabPoints(tab->TalentTabID);
+    }
+
+    int8 best = -1;
+    uint32 bestPoints = 0;
+    uint32 tiedAtBest = 0;
+    for (int8 page = 0; page < 3; ++page)
+    {
+        if (!haveTab[page])
+            continue;
+        if (best < 0 || points[page] > bestPoints)
+        {
+            best = page;
+            bestPoints = points[page];
+            tiedAtBest = 1;
+        }
+        else if (points[page] == bestPoints)
+            ++tiedAtBest;
+    }
+
+    auto classHint = [this]() -> int8
+    {
+        switch (me->GetClass())
+        {
+            case CLASS_WARRIOR:
+                return me->HasSpell(SPELL_SHIELD_SLAM) ? 2 : (m_role == ROLE_TANK ? 2 : 0);
+            case CLASS_PALADIN:
+                if (me->HasSpell(SPELL_HOLY_SHIELD) || m_role == ROLE_TANK)
+                    return 1;
+                if (me->HasSpell(SPELL_SANCTITY_AURA) || m_role == ROLE_MELEE_DPS)
+                    return 2;
+                return 0;
+            case CLASS_HUNTER:
+                return 1;
+            case CLASS_ROGUE:
+                return 1;
+            case CLASS_PRIEST:
+                return me->HasSpell(SPELL_SHADOWFORM) ? 2 : 1;
+            case CLASS_SHAMAN:
+                if (me->HasSpell(SPELL_ELEMENTAL_MASTERY))
+                    return 0;
+                if (me->HasSpell(SPELL_STORMSTRIKE))
+                    return 1;
+                return 2;
+            case CLASS_MAGE:
+                return 2;
+            case CLASS_WARLOCK:
+                return 0;
+            case CLASS_DRUID:
+                if (me->HasSpell(SPELL_MOONKIN_FORM))
+                    return 0;
+                if (me->HasSpell(SPELL_LEADER_OF_THE_PACK))
+                    return 1;
+                return 2;
+            default:
+                return -1;
+        }
+    };
+
+    // Empty tree or a tie: role-defining talent / class default.
+    if (best < 0 || bestPoints == 0 || tiedAtBest > 1)
+    {
+        int8 const hint = classHint();
+        if (hint >= 0 && haveTab[hint] && (bestPoints == 0 || points[hint] == bestPoints))
+            best = hint;
+        else if (best < 0)
+        {
+            for (int8 page = 0; page < 3; ++page)
+            {
+                if (haveTab[page])
+                {
+                    best = page;
+                    break;
+                }
+            }
+        }
+    }
+
+    m_primaryTabPage = best;
 }
 
 void CombatBotBaseAI::PopulateSpellData()
@@ -678,7 +804,12 @@ void CombatBotBaseAI::PopulateSpellData()
                     if (IsHigherRankSpell(m_spells.mage.pIceArmor))
                         m_spells.mage.pIceArmor = pSpellEntry;
                 }
-                if (pSpellEntry->SpellName[0].find("Frost Armor") != std::string::npos)
+                else if (pSpellEntry->SpellName[0].find("Mage Armor") != std::string::npos)
+                {
+                    if (IsHigherRankSpell(m_spells.mage.pMageArmor))
+                        m_spells.mage.pMageArmor = pSpellEntry;
+                }
+                else if (pSpellEntry->SpellName[0].find("Frost Armor") != std::string::npos)
                 {
                     if (IsHigherRankSpell(pFrostArmor))
                         pFrostArmor = pSpellEntry;
@@ -717,6 +848,11 @@ void CombatBotBaseAI::PopulateSpellData()
                 {
                     if (IsHigherRankSpell(m_spells.mage.pFireball))
                         m_spells.mage.pFireball = pSpellEntry;
+                }
+                else if (pSpellEntry->SpellName[0].find("Arcane Missiles") != std::string::npos)
+                {
+                    if (IsHigherRankSpell(m_spells.mage.pArcaneMissiles))
+                        m_spells.mage.pArcaneMissiles = pSpellEntry;
                 }
                 else if (pSpellEntry->SpellName[0].find("Arcane Explosion") != std::string::npos)
                 {
@@ -1853,6 +1989,8 @@ void CombatBotBaseAI::PopulateSpellData()
             break;
         }
     }
+
+    RefreshPrimaryTalentTab();
 }
 
 void CombatBotBaseAI::AddAllSpellReagents()
@@ -3271,6 +3409,12 @@ bool CombatBotBaseAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* p
     if (pTarget->IsImmuneToSpell(pSpellEntry, false))
         return false;
 
+    // Polymorph on undead, Scare Beast on humanoids, etc. — CastSpell then
+    // only yields "无效的目标" every AI tick and burns the chance to Nova.
+    if (pTarget != me && pSpellEntry->TargetCreatureType &&
+        !(pSpellEntry->TargetCreatureType & pTarget->GetCreatureTypeMask()))
+        return false;
+
     if (pSpellEntry->GetErrorAtShapeshiftedCast(me->GetShapeshiftForm()) != SPELL_CAST_OK)
         return false;
 
@@ -3303,8 +3447,9 @@ bool CombatBotBaseAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* p
     if (me != pTarget && pSpellEntry->EffectImplicitTargetA[0] != TARGET_UNIT_CASTER)
     {
         float const dist = me->GetCombatDistance(pTarget);
+        float const reach = OwnCastReach(srange->maxRange);
 
-        if (dist > srange->maxRange)
+        if (dist > reach)
             return false;
         if (srange->minRange && dist < srange->minRange)
             return false;
@@ -3355,6 +3500,19 @@ namespace
 {
     // After right-drag / Q-E, wait this long before AI facing packets resume.
     uint32 const OWN_FACING_GRACE_MS = 800;
+    // Client heartbeats after a chase still carry MOVEFLAG / old facing for a beat.
+    // Hold that window so CastSpell is not refused ("被打断" / "你必须面对目标").
+    uint32 const OWN_PLANT_HOLD_MS = 900;
+    // Own body: client range is tighter than the server's last yard ("你距离太远").
+    // 6 yd leaves room for a 3s Frostbolt while the mob steps toward/away.
+    float const OWN_RANGE_SLACK_YD = 6.0f;
+}
+
+float CombatBotBaseAI::OwnCastReach(float maxRange) const
+{
+    if (m_ownCharacter && maxRange > 8.0f)
+        return maxRange - OWN_RANGE_SLACK_YD;
+    return maxRange;
 }
 
 void CombatBotBaseAI::NotePlayerFacing()
@@ -3364,30 +3522,65 @@ void CombatBotBaseAI::NotePlayerFacing()
     m_playerFacingAt = WorldTimer::getMSTime();
 }
 
+bool CombatBotBaseAI::IsHoldingPlant() const
+{
+    return m_ownCharacter && m_plantedAt &&
+        WorldTimer::getMSTimeDiffToNow(m_plantedAt) < OWN_PLANT_HOLD_MS;
+}
+
+void CombatBotBaseAI::PlantForCast()
+{
+    if (!me)
+        return;
+
+    // Chase / point / flee still relocate every tick. That SetPosition hits
+    // SPELL_INTERRUPT_FLAG_MOVEMENT (Frostbolt, Shoot, Arcane Missiles) and
+    // shows "被打断". Clear the generator before the cast starts.
+    MovementGeneratorType const mt = me->GetMotionMaster()->GetCurrentMovementGeneratorType();
+    if (mt == CHASE_MOTION_TYPE || mt == POINT_MOTION_TYPE ||
+        mt == DISTANCING_MOTION_TYPE || mt == FOLLOW_MOTION_TYPE)
+    {
+        me->GetMotionMaster()->Clear(false, true);
+        me->GetMotionMaster()->MoveIdle();
+    }
+
+    if (!me->movespline->Finalized())
+        me->StopMoving(true);
+    else if (m_ownCharacter)
+    {
+        // Own body stays client-driven: StopMoving without a spline leaves
+        // MOVEFLAG_FORWARD on. The next SetPosition then still looks like a run.
+        me->ClearUnitState(UNIT_STATE_MOVING);
+        me->RemoveUnitMovementFlag(MOVEFLAG_MASK_MOVING);
+    }
+
+    if (m_ownCharacter)
+        m_plantedAt = WorldTimer::getMSTime();
+}
+
 void CombatBotBaseAI::EnsureFacing(Unit* pTarget)
 {
     if (!pTarget || me == pTarget)
         return;
 
-    // Own character: only turn when well outside the front cone. Snapping on every
-    // cast fights right-drag mouse look (the body turns, then the next tick yanks it
-    // back onto the mob). Party bots always face — others must see them turn.
-    if (m_ownCharacter && me->HasInArc(pTarget, 2.0f * M_PI_F / 3.0f))
-        return;
-
     // SetFacingToObject / SetFacingTo launch a facing spline with MOVEFLAG_FORWARD.
     // Player::SetPosition then treats that as movement and cancels casts that have
-    // SPELL_INTERRUPT_FLAG_MOVEMENT (Aimed Shot's 3 s cast in 1.12) and leaves the
-    // hunter AI's Auto Shot gate (!IsMoving) stuck shut — the bot stands and poses.
-    // SetInFront only changes orientation, same as Spell.cpp does when a cast starts.
-    if (!me->movespline->Finalized() || me->IsMoving() || !me->IsStopped())
+    // SPELL_INTERRUPT_FLAG_MOVEMENT. SetInFront only changes orientation.
+    if (!m_ownCharacter &&
+        (!me->movespline->Finalized() || me->IsMoving() || !me->IsStopped()))
         me->StopMoving();
-    me->SetInFront(pTarget);
 
-    // Broadcast so the client shows the turn. For an own character, skip while the
-    // player is still looking away; after a short grace the next cast syncs again.
-    bool const broadcast = !m_ownCharacter || !m_playerFacingAt ||
-        WorldTimer::getMSTimeDiffToNow(m_playerFacingAt) >= OWN_FACING_GRACE_MS;
+    // FACE_TARGET spells (Frostbolt, Shoot, …) need IsFacingTarget. Only turn when
+    // we are actually off; broadcasting MSG_MOVE_SET_FACING every AI tick while
+    // already facing cancelled casts and left the mage tanking to death (live SMGY).
+    bool const needTurn = !me->IsFacingTarget(pTarget);
+    if (needTurn)
+        me->SetInFront(pTarget);
+
+    // Sync the client when we turned. Skip while the player is mid-look; never send
+    // this after CAST_OK (that cancels MOVEMENT-interrupt spells).
+    bool const broadcast = needTurn && (!m_playerFacingAt ||
+        WorldTimer::getMSTimeDiffToNow(m_playerFacingAt) >= OWN_FACING_GRACE_MS);
     if (broadcast)
         me->SendMovementPacket(MSG_MOVE_SET_FACING, false);
 }
@@ -3403,6 +3596,23 @@ SpellCastResult CombatBotBaseAI::DoCastSpell(Unit* pTarget, SpellEntry const* pS
             if (pQueued->m_spellInfo->Id == pSpellEntry->Id)
                 return SPELL_FAILED_DONT_REPORT;
 
+    // Frost Nova has no movement interrupt bit; Frostbolt / Shoot / Missiles do.
+    // Plant whenever movement would cancel the spell, or a cast bar / channel needs it.
+    bool const needsStill =
+        (pSpellEntry->InterruptFlags & SPELL_INTERRUPT_FLAG_MOVEMENT) != 0 ||
+        pSpellEntry->IsChanneledSpell() ||
+        pSpellEntry->GetCastTime(me) > 0;
+    if (needsStill)
+    {
+        PlantForCast();
+        // Own character: a leftover chase heartbeat can still show MOVEFLAG for a
+        // frame after PlantForCast. Casting into that is "被打断" / MOVING — wait.
+        if (m_ownCharacter &&
+            (!me->movespline->Finalized() || me->IsMoving() ||
+             me->HasUnitMovementFlag(MOVEFLAG_MASK_MOVING)))
+            return SPELL_FAILED_MOVING;
+    }
+
     EnsureFacing(pTarget);
 
     if (me->IsMounted())
@@ -3411,12 +3621,19 @@ SpellCastResult CombatBotBaseAI::DoCastSpell(Unit* pTarget, SpellEntry const* pS
     me->SetTargetGuid(pTarget->GetObjectGuid());
     auto result = me->CastSpell(pTarget, pSpellEntry, false);
 
-    //printf("cast %s result %u\n", pSpellEntry->SpellName[0].c_str(), result);
-
-    if ((result == SPELL_FAILED_MOVING ||
-        result == SPELL_CAST_OK) &&
-        (me->IsMoving() || !me->IsStopped()))
-        me->StopMoving();
+    // Never StopMoving after SPELL_CAST_OK: that packet cancels the cast that just
+    // started. One clean retry when the client heartbeat still said "moving" / wrong face.
+    if (result == SPELL_FAILED_MOVING)
+    {
+        PlantForCast();
+        EnsureFacing(pTarget);
+        result = me->CastSpell(pTarget, pSpellEntry, false);
+    }
+    else if (result == SPELL_FAILED_UNIT_NOT_INFRONT)
+    {
+        EnsureFacing(pTarget);
+        result = me->CastSpell(pTarget, pSpellEntry, false);
+    }
 
     if (!m_ownCharacter &&
         (result == SPELL_FAILED_NEED_AMMO_POUCH ||
@@ -3851,13 +4068,24 @@ void CombatBotBaseAI::UpdateVisualHonorRankBasedOnItems()
 void CombatBotBaseAI::BeginChasing(Unit* pVictim) const
 {
     // Hunters / casters hold ~25 yd so they shoot instead of running into melee.
+    // Own grind plants inside OwnCastReach with a few yards spare: planting at the
+    // outer edge made mid-Frostbolt "你距离太远" when the mob took one step.
     // Dungeon backs off with a short MoveDistance (lava / pits); outdoor uses a
     // longer step or walks toward the tank (see PartyBotAI::RunAwayFromTarget).
     if ((m_role == ROLE_RANGE_DPS || m_role == ROLE_HEALER) &&
         IsRangedDamageClass(me->GetClass()) &&
        !IsAttackSpeedOverridenForm(me->GetShapeshiftForm()) &&
        (me->GetPowerPercent(POWER_MANA) > 10.0f || me->GetWeaponForAttack(RANGED_ATTACK, true, true)))
-        me->SetCasterChaseDistance(25.0f);
+    {
+        float hold = 25.0f;
+        if (m_ownCharacter)
+        {
+            float const spellReach = OwnCastReach(
+                (me->GetClass() == CLASS_HUNTER) ? 35.0f : 30.0f);
+            hold = std::max(18.0f, spellReach - 3.0f);
+        }
+        me->SetCasterChaseDistance(hold);
+    }
     else if (me->HasDistanceCasterMovement())
         me->SetCasterChaseDistance(0.0f);
 

@@ -62,6 +62,8 @@ enum PartyBotSpells
 #define PB_PULL_MAX_DIST 40.0f
 // Improved Scorch "Fire Vulnerability" (stacks to 5).
 #define PB_SPELL_FIRE_VULNERABILITY 22959
+// Arcane Concentration proc: the next spell is free. Spend it on the filler.
+#define PB_SPELL_CLEARCASTING 12536
 // Idle-pack clearance when dragging / chasing (matches wipe safe-spot margin).
 #define PB_AGGRO_PATH_MARGIN 3.0f
 
@@ -4851,15 +4853,22 @@ void PartyBotAI::UpdateInCombatAI_Paladin()
                 if (DoCastSpell(pVictim, m_spells.paladin.pHammerOfWrath) == SPELL_CAST_OK)
                     return;
             }
+            // 0 Holy / 1 Protection / 2 Retribution
+            int8 const palaSpec = GetPrimaryTalentTabPage();
+            bool const holySpec = palaSpec == 0;
+            bool const retSpec = palaSpec == 2;
+
+            // Ret / Prot: Consecrate packs; Holy DPS rarely.
             if (m_spells.paladin.pConsecration &&
-               (GetAttackersInRangeCount(10.0f) > 2) &&
+               (retSpec || palaSpec == 1 || GetAttackersInRangeCount(10.0f) > 2) &&
+               (GetAttackersInRangeCount(10.0f) > 1) &&
                !HasIdleHostileInRange(10.0f) &&
                 CanTryToCastSpell(me, m_spells.paladin.pConsecration))
             {
                 if (DoCastSpell(me, m_spells.paladin.pConsecration) == SPELL_CAST_OK)
                     return;
             }
-            if (m_spells.paladin.pHolyShock &&
+            if (holySpec && m_spells.paladin.pHolyShock &&
                 CanTryToCastSpell(pVictim, m_spells.paladin.pHolyShock))
             {
                 if (m_spells.paladin.pDivineFavor &&
@@ -4947,7 +4956,12 @@ void PartyBotAI::UpdateInCombatAI_Shaman()
     {
         if (Unit* pVictim = me->GetVictim())
         {
-            if (m_spells.shaman.pElementalMastery &&
+            // 0 Elemental / 1 Enhancement / 2 Restoration
+            int8 const shamSpec = GetPrimaryTalentTabPage();
+            bool const enhanceSpec = shamSpec == 1;
+            bool const elementalSpec = shamSpec == 0;
+
+            if (elementalSpec && m_spells.shaman.pElementalMastery &&
                 ShouldBurnMajorCooldown(pVictim) &&
                 me->GetAttackers().empty() &&
                 CanTryToCastSpell(me, m_spells.shaman.pElementalMastery))
@@ -4972,7 +4986,7 @@ void PartyBotAI::UpdateInCombatAI_Shaman()
                     return;
             }
 
-            if (m_spells.shaman.pStormstrike &&
+            if (enhanceSpec && m_spells.shaman.pStormstrike &&
                 CanTryToCastSpell(pVictim, m_spells.shaman.pStormstrike))
             {
                 if (DoCastSpell(pVictim, m_spells.shaman.pStormstrike) == SPELL_CAST_OK)
@@ -4988,7 +5002,7 @@ void PartyBotAI::UpdateInCombatAI_Shaman()
                     return;
             }
 
-            if (m_spells.shaman.pChainLightning &&
+            if ((elementalSpec || !enhanceSpec) && m_spells.shaman.pChainLightning &&
                 me->GetEnemyCountInRadiusAround(pVictim, 10.0f) > 1 &&
                 CanTryToCastSpell(pVictim, m_spells.shaman.pChainLightning))
             {
@@ -4996,8 +5010,11 @@ void PartyBotAI::UpdateInCombatAI_Shaman()
                     return;
             }
 
-            if (m_spells.shaman.pLightningBolt &&
-               (GetRole() == ROLE_RANGE_DPS || !me->CanReachWithMeleeAutoAttack(pVictim)) &&
+            // Enhancement in melee: swings only. Elemental / out of melee: Lightning Bolt.
+            bool const wantBolt = elementalSpec ||
+                (!enhanceSpec && (GetRole() == ROLE_RANGE_DPS || !me->CanReachWithMeleeAutoAttack(pVictim))) ||
+                (enhanceSpec && !me->CanReachWithMeleeAutoAttack(pVictim));
+            if (wantBolt && m_spells.shaman.pLightningBolt &&
                 CanTryToCastSpell(pVictim, m_spells.shaman.pLightningBolt))
             {
                 if (DoCastSpell(pVictim, m_spells.shaman.pLightningBolt) == SPELL_CAST_OK)
@@ -5188,7 +5205,19 @@ void PartyBotAI::UpdateInCombatAI_Hunter()
         if (softPull)
             return;
 
-        if (m_spells.hunter.pAimedShot &&
+        // 0 Beast Mastery / 1 Marksmanship / 2 Survival
+        int8 const huntSpec = GetPrimaryTalentTabPage();
+        bool const mmSpec = huntSpec == 1;
+        bool const survSpec = huntSpec == 2;
+
+        if (survSpec && m_spells.hunter.pSerpentSting &&
+            CanTryToCastSpell(pVictim, m_spells.hunter.pSerpentSting))
+        {
+            if (DoCastSpell(pVictim, m_spells.hunter.pSerpentSting) == SPELL_CAST_OK)
+                return;
+        }
+
+        if (mmSpec && m_spells.hunter.pAimedShot &&
             CanTryToCastSpell(pVictim, m_spells.hunter.pAimedShot))
         {
             if (DoCastSpell(pVictim, m_spells.hunter.pAimedShot) == SPELL_CAST_OK)
@@ -5202,7 +5231,15 @@ void PartyBotAI::UpdateInCombatAI_Hunter()
                 return;
         }
 
-        if (m_spells.hunter.pSerpentSting &&
+        // Non-MM still use Aimed when known (lower priority than Arcane).
+        if (!mmSpec && m_spells.hunter.pAimedShot &&
+            CanTryToCastSpell(pVictim, m_spells.hunter.pAimedShot))
+        {
+            if (DoCastSpell(pVictim, m_spells.hunter.pAimedShot) == SPELL_CAST_OK)
+                return;
+        }
+
+        if (!survSpec && m_spells.hunter.pSerpentSting &&
             CanTryToCastSpell(pVictim, m_spells.hunter.pSerpentSting))
         {
             if (DoCastSpell(pVictim, m_spells.hunter.pSerpentSting) == SPELL_CAST_OK)
@@ -5244,10 +5281,18 @@ void PartyBotAI::UpdateOutOfCombatAI_Mage()
         }
     }
 
-    if (m_spells.mage.pIceArmor &&
-        CanTryToCastSpell(me, m_spells.mage.pIceArmor))
+    // Arcane prefers Mage Armor; Fire/Frost keep Ice/Frost Armor.
+    SpellEntry const* pArmor = nullptr;
+    if (GetPrimaryTalentTabPage() == 0 && m_spells.mage.pMageArmor)
+        pArmor = m_spells.mage.pMageArmor;
+    else if (m_spells.mage.pIceArmor)
+        pArmor = m_spells.mage.pIceArmor;
+    else if (m_spells.mage.pMageArmor)
+        pArmor = m_spells.mage.pMageArmor;
+
+    if (pArmor && CanTryToCastSpell(me, pArmor))
     {
-        if (DoCastSpell(me, m_spells.mage.pIceArmor) == SPELL_CAST_OK)
+        if (DoCastSpell(me, pArmor) == SPELL_CAST_OK)
         {
             m_isBuffing = true;
             me->ClearTarget();
@@ -5255,7 +5300,9 @@ void PartyBotAI::UpdateOutOfCombatAI_Mage()
         }
     }
 
+    // Ice Barrier: skip on arcane (Mage Armor path); fire/frost keep it.
     if (m_spells.mage.pIceBarrier &&
+        GetPrimaryTalentTabPage() != 0 &&
         CanTryToCastSpell(me, m_spells.mage.pIceBarrier))
     {
         if (DoCastSpell(me, m_spells.mage.pIceBarrier) == SPELL_CAST_OK)
@@ -5301,7 +5348,7 @@ void PartyBotAI::UpdateInCombatAI_Mage()
 
         if (m_spells.mage.pPyroblast &&
            ((m_spells.mage.pPresenceOfMind && me->HasAura(m_spells.mage.pPresenceOfMind->Id)) ||
-            (!pVictim->IsInCombat() && (pVictim->GetMaxHealth() > me->GetMaxHealth()) && (me->GetDistance(pVictim) > 30.0f))) &&
+            (!m_ownCharacter && !pVictim->IsInCombat() && (pVictim->GetMaxHealth() > me->GetMaxHealth()) && (me->GetDistance(pVictim) > 30.0f))) &&
             CanTryToCastSpell(pVictim, m_spells.mage.pPyroblast))
         {
             if (DoCastSpell(pVictim, m_spells.mage.pPyroblast) == SPELL_CAST_OK)
@@ -5345,11 +5392,22 @@ void PartyBotAI::UpdateInCombatAI_Mage()
             }
             EnsureFacing(pVictim);
         }
-        else if (GetAttackersInRangeCount(10.0f))
+        // Tank may hold aggro: GetAttackers can be empty while the kill target
+        // is still in our face (SM GY elites). Distance counts too.
+        else if (GetAttackersInRangeCount(8.0f) || me->GetCombatDistance(pVictim) < 8.0f)
         {
-            if (m_spells.mage.pManaShield &&
-               (me->GetPowerPercent(POWER_MANA) > 20.0f) &&
-                CanTryToCastSpell(me, m_spells.mage.pManaShield))
+            // Barrier when they are on us. Mana Shield only if we are about to
+            // die — it spends the bar and a veteran does not open with it.
+            if (m_spells.mage.pIceBarrier &&
+                CanTryToCastSpell(me, m_spells.mage.pIceBarrier))
+            {
+                if (DoCastSpell(me, m_spells.mage.pIceBarrier) == SPELL_CAST_OK)
+                    return;
+            }
+            else if (m_spells.mage.pManaShield &&
+                     me->GetHealthPercent() < 25.0f &&
+                     me->GetPowerPercent(POWER_MANA) > 40.0f &&
+                     CanTryToCastSpell(me, m_spells.mage.pManaShield))
             {
                 if (DoCastSpell(me, m_spells.mage.pManaShield) == SPELL_CAST_OK)
                     return;
@@ -5384,9 +5442,19 @@ void PartyBotAI::UpdateInCombatAI_Mage()
                        !pVictim->HasUnitState(UNIT_STATE_ROOT) &&
                        !pVictim->HasUnitState(UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL) &&
                         IsUnitInSelfAoE(pVictim, m_spells.mage.pFrostNova) &&
-                        CanTryToCastSpell(me, m_spells.mage.pFrostNova))
+                        CanTryToCastSpell(me, m_spells.mage.pFrostNova) &&
+                        DoCastSpell(me, m_spells.mage.pFrostNova) == SPELL_CAST_OK)
+                        return;
+
+                    // Dungeon: Blink out of the swing when Nova is down (no long kite).
+                    if (me->GetMap()->IsDungeon() &&
+                        me->GetCombatDistance(pVictim) < 8.0f &&
+                        m_spells.mage.pBlink &&
+                        CanTryToCastSpell(me, m_spells.mage.pBlink) &&
+                        DoCastSpell(me, m_spells.mage.pBlink) == SPELL_CAST_OK)
                     {
-                        DoCastSpell(me, m_spells.mage.pFrostNova);
+                        EnsureFacing(pVictim);
+                        return;
                     }
 
                     if (RunAwayFromTarget(pVictim))
@@ -5422,8 +5490,23 @@ void PartyBotAI::UpdateInCombatAI_Mage()
             }
         }
 
+        // One step out of the swing, then stop and cast. A retreat that never
+        // ends is what empties the bar without a hit landing.
         if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == DISTANCING_MOTION_TYPE)
-            return;
+        {
+            if (me->GetCombatDistance(pVictim) < 12.0f && !me->movespline->Finalized())
+            {
+                if (m_spells.mage.pFireBlast &&
+                    CanTryToCastSpell(pVictim, m_spells.mage.pFireBlast) &&
+                    DoCastSpell(pVictim, m_spells.mage.pFireBlast) == SPELL_CAST_OK)
+                    return;
+                return;
+            }
+            me->GetMotionMaster()->Clear(false, true);
+            me->GetMotionMaster()->MoveIdle();
+            if (!me->movespline->Finalized())
+                me->StopMoving();
+        }
 
         if (m_spells.mage.pCounterspell &&
             pVictim->IsNonMeleeSpellCasted(false, false, true) &&
@@ -5466,9 +5549,22 @@ void PartyBotAI::UpdateInCombatAI_Mage()
         // Sheep via shared TryCrowdControlExtra (moon / casters / healthiest spare),
         // not whoever happens to be hitting the mage.
 
+        // 0 Arcane / 1 Fire / 2 Frost
+        int8 const mageSpec = GetPrimaryTalentTabPage();
+        bool const arcaneSpec = mageSpec == 0;
+        bool const fireSpec = mageSpec == 1;
+        bool const clearcasting = me->HasAura(PB_SPELL_CLEARCASTING);
+
+        // Arcane Power costs more mana on every following spell. Elites and
+        // a real pack only — not every wolf. PoM is one free cast: use it
+        // whenever the mob will live long enough to matter.
+        bool elite = false;
+        if (Creature* pCreature = pVictim->ToCreature())
+            elite = pCreature->IsElite() || pCreature->IsWorldBoss();
         if (m_spells.mage.pArcanePower &&
-            ShouldBurnMajorCooldown(pVictim) &&
-            (me->GetPowerPercent(POWER_MANA) > 50.0f) &&
+            (elite || me->GetAttackers().size() >= 2) &&
+            pVictim->GetHealthPercent() > 40.0f &&
+            me->GetPowerPercent(POWER_MANA) > 55.0f &&
             CanTryToCastSpell(me, m_spells.mage.pArcanePower))
         {
             if (DoCastSpell(me, m_spells.mage.pArcanePower) == SPELL_CAST_OK)
@@ -5476,64 +5572,174 @@ void PartyBotAI::UpdateInCombatAI_Mage()
         }
 
         if (m_spells.mage.pPresenceOfMind &&
-            ShouldBurnMajorCooldown(pVictim) &&
-           (me->GetPowerPercent(POWER_MANA) > 50.0f) &&
+            pVictim->GetHealthPercent() > 30.0f &&
+            me->GetPowerPercent(POWER_MANA) > 30.0f &&
+            (arcaneSpec || ShouldBurnMajorCooldown(pVictim)) &&
             CanTryToCastSpell(me, m_spells.mage.pPresenceOfMind))
         {
             if (DoCastSpell(me, m_spells.mage.pPresenceOfMind) == SPELL_CAST_OK)
                 return;
         }
 
-        // Fire talent tree (Combustion / Pyro / Blast Wave): stack Improved Scorch, then Fireball.
-        bool const fireSpec = m_spells.mage.pCombustion || m_spells.mage.pPyroblast ||
-                              m_spells.mage.pBlastWave;
+        if (m_spells.mage.pPresenceOfMind &&
+            me->HasAura(m_spells.mage.pPresenceOfMind->Id))
+        {
+            // PoM makes the next cast instant. Top players spend it on Pyroblast,
+            // otherwise the real filler — never on a channel.
+            SpellEntry const* pPomNuke = nullptr;
+            if (m_spells.mage.pPyroblast)
+                pPomNuke = m_spells.mage.pPyroblast;
+            else if (m_spells.mage.pIceBarrier && m_spells.mage.pFrostbolt)
+                pPomNuke = m_spells.mage.pFrostbolt;
+            else if (m_spells.mage.pFireball)
+                pPomNuke = m_spells.mage.pFireball;
+            else
+                pPomNuke = m_spells.mage.pFrostbolt;
+            if (pPomNuke && CanTryToCastSpell(pVictim, pPomNuke) &&
+                DoCastSpell(pVictim, pPomNuke) == SPELL_CAST_OK)
+                return;
+        }
+
+        // Fire: stack Improved Scorch when the fire tree can apply the vuln.
         if (fireSpec && m_spells.mage.pScorch &&
             pVictim->GetHealthPercent() > 15.0f &&
             GetAuraStackCount(pVictim, PB_SPELL_FIRE_VULNERABILITY) < 5 &&
+            (GetAuraStackCount(pVictim, PB_SPELL_FIRE_VULNERABILITY) > 0 ||
+             m_spells.mage.pCombustion || m_spells.mage.pPyroblast) &&
             CanTryToCastSpell(pVictim, m_spells.mage.pScorch))
         {
             if (DoCastSpell(pVictim, m_spells.mage.pScorch) == SPELL_CAST_OK)
                 return;
         }
 
-        if (m_spells.mage.pFireBlast &&
-            (pVictim->GetHealthPercent() < 25.0f || fireSpec) &&
+        // Fire weaves the instant between Fireballs. Arcane/Frost do not:
+        // Fire Blast is for when a cast will not finish (moving, or the mob is
+        // about to die). Never spend Clearcasting on it.
+        if (fireSpec && !clearcasting && m_spells.mage.pFireBlast &&
             CanTryToCastSpell(pVictim, m_spells.mage.pFireBlast))
         {
             if (DoCastSpell(pVictim, m_spells.mage.pFireBlast) == SPELL_CAST_OK)
                 return;
         }
 
-        // Ranged wand, not the staff. A full nuke on a nearly dead mob wastes
-        // the mana; shoot the rest. Also the fallback when mana cannot cast.
-        if (((pVictim->GetHealthPercent() < 25.0f) ||
-             (me->GetPowerPercent(POWER_MANA) < 10.0f)) &&
+        // Wand only when dry, or finishing a dying mob on a thin bar.
+        // Low HP alone used to Shoot with a full mana bar (player: still bolting).
+        if (!clearcasting &&
+            ((me->GetPowerPercent(POWER_MANA) < 10.0f) ||
+             (pVictim->GetHealthPercent() < 12.0f &&
+              me->GetPowerPercent(POWER_MANA) < 25.0f)) &&
             TryShootWand(pVictim))
             return;
 
-        if (fireSpec && m_spells.mage.pFireball &&
-            CanTryToCastSpell(pVictim, m_spells.mage.pFireball))
+        // Hold still only once the mob is inside the spell, with a couple of yards
+        // to spare. Casting on the edge comes back as "你距离太远" and the mage
+        // stays planted retrying it. A chase still running under the cast is
+        // what cancels it a second later ("被打断").
+        SpellEntry const* pReach = m_spells.mage.pFrostbolt;
+        if (arcaneSpec && m_spells.mage.pPyroblast == nullptr &&
+            m_spells.mage.pArcaneMissiles &&
+            (me->GetPowerPercent(POWER_MANA) > 60.0f || clearcasting))
+            pReach = m_spells.mage.pArcaneMissiles;
+        if (!pReach)
+            pReach = m_spells.mage.pFireball;
+        if (pReach)
         {
-            if (DoCastSpell(pVictim, m_spells.mage.pFireball) == SPELL_CAST_OK)
+            float maxR = 30.0f;
+            if (SpellRangeEntry const* pRange = sSpellRangeStore.LookupEntry(pReach->rangeIndex))
+                maxR = pRange->maxRange;
+            // Own grind: OwnCastReach already shaves yards; chasing at maxR-2
+            // fought the plant band and retried "你距离太远" on the outer edge.
+            float const needCloser = OwnCastReach(maxR);
+            if (me->GetCombatDistance(pVictim) > needCloser)
+            {
+                BeginChasing(pVictim);
+                return;
+            }
+        }
+
+        MovementGeneratorType const nukeMt = me->GetMotionMaster()->GetCurrentMovementGeneratorType();
+        // In range: drop chase and cast this tick. Returning here without a cast
+        // is what planted the mage (chase started, then deleted, no bolt).
+        if (nukeMt == CHASE_MOTION_TYPE || nukeMt == POINT_MOTION_TYPE)
+        {
+            me->GetMotionMaster()->Clear(false, true);
+            me->GetMotionMaster()->MoveIdle();
+        }
+        if (!me->movespline->Finalized())
+        {
+            me->StopMoving();
+            return;
+        }
+        if (me->IsMoving())
+            me->m_movementInfo.RemoveMovementFlag(MOVEFLAG_MASK_MOVING);
+
+        // Arcane: Frostbolt opener / filler; Missiles only on a fat bar (≥60%).
+        // Below that, keep bolting — do not wand until the OOM / finish gate above.
+        bool const arcaneFire = arcaneSpec && m_spells.mage.pPyroblast;
+        bool const standing = !me->IsMoving() && me->movespline->Finalized();
+        bool const manaForMissiles = me->GetPowerPercent(POWER_MANA) > 60.0f || clearcasting;
+
+        if (arcaneSpec && !pVictim->IsInCombat() && m_spells.mage.pFrostbolt &&
+            CanTryToCastSpell(pVictim, m_spells.mage.pFrostbolt) &&
+            DoCastSpell(pVictim, m_spells.mage.pFrostbolt) == SPELL_CAST_OK)
+            return;
+
+        if (arcaneSpec && !clearcasting && m_spells.mage.pFireBlast &&
+            pVictim->GetHealthPercent() < (arcaneFire ? 45.0f : 30.0f) &&
+            CanTryToCastSpell(pVictim, m_spells.mage.pFireBlast) &&
+            DoCastSpell(pVictim, m_spells.mage.pFireBlast) == SPELL_CAST_OK)
+            return;
+
+        if (clearcasting && standing && m_spells.mage.pArcaneMissiles &&
+            CanTryToCastSpell(pVictim, m_spells.mage.pArcaneMissiles) &&
+            DoCastSpell(pVictim, m_spells.mage.pArcaneMissiles) == SPELL_CAST_OK)
+            return;
+
+        if (arcaneSpec && !arcaneFire && manaForMissiles &&
+            pVictim->GetHealthPercent() > 30.0f && standing &&
+            m_spells.mage.pArcaneMissiles &&
+            CanTryToCastSpell(pVictim, m_spells.mage.pArcaneMissiles) &&
+            DoCastSpell(pVictim, m_spells.mage.pArcaneMissiles) == SPELL_CAST_OK)
+            return;
+
+        if (arcaneFire && manaForMissiles && pVictim->GetHealthPercent() > 35.0f &&
+            m_spells.mage.pFireball &&
+            CanTryToCastSpell(pVictim, m_spells.mage.pFireball) &&
+            DoCastSpell(pVictim, m_spells.mage.pFireball) == SPELL_CAST_OK)
+            return;
+
+        if (arcaneFire && manaForMissiles &&
+            me->GetCombatDistance(pVictim) < 8.0f &&
+            pVictim->GetHealthPercent() > 30.0f && standing &&
+            m_spells.mage.pArcaneMissiles &&
+            CanTryToCastSpell(pVictim, m_spells.mage.pArcaneMissiles) &&
+            DoCastSpell(pVictim, m_spells.mage.pArcaneMissiles) == SPELL_CAST_OK)
+            return;
+
+        if (fireSpec || arcaneFire)
+        {
+            if (m_spells.mage.pFireball &&
+                CanTryToCastSpell(pVictim, m_spells.mage.pFireball) &&
+                DoCastSpell(pVictim, m_spells.mage.pFireball) == SPELL_CAST_OK)
+                return;
+            if (m_spells.mage.pFrostbolt &&
+                CanTryToCastSpell(pVictim, m_spells.mage.pFrostbolt) &&
+                DoCastSpell(pVictim, m_spells.mage.pFrostbolt) == SPELL_CAST_OK)
+                return;
+        }
+        else
+        {
+            if (m_spells.mage.pFrostbolt &&
+                CanTryToCastSpell(pVictim, m_spells.mage.pFrostbolt) &&
+                DoCastSpell(pVictim, m_spells.mage.pFrostbolt) == SPELL_CAST_OK)
+                return;
+            if (m_spells.mage.pFireball &&
+                CanTryToCastSpell(pVictim, m_spells.mage.pFireball) &&
+                DoCastSpell(pVictim, m_spells.mage.pFireball) == SPELL_CAST_OK)
                 return;
         }
 
-        if (m_spells.mage.pFrostbolt &&
-            CanTryToCastSpell(pVictim, m_spells.mage.pFrostbolt))
-        {
-            if (DoCastSpell(pVictim, m_spells.mage.pFrostbolt) == SPELL_CAST_OK)
-                return;
-        }
-
-        if (m_spells.mage.pFireball &&
-            CanTryToCastSpell(pVictim, m_spells.mage.pFireball))
-        {
-            if (DoCastSpell(pVictim, m_spells.mage.pFireball) == SPELL_CAST_OK)
-                return;
-        }
-
-        // Execute-range Scorch when Frostbolt / Fireball did not fire.
-        if (m_spells.mage.pScorch &&
+        if (fireSpec && m_spells.mage.pScorch &&
            (pVictim->GetHealthPercent() < 20.0f) &&
             CanTryToCastSpell(pVictim, m_spells.mage.pScorch))
         {
@@ -5630,26 +5836,39 @@ bool PartyBotAI::HasUsableWand() const
         return false;
 
     Item* pRanged = me->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
-    return pRanged && pRanged->GetProto()->SubClass == ITEM_SUBCLASS_WEAPON_WAND;
+    if (!pRanged || pRanged->GetProto()->SubClass != ITEM_SUBCLASS_WEAPON_WAND)
+        return false;
+    // Broken wand still occupies the slot; Shoot then spams "必须装备一个魔杖".
+    if (pRanged->GetProto()->MaxDurability && pRanged->IsBroken())
+        return false;
+    return true;
 }
 
 bool PartyBotAI::TryShootWand(Unit* pVictim)
 {
-    if (!pVictim || !HasUsableWand() || me->IsMoving())
+    if (!pVictim || !HasUsableWand())
         return false;
 
     if (me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
+    {
+        // Same as SoloFarm: autorepeat keeps the facing from Blink / kite.
+        if (!me->IsFacingTarget(pVictim))
+        {
+            me->InterruptSpell(CURRENT_AUTOREPEAT_SPELL, false);
+            EnsureFacing(pVictim);
+        }
         return true;
+    }
 
-    if (me->GetCombatDistance(pVictim) > 30.0f)
+    if (me->GetCombatDistance(pVictim) > OwnCastReach(30.0f))
         return false;
 
-    // Chase / melee swings cancel Shoot; stand still and wand.
-    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
-    {
-        me->GetMotionMaster()->Clear(false, true);
-        me->GetMotionMaster()->MoveIdle();
-    }
+    // Chase / melee swings cancel Shoot; plant then wand.
+    PlantForCast();
+    if (!me->movespline->Finalized() || me->IsMoving() ||
+        me->HasUnitMovementFlag(MOVEFLAG_MASK_MOVING))
+        return false;
+
     if (me->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
     {
         me->ClearUnitState(UNIT_STATE_MELEE_ATTACKING);
@@ -5658,6 +5877,9 @@ bool PartyBotAI::TryShootWand(Unit* pVictim)
     if (me->GetVictim() != pVictim)
         me->Attack(pVictim, false);
 
+    EnsureFacing(pVictim);
+    if (!me->IsFacingTarget(pVictim))
+        return false;
     me->CastSpell(pVictim, PB_SPELL_SHOOT_WAND, false);
     return true;
 }
@@ -5748,7 +5970,10 @@ void PartyBotAI::UpdateInCombatAI_Priest()
 
     if (GetRole() != ROLE_HEALER)
     {
-        if (m_spells.priest.pShadowform &&
+        // 0 Disc / 1 Holy / 2 Shadow
+        bool const shadowSpec = GetPrimaryTalentTabPage() == 2;
+
+        if (shadowSpec && m_spells.priest.pShadowform &&
             CanTryToCastSpell(me, m_spells.priest.pShadowform))
         {
             if (DoCastSpell(me, m_spells.priest.pShadowform) == SPELL_CAST_OK)
@@ -5766,60 +5991,63 @@ void PartyBotAI::UpdateInCombatAI_Priest()
                 return;
         }
 
-        if (m_spells.priest.pVampiricEmbrace &&
-            CanTryToCastSpell(pVictim, m_spells.priest.pVampiricEmbrace))
+        if (shadowSpec)
         {
-            if (DoCastSpell(pVictim, m_spells.priest.pVampiricEmbrace) == SPELL_CAST_OK)
-                return;
-        }
+            if (m_spells.priest.pVampiricEmbrace &&
+                CanTryToCastSpell(pVictim, m_spells.priest.pVampiricEmbrace))
+            {
+                if (DoCastSpell(pVictim, m_spells.priest.pVampiricEmbrace) == SPELL_CAST_OK)
+                    return;
+            }
 
-        if (m_spells.priest.pMindBlast &&
-            CanTryToCastSpell(pVictim, m_spells.priest.pMindBlast))
-        {
-            if (DoCastSpell(pVictim, m_spells.priest.pMindBlast) == SPELL_CAST_OK)
-                return;
-        }
+            if (m_spells.priest.pMindBlast &&
+                CanTryToCastSpell(pVictim, m_spells.priest.pMindBlast))
+            {
+                if (DoCastSpell(pVictim, m_spells.priest.pMindBlast) == SPELL_CAST_OK)
+                    return;
+            }
 
-        if (m_spells.priest.pShadowWordPain &&
-            CanTryToCastSpell(pVictim, m_spells.priest.pShadowWordPain))
-        {
-            if (DoCastSpell(pVictim, m_spells.priest.pShadowWordPain) == SPELL_CAST_OK)
-                return;
-        }
+            if (m_spells.priest.pShadowWordPain &&
+                CanTryToCastSpell(pVictim, m_spells.priest.pShadowWordPain))
+            {
+                if (DoCastSpell(pVictim, m_spells.priest.pShadowWordPain) == SPELL_CAST_OK)
+                    return;
+            }
 
-        if (m_spells.priest.pDevouringPlague &&
-            CanTryToCastSpell(pVictim, m_spells.priest.pDevouringPlague))
-        {
-            if (DoCastSpell(pVictim, m_spells.priest.pDevouringPlague) == SPELL_CAST_OK)
-                return;
-        }
+            if (m_spells.priest.pDevouringPlague &&
+                CanTryToCastSpell(pVictim, m_spells.priest.pDevouringPlague))
+            {
+                if (DoCastSpell(pVictim, m_spells.priest.pDevouringPlague) == SPELL_CAST_OK)
+                    return;
+            }
 
-        // Shadow: with a tank, Fade+stack — do not Psychic Scream the pack apart.
-        if (m_spells.priest.pPsychicScream &&
-            !FindPartyTank() &&
-            GetAttackersInRangeCount(10.0f) &&
-            CanTryToCastSpell(me, m_spells.priest.pPsychicScream))
-        {
-            if (DoCastSpell(me, m_spells.priest.pPsychicScream) == SPELL_CAST_OK)
-                return;
-        }
+            // Shadow: with a tank, Fade+stack — do not Psychic Scream the pack apart.
+            if (m_spells.priest.pPsychicScream &&
+                !FindPartyTank() &&
+                GetAttackersInRangeCount(10.0f) &&
+                CanTryToCastSpell(me, m_spells.priest.pPsychicScream))
+            {
+                if (DoCastSpell(me, m_spells.priest.pPsychicScream) == SPELL_CAST_OK)
+                    return;
+            }
 
-        if (m_spells.priest.pManaBurn &&
-           (pVictim->GetPowerType() == POWER_MANA) &&
-            pVictim->GetPowerPercent(POWER_MANA) > 20.0f &&
-            IsRangedEnemy(pVictim) &&
-            CanTryToCastSpell(pVictim, m_spells.priest.pManaBurn))
-        {
-            if (DoCastSpell(pVictim, m_spells.priest.pManaBurn) == SPELL_CAST_OK)
-                return;
-        }
+            if (m_spells.priest.pManaBurn &&
+               (pVictim->GetPowerType() == POWER_MANA) &&
+                pVictim->GetPowerPercent(POWER_MANA) > 20.0f &&
+                IsRangedEnemy(pVictim) &&
+                CanTryToCastSpell(pVictim, m_spells.priest.pManaBurn))
+            {
+                if (DoCastSpell(pVictim, m_spells.priest.pManaBurn) == SPELL_CAST_OK)
+                    return;
+            }
 
-        if (m_spells.priest.pMindFlay &&
-           (!GetAttackersInRangeCount(10.0f) || me->HasAuraType(SPELL_AURA_SCHOOL_ABSORB)) &&
-            CanTryToCastSpell(pVictim, m_spells.priest.pMindFlay))
-        {
-            if (DoCastSpell(pVictim, m_spells.priest.pMindFlay) == SPELL_CAST_OK)
-                return;
+            if (m_spells.priest.pMindFlay &&
+               (!GetAttackersInRangeCount(10.0f) || me->HasAuraType(SPELL_AURA_SCHOOL_ABSORB)) &&
+                CanTryToCastSpell(pVictim, m_spells.priest.pMindFlay))
+            {
+                if (DoCastSpell(pVictim, m_spells.priest.pMindFlay) == SPELL_CAST_OK)
+                    return;
+            }
         }
 
         if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE
@@ -5828,7 +6056,8 @@ void PartyBotAI::UpdateInCombatAI_Priest()
             BeginChasing(pVictim);
         }
 
-        if (me->GetShapeshiftForm() == FORM_NONE)
+        // Holy / Disc DPS (and shadow without Shadowform yet): Smite line.
+        if (!shadowSpec || me->GetShapeshiftForm() == FORM_NONE)
         {
             if (m_spells.priest.pHolyNova &&
                 GetAttackersInRangeCount(10.0f) > 2 &&
@@ -5838,7 +6067,7 @@ void PartyBotAI::UpdateInCombatAI_Priest()
                     return;
             }
 
-            if (m_spells.priest.pHolyFire &&
+            if (!shadowSpec && m_spells.priest.pHolyFire &&
                 !pVictim->HasAura(m_spells.priest.pHolyFire->Id) &&
                 CanTryToCastSpell(pVictim, m_spells.priest.pHolyFire))
             {
@@ -5846,7 +6075,7 @@ void PartyBotAI::UpdateInCombatAI_Priest()
                     return;
             }
 
-            if (m_spells.priest.pSmite &&
+            if (!shadowSpec && m_spells.priest.pSmite &&
                 CanTryToCastSpell(pVictim, m_spells.priest.pSmite))
             {
                 if (DoCastSpell(pVictim, m_spells.priest.pSmite) == SPELL_CAST_OK)
@@ -5999,33 +6228,46 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
             }
         }
 
-        if (m_spells.warlock.pImmolate &&
-            !pVictim->HasAura(m_spells.warlock.pImmolate->Id) &&
-            CanTryToCastSpell(pVictim, m_spells.warlock.pImmolate))
+        // 0 Affliction / 1 Demonology / 2 Destruction
+        int8 const lockSpec = GetPrimaryTalentTabPage();
+        bool const afflictionSpec = lockSpec == 0;
+        bool const destructionSpec = lockSpec == 2;
+
+        if (afflictionSpec)
         {
-            if (DoCastSpell(pVictim, m_spells.warlock.pImmolate) == SPELL_CAST_OK)
+            if (m_spells.warlock.pCorruption &&
+                CanTryToCastSpell(pVictim, m_spells.warlock.pCorruption) &&
+                DoCastSpell(pVictim, m_spells.warlock.pCorruption) == SPELL_CAST_OK)
+                return;
+            if (m_spells.warlock.pSiphonLife &&
+                CanTryToCastSpell(pVictim, m_spells.warlock.pSiphonLife) &&
+                DoCastSpell(pVictim, m_spells.warlock.pSiphonLife) == SPELL_CAST_OK)
+                return;
+            if (m_spells.warlock.pImmolate &&
+                !pVictim->HasAura(m_spells.warlock.pImmolate->Id) &&
+                CanTryToCastSpell(pVictim, m_spells.warlock.pImmolate) &&
+                DoCastSpell(pVictim, m_spells.warlock.pImmolate) == SPELL_CAST_OK)
                 return;
         }
-
-        if (m_spells.warlock.pConflagrate &&
-            CanTryToCastSpell(pVictim, m_spells.warlock.pConflagrate))
+        else
         {
-            if (DoCastSpell(pVictim, m_spells.warlock.pConflagrate) == SPELL_CAST_OK)
+            if (m_spells.warlock.pImmolate &&
+                !pVictim->HasAura(m_spells.warlock.pImmolate->Id) &&
+                CanTryToCastSpell(pVictim, m_spells.warlock.pImmolate) &&
+                DoCastSpell(pVictim, m_spells.warlock.pImmolate) == SPELL_CAST_OK)
                 return;
-        }
-
-        if (m_spells.warlock.pCorruption &&
-            CanTryToCastSpell(pVictim, m_spells.warlock.pCorruption))
-        {
-            if (DoCastSpell(pVictim, m_spells.warlock.pCorruption) == SPELL_CAST_OK)
+            if (destructionSpec && m_spells.warlock.pConflagrate &&
+                CanTryToCastSpell(pVictim, m_spells.warlock.pConflagrate) &&
+                DoCastSpell(pVictim, m_spells.warlock.pConflagrate) == SPELL_CAST_OK)
                 return;
-        }
-
-        if (m_spells.warlock.pSiphonLife &&
-           (me->GetHealthPercent() < 80.0f) &&
-            CanTryToCastSpell(pVictim, m_spells.warlock.pSiphonLife))
-        {
-            if (DoCastSpell(pVictim, m_spells.warlock.pSiphonLife) == SPELL_CAST_OK)
+            if (m_spells.warlock.pCorruption &&
+                CanTryToCastSpell(pVictim, m_spells.warlock.pCorruption) &&
+                DoCastSpell(pVictim, m_spells.warlock.pCorruption) == SPELL_CAST_OK)
+                return;
+            if (m_spells.warlock.pSiphonLife &&
+               (me->GetHealthPercent() < 80.0f) &&
+                CanTryToCastSpell(pVictim, m_spells.warlock.pSiphonLife) &&
+                DoCastSpell(pVictim, m_spells.warlock.pSiphonLife) == SPELL_CAST_OK)
                 return;
         }
 
@@ -6360,31 +6602,50 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
             }
         }
 
-        if (m_spells.warrior.pMortalStrike &&
-            CanTryToCastSpell(pVictim, m_spells.warrior.pMortalStrike))
+        // 0 Arms / 1 Fury / 2 Protection — tanks skip MS/BT fillers above.
+        int8 const warSpec = GetPrimaryTalentTabPage();
+        bool const armsSpec = warSpec == 0;
+        bool const furySpec = warSpec == 1;
+
+        if (m_role != ROLE_TANK)
         {
-            if (DoCastSpell(pVictim, m_spells.warrior.pMortalStrike) == SPELL_CAST_OK)
-                return;
+            if (armsSpec && m_spells.warrior.pMortalStrike &&
+                CanTryToCastSpell(pVictim, m_spells.warrior.pMortalStrike))
+            {
+                if (DoCastSpell(pVictim, m_spells.warrior.pMortalStrike) == SPELL_CAST_OK)
+                    return;
+            }
+
+            if (furySpec && m_spells.warrior.pBloodthirst &&
+                CanTryToCastSpell(pVictim, m_spells.warrior.pBloodthirst))
+            {
+                if (DoCastSpell(pVictim, m_spells.warrior.pBloodthirst) == SPELL_CAST_OK)
+                    return;
+            }
+
+            // Hybrid / unknown: try whichever is known (old behaviour).
+            if (!armsSpec && !furySpec)
+            {
+                if (m_spells.warrior.pMortalStrike &&
+                    CanTryToCastSpell(pVictim, m_spells.warrior.pMortalStrike) &&
+                    DoCastSpell(pVictim, m_spells.warrior.pMortalStrike) == SPELL_CAST_OK)
+                    return;
+                if (m_spells.warrior.pBloodthirst &&
+                    CanTryToCastSpell(pVictim, m_spells.warrior.pBloodthirst) &&
+                    DoCastSpell(pVictim, m_spells.warrior.pBloodthirst) == SPELL_CAST_OK)
+                    return;
+            }
+
+            // Arms filler: Slam when MS is down.
+            if (armsSpec && m_spells.warrior.pSlam &&
+                CanTryToCastSpell(pVictim, m_spells.warrior.pSlam))
+            {
+                if (DoCastSpell(pVictim, m_spells.warrior.pSlam) == SPELL_CAST_OK)
+                    return;
+            }
         }
 
-        if (m_spells.warrior.pBloodthirst &&
-            CanTryToCastSpell(pVictim, m_spells.warrior.pBloodthirst))
-        {
-            if (DoCastSpell(pVictim, m_spells.warrior.pBloodthirst) == SPELL_CAST_OK)
-                return;
-        }
-
-        // Arms filler: Slam when MS is down and we are not mid-HS dump as tank.
-        if (m_role != ROLE_TANK &&
-            m_spells.warrior.pSlam &&
-            !m_spells.warrior.pBloodthirst &&
-            CanTryToCastSpell(pVictim, m_spells.warrior.pSlam))
-        {
-            if (DoCastSpell(pVictim, m_spells.warrior.pSlam) == SPELL_CAST_OK)
-                return;
-        }
-
-        if (m_spells.warrior.pIntercept &&
+        if (furySpec && m_spells.warrior.pIntercept &&
             CanTryToCastSpell(pVictim, m_spells.warrior.pIntercept))
         {
             if (DoCastSpell(pVictim, m_spells.warrior.pIntercept) == SPELL_CAST_OK)
@@ -6393,6 +6654,7 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
 
         if (m_spells.warrior.pWhirlwind &&
             !ShouldFocusBeforeCleave() &&
+            (furySpec || me->GetEnemyCountInRadiusAround(pVictim, 8.0f) > 1) &&
             me->GetEnemyCountInRadiusAround(pVictim, 8.0f) > 1 &&
             CanTryToCastSpell(me, m_spells.warrior.pWhirlwind))
         {
@@ -6706,31 +6968,43 @@ void PartyBotAI::UpdateInCombatAI_Rogue()
             }
         }
 
-        if (m_spells.rogue.pBackstab &&
-            CanTryToCastSpell(pVictim, m_spells.rogue.pBackstab))
+        // 0 Assassination / 1 Combat / 2 Subtlety — one builder per tree.
+        int8 const rogueSpec = GetPrimaryTalentTabPage();
+        if (rogueSpec == 0)
         {
-            if (DoCastSpell(pVictim, m_spells.rogue.pBackstab) == SPELL_CAST_OK)
+            if (m_spells.rogue.pBackstab &&
+                CanTryToCastSpell(pVictim, m_spells.rogue.pBackstab) &&
+                DoCastSpell(pVictim, m_spells.rogue.pBackstab) == SPELL_CAST_OK)
+                return;
+            if (m_spells.rogue.pSinisterStrike &&
+                CanTryToCastSpell(pVictim, m_spells.rogue.pSinisterStrike) &&
+                DoCastSpell(pVictim, m_spells.rogue.pSinisterStrike) == SPELL_CAST_OK)
                 return;
         }
-
-        if (m_spells.rogue.pGhostlyStrike &&
-            CanTryToCastSpell(pVictim, m_spells.rogue.pGhostlyStrike))
+        else if (rogueSpec == 2)
         {
-            if (DoCastSpell(pVictim, m_spells.rogue.pGhostlyStrike) == SPELL_CAST_OK)
+            if (m_spells.rogue.pHemorrhage &&
+                CanTryToCastSpell(pVictim, m_spells.rogue.pHemorrhage) &&
+                DoCastSpell(pVictim, m_spells.rogue.pHemorrhage) == SPELL_CAST_OK)
+                return;
+            if (m_spells.rogue.pGhostlyStrike &&
+                CanTryToCastSpell(pVictim, m_spells.rogue.pGhostlyStrike) &&
+                DoCastSpell(pVictim, m_spells.rogue.pGhostlyStrike) == SPELL_CAST_OK)
+                return;
+            if (m_spells.rogue.pSinisterStrike &&
+                CanTryToCastSpell(pVictim, m_spells.rogue.pSinisterStrike) &&
+                DoCastSpell(pVictim, m_spells.rogue.pSinisterStrike) == SPELL_CAST_OK)
                 return;
         }
-
-        if (m_spells.rogue.pHemorrhage &&
-            CanTryToCastSpell(pVictim, m_spells.rogue.pHemorrhage))
+        else // Combat / default
         {
-            if (DoCastSpell(pVictim, m_spells.rogue.pHemorrhage) == SPELL_CAST_OK)
+            if (m_spells.rogue.pGhostlyStrike &&
+                CanTryToCastSpell(pVictim, m_spells.rogue.pGhostlyStrike) &&
+                DoCastSpell(pVictim, m_spells.rogue.pGhostlyStrike) == SPELL_CAST_OK)
                 return;
-        }
-
-        if (m_spells.rogue.pSinisterStrike &&
-            CanTryToCastSpell(pVictim, m_spells.rogue.pSinisterStrike))
-        {
-            if (DoCastSpell(pVictim, m_spells.rogue.pSinisterStrike) == SPELL_CAST_OK)
+            if (m_spells.rogue.pSinisterStrike &&
+                CanTryToCastSpell(pVictim, m_spells.rogue.pSinisterStrike) &&
+                DoCastSpell(pVictim, m_spells.rogue.pSinisterStrike) == SPELL_CAST_OK)
                 return;
         }
 
@@ -7048,6 +7322,7 @@ void PartyBotAI::UpdateInCombatAI_Druid()
                 }
             }
 
+            // Feral (tab 1): Shred > Rake; Claw only if Shred cannot land.
             if (m_spells.druid.pShred &&
                 CanTryToCastSpell(pVictim, m_spells.druid.pShred))
             {
@@ -7062,7 +7337,8 @@ void PartyBotAI::UpdateInCombatAI_Druid()
                     return;
             }
 
-            if (m_spells.druid.pClaw &&
+            if ((!m_spells.druid.pShred || GetPrimaryTalentTabPage() != 1) &&
+                m_spells.druid.pClaw &&
                 CanTryToCastSpell(pVictim, m_spells.druid.pClaw))
             {
                 if (DoCastSpell(pVictim, m_spells.druid.pClaw) == SPELL_CAST_OK)
@@ -7209,8 +7485,11 @@ void PartyBotAI::UpdateInCombatAI_Druid()
                     return;
             }
 
+            // Balance (tab 0): Starfire earlier; other trees Wrath-first.
+            bool const balanceSpec = GetPrimaryTalentTabPage() == 0;
+            float const starfireHp = balanceSpec ? 30.0f : 50.0f;
             if (m_spells.druid.pStarfire &&
-               (pVictim->GetHealthPercent() > 50.0f) &&
+               (pVictim->GetHealthPercent() > starfireHp) &&
                 CanTryToCastSpell(pVictim, m_spells.druid.pStarfire))
             {
                 if (DoCastSpell(pVictim, m_spells.druid.pStarfire) == SPELL_CAST_OK)
