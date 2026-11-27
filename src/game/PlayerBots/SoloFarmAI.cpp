@@ -421,8 +421,11 @@ void SoloFarmAI::Stop(SoloFarmStop reason)
 
     if (me->IsInWorld())
     {
-        if (DoesFish() && me->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
-            me->InterruptSpell(CURRENT_CHANNELED_SPELL);
+        // Only the fishing channel — Evocation / Missiles / Blizzard must finish.
+        if (DoesFish() && m_fishingSpell)
+            if (Spell* pChannel = me->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
+                if (pChannel->m_spellInfo->Id == m_fishingSpell)
+                    me->InterruptSpell(CURRENT_CHANNELED_SPELL);
         if (me->IsNonMeleeSpellCasted(false))
             me->InterruptSpell(CURRENT_GENERIC_SPELL);
         if (me->IsAlive())
@@ -1004,8 +1007,11 @@ void SoloFarmAI::UpdateAI(uint32 const diff)
                 }
             }
         }
-        if (DoesFish() && me->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
-            me->InterruptSpell(CURRENT_CHANNELED_SPELL);
+        // Combat must cut the fishing bobber, not every channel (唤醒 / 奥术飞弹 / 暴风雪).
+        if (DoesFish() && m_fishingSpell)
+            if (Spell* pChannel = me->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
+                if (pChannel->m_spellInfo->Id == m_fishingSpell)
+                    me->InterruptSpell(CURRENT_CHANNELED_SPELL);
         if (DoesFish())
             RestoreWeapons();
         if (UpdateCombat())

@@ -2861,13 +2861,16 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         if (TryInterruptEnemyCast())
             return;
 
+        // Movement cancels channels (Evocation, Arcane Missiles, Blizzard, …).
+        // Only reposition under a timed cast bar; stay planted for channels.
+        bool const castingChannel = me->GetCurrentSpell(CURRENT_CHANNELED_SPELL) != nullptr;
         bool castingHeal = false;
         if (Spell const* pSpell = me->GetCurrentSpell(CURRENT_GENERIC_SPELL))
             castingHeal = pSpell->m_spellInfo->IsHealSpell();
         else if (Spell const* pSpell = me->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
             castingHeal = pSpell->m_spellInfo->IsHealSpell();
 
-        if (!castingHeal)
+        if (!castingHeal && !castingChannel)
         {
             if (Unit* pVictim = me->GetVictim())
             {
@@ -5761,8 +5764,17 @@ void PartyBotAI::UpdateInCombatAI_Mage()
            (GetAttackersInRangeCount(10.0f) == 0) &&
             CanTryToCastSpell(me, m_spells.mage.pEvocation))
         {
+            // Wand Shoot (cat 351) starting mid-channel would cancel Evocation.
+            if (me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
+                me->InterruptSpell(CURRENT_AUTOREPEAT_SPELL, true);
+            ObjectGuid const prevTarget = me->GetTargetGuid();
             if (DoCastSpell(me, m_spells.mage.pEvocation) == SPELL_CAST_OK)
+            {
+                // DoCastSpell aimed at self; keep the kill target for facing / bots.
+                if (!prevTarget.IsEmpty() && prevTarget != me->GetObjectGuid())
+                    me->SetTargetGuid(prevTarget);
                 return;
+            }
         }
     }
 }
