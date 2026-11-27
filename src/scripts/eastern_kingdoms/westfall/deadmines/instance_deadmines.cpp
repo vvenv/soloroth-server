@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2009 ScriptDev2 <https://scriptdev2.svn.sourceforge.net/>
+/*
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -14,412 +14,371 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-/* ScriptData
-SDName: Instance_Deadmines
-SD%Complete: 0
-SDComment: Placeholder
-SDCategory: Deadmines
-EndScriptData */
-
 #include "scriptPCH.h"
+#include "Utilities/EventMap.h"
 #include "deadmines.h"
+
+enum DeadMinesEvents : uint16
+{
+    EVENT_IRON_DOOR_ALARM1   = 1,
+    EVENT_IRON_DOOR_ALARM2   = 2,
+    EVENT_GUNPOWDER_OVERSEER = 3
+};
+
+static uint32 const aIronDoorAlarmRunners[] = { GUID_IRON_DOOR_ALARM_1, GUID_IRON_DOOR_ALARM_2, GUID_IRON_DOOR_ALARM_3 };
 
 struct instance_deadmines : public ScriptedInstance
 {
-    instance_deadmines(Map* pMap) : ScriptedInstance(pMap)
+    explicit instance_deadmines(Map* pMap) : ScriptedInstance(pMap)
     {
         Initialize();
     };
 
     uint32 m_auiEncounter[INSTANCE_DM_MAX_ENCOUNTER];
-    std::string strInstData;
 
     uint64 m_uiIronCladGUID;
-    uint64 m_uiCannonGUID;
     uint64 m_uiSmiteGUID;
-    uint64 m_uiRhahkGUID;
-    uint64 m_uiGilnidGUID;
 
     uint64 m_uiDoor1GUID;
     uint64 m_uiDoor2GUID;
     uint64 m_uiDoor3GUID;
 
-    uint32 m_uiSpawnPatrolOnRhahkDeath;
-    bool   m_isRhahkDead;
-    uint32 m_isGunPowderEventDone;
-    bool   m_isGilnidDead;
-    uint32 m_uiSpawnPatrolOnGilnidDeath;
+    uint32 m_uiGunPowderEvent;
 
-    uint32 m_uiIronDoorTimer;
-    uint32 m_uiIronDoorStep;
+    std::string m_strInstData;
+
+    EventMap m_events;
 
     void Initialize() override
     {
-        memset(&m_auiEncounter, 0, sizeof(m_auiEncounter));
-        strInstData.clear();
+        std::fill(std::begin(m_auiEncounter), std::end(m_auiEncounter), 0);
 
         m_uiIronCladGUID = 0;
-        m_uiCannonGUID = 0;
-        m_uiSmiteGUID = 0;
-        m_uiRhahkGUID = 0;
-        m_uiGilnidGUID = 0;
-        m_uiSpawnPatrolOnRhahkDeath = 30000;
-        m_isRhahkDead = false;
-        m_isGunPowderEventDone = 0;
-        m_isGilnidDead = false;
-        m_uiSpawnPatrolOnGilnidDeath = 30000;
-
-        m_uiIronDoorTimer = 0;
-        m_uiIronDoorStep = 0;
+        m_uiSmiteGUID    = 0;
 
         m_uiDoor1GUID = 0;
         m_uiDoor2GUID = 0;
         m_uiDoor3GUID = 0;
+
+        m_uiGunPowderEvent = 0;
+
+        m_events.Reset();
     }
 
     void OnCreatureCreate(Creature* pCreature) override
     {
-        if (pCreature->GetEntry() == NPC_RHAHKZOR)
-            m_uiRhahkGUID = pCreature->GetGUID();
-
-        if (pCreature->GetEntry() == NPC_GILDNID)
-            m_uiGilnidGUID = pCreature->GetGUID();
-
         if (pCreature->GetEntry() == NPC_MR_SMITE)
+        {
             m_uiSmiteGUID = pCreature->GetGUID();
-
-        /** Initialize Rhahz Patrol */
-        if (pCreature->GetRespawnDelay() == 43199)
-        {
-            pCreature->SetVisibility(VISIBILITY_OFF);
-            pCreature->SetFactionTemplateId(35);
-        }
-
-        /** Initialize Gilnid Patrol */
-        if (pCreature->GetRespawnDelay() == 43201)
-        {
-            pCreature->SetVisibility(VISIBILITY_OFF);
-            pCreature->SetFactionTemplateId(35);
         }
     }
 
-    void PersistEncounters()
+    Creature* GetCreatureByDbGuid(uint32 dbGuid)
     {
-        strInstData = GenSaveData(m_auiEncounter, INSTANCE_DM_MAX_ENCOUNTER - 1);
-        OUT_SAVE_INST_DATA;
-        SaveToDB();
-        OUT_SAVE_INST_DATA_COMPLETE;
-    }
-
-    void OpenDoorIfDone(uint32 encounter, uint64 doorGuid)
-    {
-        if (m_auiEncounter[encounter] != DONE || !doorGuid)
-            return;
-        if (GameObject* pGo = instance->GetGameObject(doorGuid))
-            if (pGo->GetGoState() != GO_STATE_ACTIVE)
-                DoOpenDoor(doorGuid);
-    }
-
-    // Bosses that open doors leave a creature_respawn row; use it when the
-    // encounter string was wiped by an empty Save() after logout.
-    bool IsSpawnDown(uint32 entry) const
-    {
-        MapPersistentState* state = instance->GetPersistentState();
-        if (!state)
-            return false;
-        time_t now = time(nullptr);
-        bool down = false;
-        auto worker = [&](CreatureDataPair const& pair) -> bool
+        if (CreatureData const* pData = sObjectMgr.GetCreatureData(dbGuid))
         {
-            if (pair.second.position.mapId != instance->GetId())
-                return false;
-            if (!pair.second.HasCreatureId(entry))
-                return false;
-            if (state->GetCreatureRespawnTime(pair.first) > now)
+            return instance->GetCreature(pData->GetObjectGuid(dbGuid));
+        }
+
+        return nullptr;
+    }
+
+    // The boss-death patrols are linked with FLAG_CANT_SPAWN_IF_BOSS_ALIVE: they wait dead and would
+    // spawn at the next update after the death. A respawn time set in the same tick delays that.
+    void DelayPatrolSpawn(uint32 dbGuid, uint32 seconds)
+    {
+        if (Creature* pCreature = GetCreatureByDbGuid(dbGuid))
+        {
+            if (!pCreature->IsAlive())
             {
-                down = true;
-                return true;
+                pCreature->SetRespawnTime(seconds);
             }
-            return false;
-        };
-        sObjectMgr.DoCreatureData(worker);
-        return down;
-    }
-
-    void SyncDoorsFromRespawns()
-    {
-        bool changed = false;
-        if (m_auiEncounter[TYPE_RHAHKZOR_DOOR] != DONE && IsSpawnDown(NPC_RHAHKZOR))
-        {
-            m_auiEncounter[TYPE_RHAHKZOR_DOOR] = DONE;
-            m_isRhahkDead = true;
-            changed = true;
         }
-        if (m_auiEncounter[TYPE_SNEED_DOOR] != DONE && IsSpawnDown(NPC_SNEED))
-        {
-            m_auiEncounter[TYPE_SNEED_DOOR] = DONE;
-            changed = true;
-        }
-        if (m_auiEncounter[TYPE_GILNID_DOOR] != DONE && IsSpawnDown(NPC_GILDNID))
-        {
-            m_auiEncounter[TYPE_GILNID_DOOR] = DONE;
-            m_isGilnidDead = true;
-            changed = true;
-        }
-        if (changed)
-            PersistEncounters();
-    }
-
-    void NoteDoorBossDone(uint32 encounter, uint64 doorGuid)
-    {
-        m_auiEncounter[encounter] = DONE;
-        OpenDoorIfDone(encounter, doorGuid);
-        PersistEncounters();
     }
 
     void OnCreatureDeath(Creature *who) override
     {
         switch (who->GetEntry())
         {
-            case NPC_RHAHKZOR :
-                m_isRhahkDead = true;
-                m_uiSpawnPatrolOnRhahkDeath = 60000;
-                NoteDoorBossDone(TYPE_RHAHKZOR_DOOR, m_uiDoor1GUID);
+            case NPC_RHAHKZOR:
+            {
+                SetData(TYPE_RHAHKZOR, DONE);
+                DelayPatrolSpawn(GUID_RHAHK_PATROL_OVERSEER, 45);
+                DelayPatrolSpawn(GUID_RHAHK_PATROL_EVOKER, 45);
                 break;
-            case NPC_SNEED :
-                NoteDoorBossDone(TYPE_SNEED_DOOR, m_uiDoor2GUID);
+            }
+            case NPC_SNEEDS_SHREDDER:
+            {
+                // Sneed's patrol is linked to the Shredder (Sneed is a summon), it comes after Sneed's death
+                DelayPatrolSpawn(GUID_SNEED_PATROL_EVOKER, HOUR);
+                DelayPatrolSpawn(GUID_SNEED_PATROL_OVERSEER, HOUR);
                 break;
-            case NPC_GILDNID :
-                m_isGilnidDead = true;
-                m_uiSpawnPatrolOnGilnidDeath = 30000;
-                NoteDoorBossDone(TYPE_GILNID_DOOR, m_uiDoor3GUID);
+            }
+            case NPC_SNEED:
+            {
+                SetData(TYPE_SNEED, DONE);
+                DelayPatrolSpawn(GUID_SNEED_PATROL_EVOKER, 4);
+                DelayPatrolSpawn(GUID_SNEED_PATROL_OVERSEER, 4);
                 break;
+            }
+            case NPC_GILNID:
+            {
+                SetData(TYPE_GILNID, DONE);
+                break;
+            }
+            case NPC_EDWIN_VAN_CLEEF:
+            {
+                // unused
+                break;
+            }
         }
     }
 
     void OnObjectCreate(GameObject* pGo) override
     {
         if (pGo->GetEntry() == GO_IRON_CLAD)
+        {
             m_uiIronCladGUID = pGo->GetGUID();
-
-        if (pGo->GetEntry() == GO_DEFIAS_CANNON)
-            m_uiCannonGUID = pGo->GetGUID();
+            if (m_auiEncounter[TYPE_DEFIAS_ENDDOOR] == DONE)
+            {
+                pGo->SetGoState(GO_STATE_ACTIVE_ALTERNATIVE);
+            }
+        }
 
         if (pGo->GetEntry() == GO_DOOR1)
         {
             m_uiDoor1GUID = pGo->GetGUID();
-            if (m_auiEncounter[TYPE_RHAHKZOR_DOOR] == DONE)
+            if (m_auiEncounter[TYPE_RHAHKZOR] == DONE)
+            {
                 pGo->SetGoState(GO_STATE_ACTIVE);
+                pGo->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_LOCKED);
+            }
         }
+
         if (pGo->GetEntry() == GO_DOOR2 && pGo->GetPositionX() > -291.0f && pGo->GetPositionX() < -290.0f)
         {
             m_uiDoor2GUID = pGo->GetGUID();
-            if (m_auiEncounter[TYPE_SNEED_DOOR] == DONE)
+            if (m_auiEncounter[TYPE_SNEED] == DONE)
+            {
                 pGo->SetGoState(GO_STATE_ACTIVE);
+                pGo->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_LOCKED);
+            }
         }
+
         if (pGo->GetEntry() == GO_DOOR3 && pGo->GetPositionX() > -169.0f && pGo->GetPositionX() < -168.0f)
         {
             m_uiDoor3GUID = pGo->GetGUID();
-            if (m_auiEncounter[TYPE_GILNID_DOOR] == DONE)
+            if (m_auiEncounter[TYPE_GILNID] == DONE)
+            {
                 pGo->SetGoState(GO_STATE_ACTIVE);
+                pGo->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_LOCKED);
+            }
         }
 
         if (pGo->GetEntry() == GO_DMF_CHEST)
+        {
             pGo->SetVisible(false);
+        }
+    }
+
+    // The boss doors are LOCKED by their template while closed, UseDoorOrButton keeps the flag
+    void OpenDoor(uint64 guid)
+    {
+        if (GameObject* pGo = instance->GetGameObject(guid))
+        {
+            pGo->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_LOCKED);
+            if (pGo->GetGoState() != GO_STATE_ACTIVE)
+            {
+                DoUseDoorOrButton(guid);
+            }
+        }
     }
 
     void SetData(uint32 uiType, uint32 uiData) override
     {
-        if (uiType == TYPE_DEFIAS_ENDDOOR)
+        switch (uiType)
         {
-            if (uiData == IN_PROGRESS)
+            case TYPE_RHAHKZOR:
             {
-                if (GameObject* pGo = instance->GetGameObject(m_uiIronCladGUID))
+                if (uiData == DONE)
                 {
-                    // no breaking the door if it's open
-                    if (!(pGo->GetGoState() == GO_STATE_ACTIVE))
-                        pGo->UseDoorOrButton(0, true);
-                    m_uiIronDoorTimer = 3000;
+                    OpenDoor(m_uiDoor1GUID);
                 }
+                break;
             }
-            m_auiEncounter[TYPE_DEFIAS_ENDDOOR] = uiData;
-            if (uiData == DONE || uiData == SPECIAL || uiData == FAIL)
-                PersistEncounters();
+            case TYPE_SNEED:
+            {
+                if (uiData == DONE)
+                {
+                    OpenDoor(m_uiDoor2GUID);
+                }
+                break;
+            }
+            case TYPE_GILNID:
+            {
+                if (uiData == DONE)
+                {
+                    OpenDoor(m_uiDoor3GUID);
+                }
+                break;
+            }
+            case TYPE_DEFIAS_ENDDOOR:
+            {
+                if (uiData == DONE)
+                {
+                    if (GameObject* pGo = instance->GetGameObject(m_uiIronCladGUID))
+                    {
+                        // No breaking the door if it's open
+                        if (pGo->GetGoState() != GO_STATE_ACTIVE)
+                        {
+                            pGo->UseDoorOrButton(0, true);
+                        }
+
+                        m_events.ScheduleEvent(EVENT_IRON_DOOR_ALARM1, Seconds(1));
+                    }
+                }
+                break;
+            }
+            case GUN_POWDER_EVENT:
+            {
+                if (uiData == 1 && m_uiGunPowderEvent == 0)
+                {
+                    m_events.ScheduleEvent(EVENT_GUNPOWDER_OVERSEER, Seconds(1));
+                }
+                m_uiGunPowderEvent = uiData;
+                return;
+            }
+            default:
+            {
+                return;
+            }
         }
-        else if (uiType == GUN_POWDER_EVENT)
-            m_isGunPowderEventDone = uiData;
+
+        m_auiEncounter[uiType] = uiData;
+
+        if (uiData == DONE)
+        {
+            SaveToDB();
+        }
     }
 
     uint32 GetData(uint32 uiType) override
     {
-        if (uiType == TYPE_DEFIAS_ENDDOOR)
-            return m_auiEncounter[TYPE_DEFIAS_ENDDOOR];
-        else if (uiType == GUN_POWDER_EVENT)
-            return m_isGunPowderEventDone;
-        else if (uiType < INSTANCE_DM_MAX_ENCOUNTER)
+        if (uiType < INSTANCE_DM_MAX_ENCOUNTER)
+        {
             return m_auiEncounter[uiType];
-        return 0;
-    }
+        }
 
-    uint64 GetData64(uint32 uiData) override
-    {
-        if (uiData == DATA_DEFIAS_DOOR)
-            return m_uiIronCladGUID;
+        if (uiType == GUN_POWDER_EVENT)
+        {
+            return m_uiGunPowderEvent;
+        }
 
         return 0;
     }
 
     char const* Save() override
     {
-        // Never return empty: KeepInstanceProgress calls SaveToDB and would
-        // wipe a good row if strInstData was never filled after Load.
-        if (strInstData.empty())
-            strInstData = GenSaveData(m_auiEncounter, INSTANCE_DM_MAX_ENCOUNTER - 1);
-        return strInstData.c_str();
+        std::ostringstream saveStream;
+        for (uint32 const state : m_auiEncounter)
+        {
+            saveStream << state << " ";
+        }
+
+        m_strInstData = saveStream.str();
+        return m_strInstData.c_str();
     }
 
     void Load(char const* chrIn) override
     {
-        if (!chrIn || !*chrIn)
+        if (!chrIn)
         {
             OUT_LOAD_INST_DATA_FAIL;
-            SyncDoorsFromRespawns();
-            strInstData = GenSaveData(m_auiEncounter, INSTANCE_DM_MAX_ENCOUNTER - 1);
             return;
         }
 
         OUT_LOAD_INST_DATA(chrIn);
 
         std::istringstream loadStream(chrIn);
-        // Old saves only stored the iron-clad door in one field.
-        loadStream >> m_auiEncounter[0];
-        if (!(loadStream >> m_auiEncounter[1] >> m_auiEncounter[2] >> m_auiEncounter[3]))
+        for (uint32& state : m_auiEncounter)
         {
-            m_auiEncounter[TYPE_DEFIAS_ENDDOOR] = m_auiEncounter[0];
-            m_auiEncounter[TYPE_RHAHKZOR_DOOR] = NOT_STARTED;
-            m_auiEncounter[TYPE_SNEED_DOOR] = NOT_STARTED;
-            m_auiEncounter[TYPE_GILNID_DOOR] = NOT_STARTED;
+            loadStream >> state;
         }
 
-        for (uint32 & i : m_auiEncounter)
-        {
-            if (i == IN_PROGRESS)
-                i = NOT_STARTED;
-        }
-
-        SyncDoorsFromRespawns();
-
-        if (m_auiEncounter[TYPE_RHAHKZOR_DOOR] == DONE)
-            m_isRhahkDead = true;
-        if (m_auiEncounter[TYPE_GILNID_DOOR] == DONE)
-            m_isGilnidDead = true;
-
-        strInstData = GenSaveData(m_auiEncounter, INSTANCE_DM_MAX_ENCOUNTER - 1);
         OUT_LOAD_INST_DATA_COMPLETE;
+    }
+
+    uint64 GetData64(uint32 uiData) override
+    {
+        if (uiData == DATA_DEFIAS_DOOR)
+        {
+            return m_uiIronCladGUID;
+        }
+
+        return 0;
+    }
+
+    void UpdateEvents()
+    {
+        while (uint32 const eventId = m_events.ExecuteEvent())
+        {
+            switch (eventId)
+            {
+                case EVENT_IRON_DOOR_ALARM1:
+                {
+                    if (Creature* pMrSmite = instance->GetCreature(m_uiSmiteGUID))
+                    {
+                        DoScriptText(INST_SAY_ALARM1, pMrSmite);
+                    }
+
+                    // The idle generator under the point keeps them at the door until alarm 2.
+                    // An evade clears it (MoveTargetedHome).
+                    for (uint32 const dbGuid : aIronDoorAlarmRunners)
+                    {
+                        Creature* pRunner = GetCreatureByDbGuid(dbGuid);
+                        if (pRunner && pRunner->IsAlive() && !pRunner->IsInCombat())
+                        {
+                            pRunner->GetMotionMaster()->MoveIdle();
+                            pRunner->GetMotionMaster()->MovePoint(0, -99.6611f, -671.071655f, 7.42241f, MOVE_PATHFINDING | MOVE_RUN_MODE);
+                        }
+                    }
+                    m_events.ScheduleEvent(EVENT_IRON_DOOR_ALARM2, Seconds(15));
+                    break;
+                }
+                case EVENT_IRON_DOOR_ALARM2:
+                {
+                    if (Creature* pMrSmite = instance->GetCreature(m_uiSmiteGUID))
+                    {
+                        DoScriptText(INST_SAY_ALARM2, pMrSmite);
+                    }
+
+                    for (uint32 const dbGuid : aIronDoorAlarmRunners)
+                    {
+                        Creature* pRunner = GetCreatureByDbGuid(dbGuid);
+                        if (pRunner && pRunner->IsAlive() && pRunner->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE)
+                        {
+                            pRunner->GetMotionMaster()->MovementExpired();
+                        }
+                    }
+                    break;
+                }
+                case EVENT_GUNPOWDER_OVERSEER:
+                {
+                    if (Creature* pOverseer = instance->SummonCreature(NPC_DEFIAS_OVERSEER, -130.7757f, -605.4729f, 15.23518f, 5.445427f, TEMPSUMMON_TIMED_DESPAWN_OUT_OF_COMBAT, 310000))
+                    {
+                        pOverseer->SetHomePosition(-115.263672f, -617.396118f, 13.579387f, 6.182347f);
+                        pOverseer->GetMotionMaster()->MovePoint(0, -115.263672f, -617.396118f, 13.579387f, MOVE_PATHFINDING | MOVE_RUN_MODE, 0.0f, 6.182347f);
+                    }
+                    break;
+                }
+            }
+        }
     }
 
     void Update(uint32 uiDiff) override
     {
-        if (m_isRhahkDead && m_uiSpawnPatrolOnRhahkDeath)
-        {
-            if (m_uiSpawnPatrolOnRhahkDeath <= uiDiff)
-            {
-                if (Creature* pRhahk = instance->GetCreature(m_uiRhahkGUID))
-                {
-                    std::list<Creature*> escortList;
-
-                    GetCreatureListWithEntryInGrid(escortList, pRhahk, 634, 400.0f);
-                    for (const auto& it : escortList)
-                        if (it->GetRespawnDelay() == 43199)
-                        {
-                            it->SetVisibility(VISIBILITY_ON);
-                            it->SetFactionTemplateId(17);
-                        }
-                    escortList.clear();
-
-                    GetCreatureListWithEntryInGrid(escortList, pRhahk, 1729, 400.0f);
-                    for (const auto& it : escortList)
-                        if (it->GetRespawnDelay() == 43199)
-                        {
-                            it->SetVisibility(VISIBILITY_ON);
-                            it->SetFactionTemplateId(17);
-                        }
-                    escortList.clear();
-
-                    m_uiSpawnPatrolOnRhahkDeath = 0;
-                }
-            }
-            else
-                m_uiSpawnPatrolOnRhahkDeath -= uiDiff;
-        }
-
-        if (m_isGilnidDead && m_uiSpawnPatrolOnGilnidDeath)
-        {
-            if (m_uiSpawnPatrolOnGilnidDeath <= uiDiff)
-            {
-                if (Creature* pGilnid = instance->GetCreature(m_uiGilnidGUID))
-                {
-                    std::list<Creature*> escortList;
-
-                    GetCreatureListWithEntryInGrid(escortList, pGilnid, 4417, 400.0f);
-                    for (const auto& it : escortList)
-                        if (it->GetRespawnDelay() == 43201)
-                        {
-                            it->SetVisibility(VISIBILITY_ON);
-                            it->SetFactionTemplateId(17);
-                        }
-                    escortList.clear();
-
-                    GetCreatureListWithEntryInGrid(escortList, pGilnid, 4418, 400.0f);
-                    for (const auto& it : escortList)
-                        if (it->GetRespawnDelay() == 43201)
-                        {
-                            it->SetVisibility(VISIBILITY_ON);
-                            it->SetFactionTemplateId(17);
-                        }
-                    escortList.clear();
-
-                    m_uiSpawnPatrolOnGilnidDeath = 0;
-                }
-            }
-            else
-                m_uiSpawnPatrolOnGilnidDeath -= uiDiff;
-        }
-
-        if (m_uiIronDoorTimer)
-        {
-            if (m_uiIronDoorTimer <= uiDiff)
-            {
-                if (Creature* pMrSmite = instance->GetCreature(m_uiSmiteGUID))
-                {
-                    std::list<Creature*> escortList;
-
-                    switch (m_uiIronDoorStep)
-                    {
-                        case 0:
-                            DoScriptText(INST_SAY_ALARM1, pMrSmite);
-                            GetCreatureListWithEntryInGrid(escortList, pMrSmite, 657, 400.0f);
-                            for (const auto& it : escortList)
-                                if (it->GetRespawnDelay() == 43202)
-                                    it->GetMotionMaster()->MovePoint(0, -99.6611f, -671.071655f, 7.42241f, MOVE_PATHFINDING | MOVE_RUN_MODE);
-                            escortList.clear();
-                            ++m_uiIronDoorStep;
-                            m_uiIronDoorTimer = 15000;
-                            break;
-                        case 1:
-                            DoScriptText(INST_SAY_ALARM2, pMrSmite);
-                            m_uiIronDoorStep = 0;
-                            m_uiIronDoorTimer = 0;
-                            sLog.Out(LOG_SCRIPTS, LOG_LVL_DEBUG, "Instance Deadmines: Iron door event reached end.");
-                            break;
-                    }
-                }
-                else
-                    m_uiIronDoorTimer = 0;
-            }
-            else
-                m_uiIronDoorTimer -= uiDiff;
-        }
+        m_events.Update(uiDiff);
+        UpdateEvents();
     }
 };
 

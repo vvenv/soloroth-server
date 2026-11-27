@@ -552,7 +552,6 @@ void Master::_OnSignal(int s)
                 return;
             m_handleSigvSignals = false; // Disarm anti-crash
 
-            std::exception_ptr exc = std::current_exception();
             sWorld.SetAnticrashRearmTimer(sWorld.getConfig(CONFIG_UINT32_ANTICRASH_REARM_TIMER));
             uint32 anticrashOptions = sWorld.getConfig(CONFIG_UINT32_ANTICRASH_OPTIONS);
 
@@ -580,7 +579,8 @@ void Master::_OnSignal(int s)
                 std::this_thread::sleep_for(std::chrono::seconds(25));
             }
 
-            std::rethrow_exception(exc); // Crash for real now.
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Terminating after SIGSEGV handling");
+            std::abort();
             return;
     }
 
