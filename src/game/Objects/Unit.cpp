@@ -7108,7 +7108,7 @@ void Unit::UpdateSpeed(UnitMoveType mtype, bool forced, float ratio)
     {
         if (GetDeathState() == CORPSE)
             speed *= sWorld.getConfig(((Player*)this)->InBattleGround() ? CONFIG_FLOAT_GHOST_RUN_SPEED_BG : CONFIG_FLOAT_GHOST_RUN_SPEED_WORLD);
-        // Soloroth: persistent run multiplier (default 2×); `.modify speed` sets it.
+        // Soloroth: persistent run multiplier (default 1× / stock); `.modify speed` sets it.
         if (mtype == MOVE_RUN)
             speed *= ((Player*)this)->GetSoloMoveSpeed();
     }

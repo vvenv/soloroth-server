@@ -981,7 +981,7 @@ class Player final: public Unit
         bool IsSoloAutoLootOnKill() const { return m_soloAutoLootOnKill; }
         void SetSoloAutoLootOnKill(bool on) { m_soloAutoLootOnKill = on; }
         void SoloAutoLootCreature(Creature* creature);
-        // Soloroth: run-speed multiplier (`.modify speed`); default 2× for solo travel.
+        // Soloroth: run-speed multiplier (`.modify speed`); default 1× (stock WoW).
         float GetSoloMoveSpeed() const { return m_soloMoveSpeed; }
         void SetSoloMoveSpeed(float rate) { m_soloMoveSpeed = rate; }
         // The same take-everything, whatever the option; false when something did not fit.

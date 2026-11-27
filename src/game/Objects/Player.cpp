@@ -116,7 +116,7 @@ Player::Player(WorldSession* session) : Unit(),
     m_mover(this), m_camera(this), m_reputationMgr(this), m_saveDisabled(false), m_enableInstanceSwitch(true),
     m_currentTicketCounter(0), m_repopAtGraveyardPending(false), m_knownLanguagesMask(0),
     m_honorMgr(this), m_personalXpRate(-1.0f), m_noQuest(false), m_isStandUpScheduled(false),
-    m_soloAutoLootOnKill(true), m_soloMoveSpeed(2.0f)
+    m_soloAutoLootOnKill(true), m_soloMoveSpeed(1.0f)
 {
     m_objectType |= TYPEMASK_PLAYER;
     m_objectTypeId = TYPEID_PLAYER;
