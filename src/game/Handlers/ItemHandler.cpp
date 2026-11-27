@@ -867,24 +867,14 @@ void WorldSession::HandleAutoStoreBagItemOpcode(WorldPackets::Item::AutoStoreBag
 
 bool WorldSession::CheckBanker(ObjectGuid guid)
 {
-    // GM case
+    // Soloroth: self as banker opens the vault anywhere (UI / .bank).
     if (guid == GetPlayer()->GetObjectGuid())
+        return true;
+
+    if (!GetPlayer()->GetNPCIfCanInteractWith(guid, UNIT_NPC_FLAG_BANKER))
     {
-        // command case will return only if player have real access to command
-        if (!ChatHandler(GetPlayer()).FindCommand("bank"))
-        {
-            sLog.Out(LOG_BASIC, LOG_LVL_DEBUG, "%s attempt open bank in cheating way.", guid.GetString().c_str());
-            return false;
-        }
-    }
-    // banker case
-    else
-    {
-        if (!GetPlayer()->GetNPCIfCanInteractWith(guid, UNIT_NPC_FLAG_BANKER))
-        {
-            sLog.Out(LOG_BASIC, LOG_LVL_DEBUG, "Banker %s not found or you can't interact with him.", guid.GetString().c_str());
-            return false;
-        }
+        sLog.Out(LOG_BASIC, LOG_LVL_DEBUG, "Banker %s not found or you can't interact with him.", guid.GetString().c_str());
+        return false;
     }
 
     return true;

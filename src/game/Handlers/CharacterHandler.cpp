@@ -517,6 +517,10 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder *holder)
     }
     m_masterPlayer->UpdateNextMailTimeAndUnreads();
 
+    // Soloroth: no mail UI — pull capacity / spoils overflow into bags or bank.
+    if (!alreadyOnline)
+        pCurrChar->ReclaimInaccessibleOverflowMail();
+
     sObjectAccessor.AddObject(m_masterPlayer);
 
     Position const& position = pCurrChar->GetTransport()

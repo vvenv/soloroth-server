@@ -1525,7 +1525,16 @@ bool PartyBotAI::AttackStart(Unit* pVictim)
     if (pVictim && !m_ownCharacter)
         me->SetSelectionGuid(pVictim->GetObjectGuid());
 
-    if (me->Attack(pVictim, true))
+    // Mana casters: lock the target without melee auto-attack. Attack(true) left
+    // staff swings in every gap between casts once the mob was in reach; wand /
+    // OOM melee is armed explicitly later. Hunters keep melee for the dead zone.
+    bool const meleeSwing =
+        me->GetClass() == CLASS_HUNTER ||
+        m_role == ROLE_MELEE_DPS ||
+        m_role == ROLE_TANK ||
+        IsAttackSpeedOverridenForm(me->GetShapeshiftForm()) ||
+        me->GetPowerType() != POWER_MANA;
+    if (me->Attack(pVictim, meleeSwing))
     {
         BeginChasing(pVictim);
         return true;
@@ -5844,9 +5853,32 @@ bool PartyBotAI::HasUsableWand() const
     return true;
 }
 
+bool PartyBotAI::EnsureWandReady()
+{
+    Item* pRanged = me->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+    if (!pRanged || pRanged->GetProto()->SubClass != ITEM_SUBCLASS_WEAPON_WAND)
+        return false;
+
+    // Equipping a wand without the weapon-master train left Shoot missing: OOM
+    // then fell through to staff melee ("不挥魔杖"). Learn Wands (5009) so
+    // skill-line auto-train also grants Shoot (5019).
+    if (uint32 const prof = pRanged->GetProto()->GetProficiencySpell())
+        if (!me->HasSpell(prof))
+            me->LearnSpell(prof, false, false);
+    if (!me->HasSpell(PB_SPELL_SHOOT_WAND))
+        me->LearnSpell(PB_SPELL_SHOOT_WAND, false, false);
+
+    // Durability 0 still sits in the slot; repair so Shoot is legal again.
+    if (pRanged->GetProto()->MaxDurability && pRanged->IsBroken())
+        me->DurabilityRepair(
+            uint16((INVENTORY_SLOT_BAG_0 << 8) | EQUIPMENT_SLOT_RANGED), false, 1.0f);
+
+    return HasUsableWand();
+}
+
 bool PartyBotAI::TryShootWand(Unit* pVictim)
 {
-    if (!pVictim || !HasUsableWand())
+    if (!pVictim || (!HasUsableWand() && !EnsureWandReady()))
         return false;
 
     if (me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))

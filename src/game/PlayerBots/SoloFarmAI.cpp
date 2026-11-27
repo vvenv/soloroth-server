@@ -225,6 +225,9 @@ SoloFarmAI::SoloFarmAI(Player* pPlayer, SoloFarmMode mode, float radius)
     m_mineSpell = BestKnownSpell(pPlayer, MINE_SPELLS, sizeof(MINE_SPELLS) / sizeof(MINE_SPELLS[0]));
     m_skinSpell = BestKnownSpell(pPlayer, SKIN_SPELLS, sizeof(SKIN_SPELLS) / sizeof(SKIN_SPELLS[0]));
     m_wanderSteps = urand(2, 5);
+    // Wand in the ranged slot but no Shoot / broken: teach and repair so OOM
+    // does not fall through to staff melee.
+    EnsureWandReady();
     // .go / login settle often leaves a START_FORWARD right after Start().
     NoteServerMotion();
 }
@@ -979,19 +982,25 @@ void SoloFarmAI::UpdateAI(uint32 const diff)
 
     Pet* pPet = me->GetPet();
     bool const attacked = !me->GetAttackers().empty() || (pPet && !pPet->GetAttackers().empty());
-    if (attacked || me->GetVictim() || me->IsInCombat())
+    // IsInCombat linger after a kill is not a fight: prep (conjure / gem) must
+    // finish. Only a live attacker or our current victim cancels CREATE_ITEM.
+    bool const inFight = attacked || me->GetVictim();
+    if (inFight || me->IsInCombat())
     {
-        // Water / food / mana gems are a long stand. A pull or a hit cuts them
-        // so the next tick can actually cast a damage spell.
-        if (Spell* pCast = me->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+        // Water / food / mana gems are a long stand. A real pull or a hit cuts
+        // them so the next tick can actually cast a damage spell.
+        if (inFight)
         {
-            SpellEntry const* info = pCast->m_spellInfo;
-            for (uint8 i = 0; i < MAX_EFFECT_INDEX; ++i)
+            if (Spell* pCast = me->GetCurrentSpell(CURRENT_GENERIC_SPELL))
             {
-                if (info->Effect[i] == SPELL_EFFECT_CREATE_ITEM)
+                SpellEntry const* info = pCast->m_spellInfo;
+                for (uint8 i = 0; i < MAX_EFFECT_INDEX; ++i)
                 {
-                    me->InterruptSpell(CURRENT_GENERIC_SPELL, false);
-                    break;
+                    if (info->Effect[i] == SPELL_EFFECT_CREATE_ITEM)
+                    {
+                        me->InterruptSpell(CURRENT_GENERIC_SPELL, false);
+                        break;
+                    }
                 }
             }
         }
@@ -1415,17 +1424,19 @@ bool SoloFarmAI::UpdateCombat()
     // cast, or this one mob is low enough that a nuke would mostly overkill.
     // Computed before the cast gate: Shoot is autorepeat and skipAutorepeat=true
     // would otherwise fall through into HaltRoam / BeginChasing → "被打断".
+    // Priority when spells stop: wand first, staff melee only with no usable wand.
     bool const caster = !IsBreakableControl(pVictim) && GetRole() == ROLE_RANGE_DPS &&
         me->GetClass() != CLASS_HUNTER && me->GetShapeshiftForm() == FORM_NONE &&
         me->GetPowerType() == POWER_MANA;
+    bool const wandReady = caster && EnsureWandReady();
     bool const casterOom = caster && me->GetPowerPercent(POWER_MANA) < OOM_MANA_PCT;
     bool const finishWithWand = me->GetClass() == CLASS_MAGE && caster &&
         me->GetAttackers().size() < 2 &&
         pVictim->GetHealthPercent() < WAND_FINISH_HP &&
         me->GetPowerPercent(POWER_MANA) < WAND_FINISH_MANA_PCT &&
-        HasUsableWand();
-    bool const useWand = (casterOom || finishWithWand) && HasUsableWand();
-    bool const goMelee = casterOom && !HasUsableWand();
+        wandReady;
+    bool const useWand = (casterOom || finishWithWand) && wandReady;
+    bool const goMelee = casterOom && !wandReady;
 
     // A cast already on the bar (incl. Shoot): do not chase, stop, or turn.
     // skipAutorepeat=false so wand heartbeats are protected the same as Frostbolt.
@@ -1807,7 +1818,10 @@ bool SoloFarmAI::UseConsumable(uint32 auraType, uint32 effect, bool combat)
 // pulls. Not while eating or drinking: a cast stands up and cancels the regen aura.
 bool SoloFarmAI::Conjure()
 {
-    if (me->IsInCombat() || me->IsNonMeleeSpellCasted(false) ||
+    // Combat linger (IsInCombat, no attackers) is fine: refuse only a real fight.
+    // Gating on IsInCombat alone skipped prep for the whole linger window, and the
+    // CREATE_ITEM interrupt above used to cancel any gem that OOC AI started.
+    if (me->GetVictim() || !me->GetAttackers().empty() || me->IsNonMeleeSpellCasted(false) ||
         me->HasAuraType(SPELL_AURA_MOD_REGEN) || me->HasAuraType(SPELL_AURA_MOD_POWER_REGEN))
         return false;
 
@@ -2005,16 +2019,19 @@ void SoloFarmAI::UpdateFight()
     // Buff or rest while they stand with nothing targeted. Out-of-combat buffs clear the
     // current target, so a selected mob (or a quest giver) is left alone.
     // No conjure: that would take the body they are steering for a cast.
+    // Buff before Rest (same order as UpdateGrind): sitting first skipped intellect/armor
+    // whenever mana was already low enough to drink.
     if (me->IsMounted() || !me->GetSelectionGuid().IsEmpty())
     {
         CancelRest();
         return;
     }
 
-    if (Rest())
+    UpdateOutOfCombatAI();
+    if (m_isBuffing || me->IsNonMeleeSpellCasted(false))
         return;
 
-    UpdateOutOfCombatAI();
+    Rest();
 }
 
 // ----------------------------------------------------------------- grinding --
@@ -2027,21 +2044,19 @@ void SoloFarmAI::UpdateGrind()
         return;
     }
 
-    // Finish the cast already on the bar before buffs or another conjure.
+    // Finish the cast already on the bar before the next prep step.
     if (me->IsNonMeleeSpellCasted(false))
         return;
 
-    // About to Rest for mana/hp: conjure a bottle first if bags are empty.
-    // Always-first Conjure (live) burned a full bar stocking water before pull #1.
-    {
-        bool const usesMana = me->GetPowerType() == POWER_MANA;
-        bool const wandCaster = usesMana && HasUsableWand();
-        float const manaStart = wandCaster ? 20.0f : 40.0f;
-        bool const lowMana = usesMana && me->GetPowerPercent(POWER_MANA) < manaStart;
-        bool const lowHp = me->GetHealthPercent() < 60.0f;
-        if ((lowMana || lowHp) && Conjure())
-            return;
-    }
+    // Prep before every pull (and before Rest): stock water / food / gem / stone,
+    // then self + party buffs. Resting first with an empty bag sat spirit-ticking;
+    // searching first skipped prep whenever trash was already in range.
+    if (Conjure())
+        return;
+
+    UpdateOutOfCombatAI();
+    if (m_isBuffing || me->IsNonMeleeSpellCasted(false))
+        return;
 
     if (Rest())
         return;
@@ -2066,14 +2081,6 @@ void SoloFarmAI::UpdateGrind()
             return;
         }
     }
-
-    // No pull this tick: restock water / food, then buffs.
-    if (Conjure())
-        return;
-
-    UpdateOutOfCombatAI();
-    if (m_isBuffing || me->IsNonMeleeSpellCasted(false))
-        return;
 
     if (me->IsInCombat())
     {

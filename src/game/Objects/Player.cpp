@@ -19,6 +19,7 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
+#include <algorithm>
 #include <unordered_map>
 #include <cmath>
 #include <sstream>
@@ -4235,17 +4236,6 @@ void Player::BuildCreateUpdateBlockForPlayer(UpdateData& data, Player* target) c
 
             m_items[i]->BuildCreateUpdateBlockForPlayer(data, target);
         }
-        // Soloroth: backpack slots 17-32 live in 97-112 (past the keyring's
-        // addressable 81-96). Without these creates the client sees empty
-        // slots and bagspace counts them free until something else streams
-        // the objects.
-        for (int i = BACKPACK_EXTRA_START; i < BACKPACK_EXTRA_END; ++i)
-        {
-            if (m_items[i] == nullptr)
-                continue;
-
-            m_items[i]->BuildCreateUpdateBlockForPlayer(data, target);
-        }
     }
 
     Unit::BuildCreateUpdateBlockForPlayer(data, target);
@@ -4273,13 +4263,6 @@ void Player::DestroyForPlayer(Player const* target) const
             m_items[i]->DestroyForPlayer(target);
         }
         for (int i = KEYRING_SLOT_START; i < KEYRING_SLOT_END; ++i)
-        {
-            if (m_items[i] == nullptr)
-                continue;
-
-            m_items[i]->DestroyForPlayer(target);
-        }
-        for (int i = BACKPACK_EXTRA_START; i < BACKPACK_EXTRA_END; ++i)
         {
             if (m_items[i] == nullptr)
                 continue;
@@ -4990,8 +4973,6 @@ uint32 Player::DurabilityRepairAll(bool cost, float discountMod)
     uint32 totalCost = 0;
     // equipped, backpack, bags itself
     for (int i = EQUIPMENT_SLOT_START; i < INVENTORY_SLOT_ITEM_END; ++i)
-        totalCost += DurabilityRepair(((INVENTORY_SLOT_BAG_0 << 8) | i), cost, discountMod);
-    for (int i = BACKPACK_EXTRA_START; i < BACKPACK_EXTRA_END; ++i)
         totalCost += DurabilityRepair(((INVENTORY_SLOT_BAG_0 << 8) | i), cost, discountMod);
 
     // bank, buyback and keys not repaired
@@ -8488,12 +8469,6 @@ uint32 Player::GetItemCount(uint32 item, bool inBankAlso, Item const* skipItem) 
         if (pItem && pItem != skipItem &&  pItem->GetEntry() == item)
             count += pItem->GetCount();
     }
-    for (int i = BACKPACK_EXTRA_START; i < BACKPACK_EXTRA_END; ++i)
-    {
-        Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i);
-        if (pItem && pItem != skipItem && pItem->GetEntry() == item)
-            count += pItem->GetCount();
-    }
     for (int i = KEYRING_SLOT_START; i < KEYRING_SLOT_END; ++i)
     {
         Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i);
@@ -8529,11 +8504,6 @@ uint32 Player::GetItemCount(uint32 item, bool inBankAlso, Item const* skipItem) 
 Item* Player::GetItemByGuid(ObjectGuid guid) const
 {
     for (int i = EQUIPMENT_SLOT_START; i < INVENTORY_SLOT_ITEM_END; ++i)
-        if (Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i))
-            if (pItem->GetObjectGuid() == guid)
-                return pItem;
-
-    for (int i = BACKPACK_EXTRA_START; i < BACKPACK_EXTRA_END; ++i)
         if (Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i))
             if (pItem->GetObjectGuid() == guid)
                 return pItem;
@@ -8575,8 +8545,7 @@ Item* Player::GetItemByPos(uint16 pos) const
 Item* Player::GetItemByPos(uint8 bag, uint8 slot) const
 {
     if (bag == INVENTORY_SLOT_BAG_0 && (slot < BANK_SLOT_BAG_END
-        || (slot >= KEYRING_SLOT_START && slot < KEYRING_SLOT_END)
-        || (slot >= BACKPACK_EXTRA_START && slot < BACKPACK_EXTRA_END)))
+        || (slot >= KEYRING_SLOT_START && slot < KEYRING_SLOT_END)))
         return m_items[slot];
     else if ((bag >= INVENTORY_SLOT_BAG_START && bag < INVENTORY_SLOT_BAG_END)
              || (bag >= BANK_SLOT_BAG_START && bag < BANK_SLOT_BAG_END))
@@ -8679,8 +8648,6 @@ bool Player::IsInventoryPos(uint8 bag, uint8 slot)
         return true;
     if (bag == INVENTORY_SLOT_BAG_0 && (slot >= INVENTORY_SLOT_ITEM_START && slot < INVENTORY_SLOT_ITEM_END))
         return true;
-    if (bag == INVENTORY_SLOT_BAG_0 && (slot >= BACKPACK_EXTRA_START && slot < BACKPACK_EXTRA_END))
-        return true;
     if (bag >= INVENTORY_SLOT_BAG_START && bag < INVENTORY_SLOT_BAG_END)
         return true;
     if (bag == INVENTORY_SLOT_BAG_0 && (slot >= KEYRING_SLOT_START && slot < KEYRING_SLOT_END))
@@ -8739,9 +8706,8 @@ bool Player::IsValidPos(uint8 bag, uint8 slot, bool explicit_pos) const
         if (slot >= INVENTORY_SLOT_BAG_START && slot < INVENTORY_SLOT_BAG_END)
             return true;
 
-        // backpack slots, including the extra half past the keyring
-        if ((slot >= INVENTORY_SLOT_ITEM_START && slot < INVENTORY_SLOT_ITEM_END)
-            || (slot >= BACKPACK_EXTRA_START && slot < BACKPACK_EXTRA_END))
+        // backpack slots
+        if (slot >= INVENTORY_SLOT_ITEM_START && slot < INVENTORY_SLOT_ITEM_END)
             return true;
 
         // keyring slots
@@ -8783,16 +8749,6 @@ bool Player::HasItemCount(uint32 item, uint32 count, bool inBankAlso) const
 {
     uint32 tempcount = 0;
     for (int i = EQUIPMENT_SLOT_START; i < INVENTORY_SLOT_ITEM_END; ++i)
-    {
-        Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i);
-        if (pItem && pItem->GetEntry() == item && !pItem->IsInTrade())
-        {
-            tempcount += pItem->GetCount();
-            if (tempcount >= count)
-                return true;
-        }
-    }
-    for (int i = BACKPACK_EXTRA_START; i < BACKPACK_EXTRA_END; ++i)
     {
         Item* pItem = GetItemByPos(INVENTORY_SLOT_BAG_0, i);
         if (pItem && pItem->GetEntry() == item && !pItem->IsInTrade())
@@ -9140,9 +9096,6 @@ InventoryResult Player::_CanStoreItem_InInventorySlots(uint8 slot_begin, uint8 s
                 return EQUIP_ERR_OK;
         }
     }
-    // The extra backpack half is not contiguous with slots 23-38.
-    if (count && slot_begin == INVENTORY_SLOT_ITEM_START && slot_end == INVENTORY_SLOT_ITEM_END)
-        return _CanStoreItem_InInventorySlots(BACKPACK_EXTRA_START, BACKPACK_EXTRA_END, dest, pProto, count, merge, pSrcItem, skip_bag, skip_slot);
     return EQUIP_ERR_OK;
 }
 
@@ -9550,11 +9503,11 @@ InventoryResult Player::CanStoreItems(Item** pItems, int count) const
     Item* pItem2;
 
     // fill space table
-    int inv_slot_items[BACKPACK_SLOT_INDEX_COUNT];
+    int inv_slot_items[INVENTORY_SLOT_ITEM_END - INVENTORY_SLOT_ITEM_START];
     int inv_bags[INVENTORY_SLOT_BAG_END - INVENTORY_SLOT_BAG_START][MAX_BAG_SIZE];
     int inv_keys[KEYRING_SLOT_END - KEYRING_SLOT_START];
 
-    memset(inv_slot_items, 0, sizeof(int) * BACKPACK_SLOT_INDEX_COUNT);
+    memset(inv_slot_items, 0, sizeof(inv_slot_items));
     memset(inv_bags, 0, sizeof(int) * (INVENTORY_SLOT_BAG_END - INVENTORY_SLOT_BAG_START)*MAX_BAG_SIZE);
     memset(inv_keys, 0, sizeof(int) * (KEYRING_SLOT_END - KEYRING_SLOT_START));
 
@@ -9563,7 +9516,7 @@ InventoryResult Player::CanStoreItems(Item** pItems, int count) const
         pItem2 = GetItemByPos(INVENTORY_SLOT_BAG_0, i);
 
         if (pItem2 && !pItem2->IsInTrade())
-            inv_slot_items[BackpackSlotIndex(i)] = pItem2->GetCount();
+            inv_slot_items[i - INVENTORY_SLOT_ITEM_START] = pItem2->GetCount();
     }
 
     for (int i = KEYRING_SLOT_START; i < KEYRING_SLOT_END; ++i)
@@ -9645,9 +9598,9 @@ InventoryResult Player::CanStoreItems(Item** pItems, int count) const
             FOR_BACKPACK_SLOTS(t)
             {
                 pItem2 = GetItemByPos(INVENTORY_SLOT_BAG_0, t);
-                if (pItem2 && pItem2->CanBeMergedPartlyWith(pProto) == EQUIP_ERR_OK && inv_slot_items[BackpackSlotIndex(t)] + pItem->GetCount() <= pProto->GetMaxStackSize())
+                if (pItem2 && pItem2->CanBeMergedPartlyWith(pProto) == EQUIP_ERR_OK && inv_slot_items[t - INVENTORY_SLOT_ITEM_START] + pItem->GetCount() <= pProto->GetMaxStackSize())
                 {
-                    inv_slot_items[BackpackSlotIndex(t)] += pItem->GetCount();
+                    inv_slot_items[t - INVENTORY_SLOT_ITEM_START] += pItem->GetCount();
                     b_found = true;
                     break;
                 }
@@ -9724,9 +9677,9 @@ InventoryResult Player::CanStoreItems(Item** pItems, int count) const
         bool b_found = false;
         FOR_BACKPACK_SLOTS(t)
         {
-            if (inv_slot_items[BackpackSlotIndex(t)] == 0)
+            if (inv_slot_items[t - INVENTORY_SLOT_ITEM_START] == 0)
             {
-                inv_slot_items[BackpackSlotIndex(t)] = 1;
+                inv_slot_items[t - INVENTORY_SLOT_ITEM_START] = 1;
                 b_found = true;
                 break;
             }
@@ -13273,13 +13226,13 @@ void Player::RewardQuest(Quest const* pQuest, uint32 reward, WorldObject* questE
             ((BattleGroundAV*)bg)->HandleQuestComplete(questEnder->ToUnit(), pQuest->GetQuestId(), this);
 
     // A quest giver refuses a turn-in the bags cannot hold; one completed
-    // without a giver (no-quest mode) mails what does not fit instead.
-    // Grey no-quest catch-up skips gear: only reputation and money matter then.
+    // without a giver (no-quest mode) banks what does not fit (Soloroth has
+    // no mail UI). Grey no-quest catch-up skips gear: only reputation and money.
     if (giveItemRewards)
     {
         int const localeIndex = GetSession()->GetSessionDbLocaleIndex();
-        MailDraft overflow(localeIndex >= 0 && sObjectMgr.GetLocaleForIndex(localeIndex) == LOCALE_zhCN
-            ? "背包放不下的战利品" : "Spoils your bags could not hold");
+        bool const zh = localeIndex >= 0 && sObjectMgr.GetLocaleForIndex(localeIndex) == LOCALE_zhCN;
+        MailDraft overflow(zh ? "背包放不下的战利品" : "Spoils your bags could not hold");
         bool overflowed = false;
         auto giveItem = [&](uint32 itemId, uint32 count)
         {
@@ -13294,8 +13247,12 @@ void Player::RewardQuest(Quest const* pQuest, uint32 reward, WorldObject* questE
                 if (Item* item = Item::CreateItem(itemId, count, GetObjectGuid()))
                 {
                     item->SaveToDB();
-                    overflow.AddItem(item);
-                    overflowed = true;
+                    // BankOverflowItem may merge/delete `item`; do not touch it after.
+                    if (!BankOverflowItem(item))
+                    {
+                        overflow.AddItem(item);
+                        overflowed = true;
+                    }
                 }
             }
         };
@@ -15823,7 +15780,13 @@ bool Player::_LoadInventory(std::unique_ptr<QueryResult> result, uint32 timediff
                 item->SetContainer(nullptr);
                 item->SetSlot(slot);
 
-                if (IsInventoryPos(INVENTORY_SLOT_BAG_0, slot))
+                // Soloroth: former backpack half (97-112) is no longer inventory;
+                // rehome via bank/mail below.
+                if (slot >= BACKPACK_EXTRA_LEGACY_START && slot < BACKPACK_EXTRA_LEGACY_END)
+                {
+                    success = false;
+                }
+                else if (IsInventoryPos(INVENTORY_SLOT_BAG_0, slot))
                 {
                     ItemPosCountVec dest;
                     uint8 bagSlot = 0;
@@ -15915,22 +15878,52 @@ bool Player::_LoadInventory(std::unique_ptr<QueryResult> result, uint32 timediff
         while (result->NextRow());
         m_itemUpdateQueueBlocked = false;
 
-        // send by mail problematic items
+        // Soloroth: no mail UI. Prefer bags (炉石 first), then bank with
+        // auto-expanded bank bag faces; mail only as a last resort that
+        // ReclaimInaccessibleOverflowMail pulls back on the next login.
+        std::vector<Item*> mailItems;
+        auto depositOverflow = [&](Item* overflow)
+        {
+            if (!overflow)
+                return;
+            ItemPosCountVec dest;
+            uint8 bagSlot = 0;
+            if (CanStoreItem(NULL_BAG, NULL_SLOT, dest, overflow, bagSlot, false) == EQUIP_ERR_OK)
+            {
+                StoreItem(dest, overflow, true);
+                return;
+            }
+            if (BankOverflowItem(overflow))
+                return;
+            mailItems.push_back(overflow);
+        };
+        // Hearthstone before everything else so it lands in bags when any seat is free.
+        for (size_t i = 0; i < problematicItems.size();)
+        {
+            if (problematicItems[i]->GetEntry() == 6948)
+            {
+                Item* hs = problematicItems[i];
+                problematicItems.erase(problematicItems.begin() + i);
+                depositOverflow(hs);
+            }
+            else
+                ++i;
+        }
         while (!problematicItems.empty())
         {
-            std::string subject = GetSession()->GetMangosString(LANG_NOT_EQUIPPED_ITEM);
-
-            // fill mail
-            MailDraft draft(subject);
-
-            for (int i = 0; !problematicItems.empty() && i < MAX_MAIL_ITEMS; ++i)
+            Item* overflow = problematicItems.back();
+            problematicItems.pop_back();
+            depositOverflow(overflow);
+        }
+        while (!mailItems.empty())
+        {
+            MailDraft draft("背包容量调整");
+            for (int i = 0; !mailItems.empty() && i < MAX_MAIL_ITEMS; ++i)
             {
-                Item* item = problematicItems.back();
-                problematicItems.pop_back();
-
-                draft.AddItem(item);
+                Item* overflow = mailItems.back();
+                mailItems.pop_back();
+                draft.AddItem(overflow);
             }
-
             draft.SendMailTo(this, MailSender(this, MAIL_STATIONERY_GM), MAIL_CHECK_MASK_COPIED);
         }
 
@@ -21130,6 +21123,259 @@ void Player::MigrateCompanionTokens()
         if (pItem)
             AbsorbCompanionToken(pItem, false);
     }
+}
+
+// Capacity only grows when a bag item sits in the face — buying the slot alone
+// does nothing. Unlock one face if needed, then QuickEquip a Traveler's Backpack.
+// Returns true when a new bag was placed (caller should retry CanBankItem).
+static bool EnsureBankBagForOverflow(Player* player)
+{
+    if (!player)
+        return false;
+
+    // Traveler's Backpack: 16 slots, no level / unique / bind quirks.
+    uint32 const bagEntry = 4500;
+    ItemPrototype const* proto = sObjectMgr.GetItemPrototype(bagEntry);
+    if (!proto || proto->InventoryType != INVTYPE_BAG)
+        return false;
+
+    uint8 const maxFaces = BANK_SLOT_BAG_END - BANK_SLOT_BAG_START;
+    for (uint8 i = 0; i < maxFaces; ++i)
+    {
+        uint8 const face = BANK_SLOT_BAG_START + i;
+        if (player->GetItemByPos(INVENTORY_SLOT_BAG_0, face))
+            continue;
+
+        // Purchased count is the number of usable faces (0..i inclusive).
+        if (player->GetBankBagSlotCount() <= i)
+            player->SetBankBagSlotCount(i + 1);
+
+        Item* bag = Item::CreateItem(bagEntry, 1, player->GetObjectGuid());
+        if (!bag)
+            return false;
+
+        // Skip CanBankItem: that path is for player moves and can refuse a fresh
+        // bag during login reclaim. EquipItem puts the bag on the face so
+        // GetBagSize() starts counting — empty purchased faces do not.
+        uint16 const dest = uint16(INVENTORY_SLOT_BAG_0) << 8 | face;
+        player->EquipItem(dest, bag, true);
+        return true;
+    }
+    return false;
+}
+
+bool Player::BankOverflowItem(Item* item)
+{
+    if (!item)
+        return false;
+
+    for (int attempt = 0; attempt < 8; ++attempt)
+    {
+        ItemPosCountVec dest;
+        uint8 bagSlot = 0;
+        if (CanBankItem(NULL_BAG, NULL_SLOT, dest, item, false, bagSlot, false) == EQUIP_ERR_OK)
+        {
+            BankItem(dest, item, true);
+            return true;
+        }
+        if (!EnsureBankBagForOverflow(this))
+            break;
+    }
+    return false;
+}
+
+static bool IsSolorothOverflowMailSubject(std::string const& subject)
+{
+    return subject == "背包容量调整"
+        || subject == "背包放不下的战利品"
+        || subject == "Spoils your bags could not hold";
+}
+
+void Player::ReclaimInaccessibleOverflowMail()
+{
+    WorldSession* session = GetSession();
+    MasterPlayer* pl = session ? session->GetMasterPlayer() : nullptr;
+    if (!pl)
+        return;
+
+    std::vector<uint32> mailIds;
+    for (PlayerMails::iterator itr = pl->GetMailBegin(); itr != pl->GetMailEnd(); ++itr)
+    {
+        Mail* m = *itr;
+        if (!m || m->state == MAIL_STATE_DELETED)
+            continue;
+        if (m->deliver_time > time(nullptr))
+            continue;
+        if (!IsSolorothOverflowMailSubject(m->subject))
+            continue;
+        if (!m->HasItems() || m->items.empty())
+            continue;
+        mailIds.push_back(m->messageID);
+    }
+    if (mailIds.empty())
+        return;
+
+    // Hearthstone first so it wins any free bag seat / merge race.
+    std::stable_sort(mailIds.begin(), mailIds.end(), [&](uint32 a, uint32 b)
+    {
+        auto entryOf = [&](uint32 id) -> uint32
+        {
+            Mail* m = pl->GetMail(id);
+            if (!m || m->items.empty())
+                return 0;
+            return m->items[0].itemId;
+        };
+        bool aHs = entryOf(a) == 6948;
+        bool bHs = entryOf(b) == 6948;
+        return aHs && !bHs;
+    });
+
+    uint32 taken = 0;
+    uint32 left = 0;
+    bool hearthRestored = false;
+    bool hearthInBank = false;
+
+    for (uint32 mailId : mailIds)
+    {
+        Mail* m = pl->GetMail(mailId);
+        if (!m || m->state == MAIL_STATE_DELETED || m->items.empty())
+            continue;
+
+        uint32 const itemGuid = m->items[0].itemGuid;
+        uint32 const itemId = m->items[0].itemId;
+        Item* it = pl->GetMItem(itemGuid);
+        if (!it)
+        {
+            ++left;
+            continue;
+        }
+
+        ItemPosCountVec dest;
+        uint8 bagSlot = 0;
+        bool stored = false;
+        bool intoBags = false;
+
+        if (CanStoreItem(NULL_BAG, NULL_SLOT, dest, it, bagSlot, false) == EQUIP_ERR_OK)
+        {
+            stored = true;
+            intoBags = true;
+        }
+        else if (itemId == 6948)
+        {
+            // Bags full: bank one gray junk seat so the hearthstone can sit in bags.
+            auto displaceJunk = [&](uint8 bag, uint8 slot) -> bool
+            {
+                Item* junk = GetItemByPos(bag, slot);
+                if (!junk || junk->GetEntry() == 6948)
+                    return false;
+                ItemPrototype const* proto = junk->GetProto();
+                if (!proto || proto->Quality > ITEM_QUALITY_POOR)
+                    return false;
+                MoveItemFromInventory(bag, slot, true);
+                if (!BankOverflowItem(junk))
+                {
+                    ItemPosCountVec back;
+                    uint8 backSlot = 0;
+                    if (CanStoreItem(bag, slot, back, junk, backSlot, false) == EQUIP_ERR_OK)
+                        StoreItem(back, junk, true);
+                    return false;
+                }
+                dest.clear();
+                if (CanStoreItem(bag, slot, dest, it, bagSlot, false) != EQUIP_ERR_OK
+                    && CanStoreItem(NULL_BAG, NULL_SLOT, dest, it, bagSlot, false) != EQUIP_ERR_OK)
+                    return false;
+                stored = true;
+                intoBags = true;
+                return true;
+            };
+            FOR_BACKPACK_SLOTS(slot)
+            {
+                if (displaceJunk(INVENTORY_SLOT_BAG_0, slot))
+                    break;
+            }
+            if (!stored)
+            {
+                for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END && !stored; ++bag)
+                {
+                    Bag* pBag = (Bag*)GetItemByPos(INVENTORY_SLOT_BAG_0, bag);
+                    if (!pBag)
+                        continue;
+                    for (uint8 slot = 0; slot < pBag->GetBagSize() && !stored; ++slot)
+                        displaceJunk(bag, slot);
+                }
+            }
+        }
+
+        if (!stored)
+        {
+            for (int attempt = 0; attempt < 8 && !stored; ++attempt)
+            {
+                dest.clear();
+                if (CanBankItem(NULL_BAG, NULL_SLOT, dest, it, false, bagSlot, false) == EQUIP_ERR_OK)
+                    stored = true;
+                else if (!EnsureBankBagForOverflow(this))
+                    break;
+            }
+        }
+
+        if (!stored)
+        {
+            ++left;
+            continue;
+        }
+
+        m->RemoveItem(itemGuid);
+        m->removedItems.push_back(itemGuid);
+        if (m->items.empty() && m->money == 0)
+            m->state = MAIL_STATE_DELETED;
+        else
+            m->state = MAIL_STATE_CHANGED;
+        pl->MarkMailsUpdated();
+        pl->RemoveMItem(it->GetGUIDLow());
+        it->SetState(ITEM_UNCHANGED);
+        MoveItemToInventory(dest, it, true);
+        ++taken;
+        if (itemId == 6948)
+        {
+            hearthRestored = intoBags;
+            hearthInBank = !intoBags;
+        }
+    }
+
+    if (taken || left)
+    {
+        CharacterDatabase.BeginTransaction(GetGUIDLow());
+        SaveInventoryAndGoldToDB();
+        pl->SaveMails();
+        CharacterDatabase.CommitTransaction();
+        pl->UpdateNextMailTimeAndUnreads();
+    }
+
+    if (!taken && !left)
+        return;
+
+    bool zh = false;
+    if (session)
+    {
+        int const index = session->GetSessionDbLocaleIndex();
+        zh = index >= 0 && sObjectMgr.GetLocaleForIndex(index) == LOCALE_zhCN;
+    }
+
+    if (hearthRestored)
+        PSendSysMessage(zh ? "炉石已放回背包。" : "Your Hearthstone is back in your bags.");
+    else if (hearthInBank)
+        PSendSysMessage(zh ? "炉石已放入银行（按 U 打开）。" : "Your Hearthstone is in the bank (press U).");
+
+    if (taken)
+        PSendSysMessage(zh
+            ? "已从溢出邮件取回 %u 件物品到背包/银行。"
+            : "Reclaimed %u overflow item(s) into bags/bank.",
+            taken);
+    if (left)
+        PSendSysMessage(zh
+            ? "还有 %u 件放不下：整理银行或背包后重新登录即可继续取回。"
+            : "%u overflow item(s) still need space — free bags/bank and relog.",
+            left);
 }
 
 bool Player::SoloLootCreature(Creature* creature)

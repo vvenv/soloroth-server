@@ -94,6 +94,8 @@ public:
     Player* SelectShieldTarget() const;
     // Equipped wand plus Shoot (5019): healer idle filler, and OOM/last-resort for casters.
     bool HasUsableWand() const;
+    // Learn Wands/Shoot if missing; repair a broken wand so Shoot is not refused.
+    bool EnsureWandReady();
     bool TryShootWand(Unit* pVictim);
     Unit* GetMarkedTarget(RaidTargetIcon mark) const;
     virtual bool CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget) const;

@@ -3411,7 +3411,10 @@ bool CombatBotBaseAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* p
 
     // Polymorph on undead, Scare Beast on humanoids, etc. — CastSpell then
     // only yields "无效的目标" every AI tick and burns the chance to Nova.
-    if (pTarget != me && pSpellEntry->TargetCreatureType &&
+    // Positive spells (AI, Fortitude, MotW) must not use this gate: undead
+    // players are CREATURE_TYPE_UNDEAD and were skipped for party buffs.
+    if (!pSpellEntry->IsPositiveSpell() && pTarget != me &&
+        pSpellEntry->TargetCreatureType &&
         !(pSpellEntry->TargetCreatureType & pTarget->GetCreatureTypeMask()))
         return false;
 
