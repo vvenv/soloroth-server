@@ -5094,7 +5094,7 @@ void Player::RepopAtGraveyard()
         float orientation = GetOrientation();
 #endif
 
-        TeleportTo(pClosestGrave->map_id, pClosestGrave->x, pClosestGrave->y, pClosestGrave->z, orientation, TELE_TO_NOT_UNSUMMON_PET, std::move(recover)); 
+        TeleportTo(pClosestGrave->map_id, pClosestGrave->x, pClosestGrave->y, pClosestGrave->z, orientation, TELE_TO_NOT_UNSUMMON_PET, std::move(recover));
     }
 
     // Fix invisible spirit healer if you die close to graveyard.
@@ -21062,9 +21062,9 @@ bool Player::AbsorbCompanionToken(Item*& pItem, bool notify)
         }
 
         if (zh)
-            PSendSysMessage("已学会：%s。可在「宠物」面板使用，不占用背包。", name.c_str());
+            PSendSysMessage("已收集：%s。", name.c_str());
         else
-            PSendSysMessage("Learned: %s. Use it from the Pets panel — it does not take bag space.", name.c_str());
+            PSendSysMessage("Collected: %s.", name.c_str());
         (void)isMount;
     }
 
