@@ -560,8 +560,18 @@ void WorldSession::DoLootRelease(ObjectGuid lguid)
                     // must be destroyed only if no loot
                     if (pItem->loot.isLooted() && !pItem->IsBag())
                     {
+                        // Stackable openables (Bundle of Reports, bloated fish, …): one
+                        // open consumes one. DestroyItem would wipe the whole stack.
+                        pItem->loot.clear();
                         pItem->SetLootState(ITEM_LOOT_REMOVED);
-                        player->DestroyItem(pItem->GetBagSlot(), pItem->GetSlot(), true);
+                        if (pItem->GetCount() > 1)
+                        {
+                            uint32 count = 1;
+                            pItem->SetGeneratedLoot(false);
+                            player->DestroyItemCount(pItem, count, true);
+                        }
+                        else
+                            player->DestroyItem(pItem->GetBagSlot(), pItem->GetSlot(), true);
                     }
                     break;
                 }
